@@ -1,0 +1,4 @@
+:root { color-scheme: dark; --bg: #1f2335; --fg: #c0caf5; --bg-elev: #24283b; --border: #2e3349; --accent: #7aa2f7; }
+html, body, #root { height: 100%; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 13px; }
+* { box-sizing: border-box; }
