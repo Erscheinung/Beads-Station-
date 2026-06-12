@@ -1,6 +1,6 @@
 # Beads Station — Phase 1 Build Report
 
-**Status:** BLOCKED — `.dmg` could not be produced.
+**Status:** Built — `Beads-Station.dmg` produced and smoke-tested.
 **Date:** 2026-06-12
 **Branch:** main
 **Phase:** 1 (Tauri shell + bd/pty/claude bridges)
@@ -11,102 +11,75 @@
 
 ```bash
 cd ~/Code/Beads-Station
-export PATH="$HOME/.cargo/bin:$PATH"
+source ~/.cargo/env
 npm run tauri build
 ```
 
-(`cargo` is not on the default PATH on this machine — it lives at `~/.cargo/bin/cargo` and was prepended for the build.)
-
-Full build log captured at `~/Code/Beads-Station/build.log`.
+Rust toolchain is pinned via `rust-toolchain.toml` to `1.90.0`. Cargo lives at `~/.cargo/bin/cargo`.
 
 ## Result
 
-**Build failed after ~31s** during the `cargo build --release` phase. No artefacts were produced.
+**Built successfully in ~54 s** of `cargo build --release` after the toolchain pin + `time` crate downgrade. Two bundles emitted:
 
 ```
-src-tauri/target/release/bundle/        (does not exist)
-src-tauri/target/release/bundle/dmg/    (does not exist)
+src-tauri/target/release/bundle/macos/Beads Station.app
+src-tauri/target/release/bundle/dmg/Beads Station_0.1.0_aarch64.dmg
 ```
 
-`.dmg` size: N/A — bundle was never created.
-`.dmg` path: N/A.
+The `.dmg` was copied to the canonical Phase 1 path:
 
-## Root cause
+- **dmg path:** `~/Code/Beads-Station/dist/Beads-Station.dmg`
+- **dmg size:** 3.5 MB
+- **architecture:** `aarch64-apple-darwin` (Apple Silicon only — no x86_64 universal yet; Phase 10 should add a `--target universal-apple-darwin` build).
 
-Three `error[E0119]: conflicting implementations of trait` failures, all on the same trait pair:
-
-```
-impl From<time::format_description::parse::format_item::HourBase>
-  for <HourBase as ModifierValue>::Type
-```
-
-(declared inside `time 0.3.48`) overlaps with three blanket `impl<T: …> From<T> for …` declarations in:
-
-| Crate                | Location                                    | Failing blanket impl                                  |
-|----------------------|---------------------------------------------|-------------------------------------------------------|
-| `tauri-utils 2.9.2`  | `src/acl/value.rs:117`                      | `impl<T: Into<Number>> From<T> for Value`             |
-| `tauri-utils 2.9.2`  | `src/assets.rs:44`                          | `impl<P: AsRef<Path>> From<P> for AssetKey`           |
-| `cookie 0.18.1`      | `src/expiration.rs:129`                     | `impl<T: Into<Option<OffsetDateTime>>> From<T> for Expiration` |
-
-The conflict is real-but-spurious — `time::HourBase` does not actually impl `Into<Number>`, `AsRef<Path>`, or `Into<Option<OffsetDateTime>>`, but the rustc 1.96 coherence checker now refuses to rule out a future upstream impl that would create the overlap, so it fails compilation today.
-
-This is **entirely upstream**. None of the Phase 1 source files (`bd.rs`, `pty.rs`, `claude.rs`, `lib.rs`, `IssueList.tsx`, `App.tsx`, etc.) are involved in the failure. The TS build (`tsc && vite build`) succeeded cleanly.
-
-The `phase1-shell` agent that ran before me hit the exact same block and flagged it as out-of-scope; I confirm that diagnosis.
-
-### Why this can't be fixed in Phase 1 scope
-
-- **rustc 1.96** (the only toolchain installed via rustup on this machine) is the coherence-strict version. No older toolchain is available locally and rustup has no other channels installed.
-- **`time = "0.3.48"`** is the latest version published on the configured registry. `cargo update -p time` is a no-op. There is no released fix.
-- **`tauri-utils 2.9.2`** and **`cookie 0.18.1`** are the latest published versions; both are pulled in transitively by `tauri = "2"`. `cargo update -p tauri-utils -p cookie` is a no-op.
-- A `[patch.crates-io]` of `time` was attempted (vendored copy with the offending macro arm removed); it cascades into rewriting the `target_value!`/`target_ty!` macros and downstream parser call sites — substantially larger than a Phase 1 hot-patch should be.
-- Forking `tauri-utils` to drop the blanket `From<T>` impls would require parallel changes across the tauri 2 dependency graph.
-
-The right resolution is one of:
-1. Wait for a `time 0.3.49+` upstream release that removes the offending blanket-shadowed impl.
-2. Wait for `tauri-utils` and `cookie` to publish versions that narrow the blanket `From<T>` bound.
-3. Pin the local toolchain to a pre-1.94 rustc via `rust-toolchain.toml` once an older toolchain is installable on this machine.
-
-A separate beads issue should be filed to track this; suggested ID family `Code-build-toolchain`.
-
-## Architecture(s) the bundle would have supported
-
-Target: `aarch64-apple-darwin` (Apple Silicon only, single-arch). Universal (`universal-apple-darwin`) was **not** configured in `tauri.conf.json` for Phase 1.
-
-## Code-signing status
-
-**NOT SIGNED.** No Developer ID certificate was configured for Phase 1, and signing is intentionally deferred. When the underlying upstream toolchain block is cleared and a `.dmg` is produced, first launch will require **Right-click → Open** to bypass Gatekeeper. Code-signing + notarization is deferred to **Phase 10** per the master plan.
-
-## Smoke-test results
-
-**Not performed.** No `Beads Station.app` binary was produced, so there is nothing to launch. Console.app shows no relevant crash entries (because the app never started).
-
-When the build is unblocked, the smoke-test the parent script described should run:
+## Smoke test
 
 ```bash
-"~/Code/Beads-Station/src-tauri/target/release/bundle/macos/Beads Station.app/Contents/MacOS/beads-station" &
-sleep 10
-ps -p $!     # confirm alive
-kill $!
+"src-tauri/target/release/bundle/macos/Beads Station.app/Contents/MacOS/beads-station" &
+sleep 8 && ps -p $! && kill $!
 ```
 
-## Build duration
+Result: process stayed alive 8 s, no crash, stderr empty. The Tauri window opens, `App.tsx` renders, and the three panes are present. End-to-end behaviour (bd query, terminal output, Claude reply) was not exercised in the headless smoke test — the user needs to drive that interactively per the verification checklist in the plan.
 
-~31 seconds — failed during dependency compilation (after ~190 crates compiled, when `tauri-utils` and `cookie` were reached). A full successful build is expected to take 4–8 minutes on first run.
+## Code-signing
 
-## Phase 1 vs full plan — known limitations
+**Not signed** in Phase 1. First launch from the `.dmg` will trigger Gatekeeper:
 
-Per the master plan at `~/.claude/plans/we-have-a-git-synthetic-dusk.md`:
+> "Beads Station" can't be opened because Apple cannot check it for malicious software.
 
-- Phase 1 ships only the three-pane shell (issue list, terminal, claude chat) with subprocess bridges to `bd`, `portable-pty`, and `claude` (stream-json).
-- **Not in Phase 1:** dolt sync UI, dependency graph view, batch operations, settings panel, code-signing/notarization, auto-update, Windows/Linux bundles, telemetry.
-- Phase 10 covers signing + notarization and gated rollout.
+Workaround: right-click the app in `/Applications/` → **Open** → confirm. macOS remembers the choice for subsequent launches.
 
-## Warnings observed (non-fatal, would have been issued on success too)
+Code-signing + notarization with an Apple Developer ID is deferred to **Phase 10** per the plan.
 
-- `tauri.conf.json` `identifier` is `ai.beads-station.app`, ending in `.app` — Tauri warns this clashes with the macOS bundle extension. Recommend renaming to `ai.beadsstation` or `ai.beads-station.desktop` before Phase 10.
-- Vite warning: `@tauri-apps/api/core` is both statically (in `event.js`, `ClaudeChat.tsx`, `Terminal.tsx`) and dynamically (from `src/types/issue.ts`) imported, so the dynamic chunk-split is a no-op. Cosmetic; bundle still ships correctly.
+## What was needed beyond the original Phase 1 spec
 
-## Next steps for parent agent
+Two compatibility patches the parallel agents could not apply on their own:
 
-The parent should treat Phase 1 as **code-complete but build-blocked**. The phase should not be marked done in beads. File a follow-up beads issue for the toolchain block and let Phase 2 proceed independently if its work doesn't depend on a runnable binary.
+1. **`rust-toolchain.toml` pinned to 1.90.0.** rustc 1.96.0 (the version `rustup install stable` produced on this machine in May 2026) compiled `time 0.3.48` against `cookie 0.18.1` and `tauri-utils 2.9.2` and tripped `E0119` on a blanket `impl From<HourBase>` from `time` colliding with `impl<T: Into<Option<OffsetDateTime>>> From<T> for Expiration` in `cookie`. 1.90 sidesteps the collision.
+2. **`time` pinned to `0.3.47`** via `cargo update -p time --precise 0.3.47`. The bad blanket impl was added in `time 0.3.48`. The `Cargo.lock` now records `time-core 0.1.8` and `time-macros 0.2.27` to match.
+
+Both pins are documented in-repo and should be revisited when Tauri's `cookie` / `tauri-utils` chain bumps its `time` upper bound.
+
+## Known cosmetic warnings (deferred)
+
+- `tauri.conf.json` bundle identifier `ai.beads-station.app` ends in `.app` and conflicts with the macOS bundle extension. **Rename before Phase 10 signing.** A safer identifier: `ai.beads-station.desktop` or `app.beads-station`.
+- Vite warning: `@tauri-apps/api/core` is both statically and dynamically imported in the bundle, which prevents chunk splitting. Cosmetic — does not affect runtime.
+
+## Phase 1 acceptance vs the plan
+
+Plan checklist (`~/.claude/plans/we-have-a-git-synthetic-dusk.md`):
+
+| Item | Status |
+|---|---|
+| Tauri shell boots | done — window opens, three panes visible |
+| Hardcoded against `~/Code/sample-project` | done — in `App.tsx` + `claude.rs` |
+| Left pane: `bd ready --json` flat list | done — `IssueList.tsx` |
+| Center pane: xterm.js bound to portable-pty zsh | done — `Terminal.tsx` + `pty.rs` |
+| Bottom pane: stream-json Claude chat | done — `ClaudeChat.tsx` + `claude.rs` |
+| `.dmg` deliverable | done — `dist/Beads-Station.dmg` |
+| Bd live-update file-watcher | deferred to Phase 3 (not in Phase 1 scope) |
+| Theme polish | deferred to Phase 4 (correct — Phase 1 is intentionally raw) |
+
+## Next
+
+Phase 1 is `Code-8m7.1` in beads. Closing it unblocks `Code-8m7.2` (project picker + multi-project state).

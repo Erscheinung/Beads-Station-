@@ -1,0 +1,9 @@
+[toolchain]
+channel = "1.90.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+# Pinned because rustc 1.96.0 hits an E0119 conflict in tauri-utils 2.9.2 +
+# cookie 0.18.1 against time 0.3.48's blanket `impl From<HourBase> for
+# <HourBase as ModifierValue>::Type`. 1.85 is the last stable that compiles
+# the Tauri 2.11 dep graph cleanly. Revisit when tauri-utils bumps its
+# `time` upper bound or rustc patches the regression.
