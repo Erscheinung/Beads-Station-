@@ -28,7 +28,7 @@ src-tauri/target/release/bundle/dmg/Beads Station_0.1.0_aarch64.dmg
 
 The `.dmg` was copied to the canonical Phase 1 path:
 
-- **dmg path:** `~/Code/Beads-Station/dist/Beads-Station.dmg`
+- **dmg path:** `~/Code/Beads-Station/artifacts/Beads-Station.dmg`
 - **dmg size:** 3.5 MB
 - **architecture:** `aarch64-apple-darwin` (Apple Silicon only — no x86_64 universal yet; Phase 10 should add a `--target universal-apple-darwin` build).
 
