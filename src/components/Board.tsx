@@ -18,6 +18,7 @@ import {
 } from '../types/issue'
 import { Card } from './Card'
 import { Column } from './Column'
+import { useBdLive } from '../hooks/useBdLive'
 
 interface BoardProps {
   repoPath: string
@@ -117,6 +118,8 @@ export function Board({ repoPath, projectId }: BoardProps) {
   useEffect(() => {
     refetch()
   }, [refetch, version])
+
+  useBdLive(repoPath, refetch)
 
   const findIssue = useCallback(
     (id: string): { issue: Issue; column: ColumnId } | null => {

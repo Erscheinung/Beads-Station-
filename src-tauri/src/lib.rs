@@ -10,6 +10,7 @@ mod claude;
 mod envloader;
 mod projects;
 mod pty;
+mod watcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -26,8 +27,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            bd::bd_add_label,
+            bd::bd_claim,
+            bd::bd_close,
             bd::bd_list,
+            bd::bd_note,
             bd::bd_ready,
+            bd::bd_remove_label,
+            bd::bd_set_status,
             bd::bd_show,
             claude::claude_kill,
             claude::claude_send,
@@ -39,6 +46,8 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_spawn,
             pty::pty_write,
+            watcher::watcher_start,
+            watcher::watcher_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
