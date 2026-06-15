@@ -4,6 +4,8 @@ import { Terminal } from './components/Terminal'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
+import { Statusline } from './components/Statusline'
+import { Dashboard } from './components/Dashboard'
 import { useProjects } from './state/projects'
 import { useVim } from './state/vim'
 import { useVimNav } from './hooks/useVimNav'
@@ -30,21 +32,13 @@ export default function App() {
   }, [projects, activeId, setActive])
 
   if (loaded && projects.length === 0) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--bs-fg)', opacity: 0.6, fontSize: 13 }}>
-        No projects under ~/Code/
-      </div>
-    )
+    return <Dashboard />
   }
 
   if (!active) {
-    // First load before projects_list resolves — render the chrome so the
+    // First load before projects_list resolves — render Dashboard so the
     // viewport doesn't flicker.
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--bs-fg)', opacity: 0.4, fontSize: 12 }}>
-        loading projects…
-      </div>
-    )
+    return <Dashboard />
   }
 
   // Layout strategy (Phase 3):
@@ -61,7 +55,7 @@ export default function App() {
   const terminalHeight = terminalCollapsed ? 24 : 280
 
   return (
-    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1fr 280px', height: '100vh' }}>
+    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
       <aside style={{ background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--bs-border)', fontSize: 11, opacity: 0.7 }}>BEADS · ALL READY</div>
         <div style={{ flex: 1, minHeight: 0 }}>
@@ -123,6 +117,9 @@ export default function App() {
           sessionId={active.claudeSessionId}
         />
       </section>
+      <div style={{ gridColumn: '1 / span 2' }}>
+        <Statusline repoPath={active.path} projectPath={active.path} />
+      </div>
     </div>
   )
 }
