@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { Project } from '../state/projects'
 
 interface TabBarProps {
@@ -8,14 +9,27 @@ interface TabBarProps {
 
 /**
  * Bufferline-style horizontal tab strip. Tokyonight palette only — no new
- * colors. Active tab gets a solid bottom-border in --accent and brightened
- * foreground; inactive tabs sit muted. Horizontal overflow scrolls with a
- * thin scrollbar.
+ * colors. Each tab is capped at 160px and truncates with an ellipsis. Active
+ * tab gets a solid bottom-border in --accent, raised --bg-elev background and
+ * brightened foreground; inactive tabs sit muted with a transparent bottom
+ * border so the active swap doesn't shift layout. Overflow scrolls
+ * horizontally with a thin custom scrollbar, and the active tab is scrolled
+ * into view on selection change.
  */
 export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
+  const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+
+  useEffect(() => {
+    if (!activeId) return
+    const el = tabRefs.current.get(activeId)
+    if (el) {
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+    }
+  }, [activeId])
+
   return (
     <div
-      className="tabbar"
+      className="bs-tabstrip"
       style={{
         display: 'flex',
         flexDirection: 'row',
@@ -33,17 +47,24 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
         return (
           <button
             key={p.id}
+            ref={el => {
+              if (el) tabRefs.current.set(p.id, el)
+              else tabRefs.current.delete(p.id)
+            }}
             onClick={() => onSelect(p.id)}
             title={p.path}
+            className={active ? 'bs-tab bs-tab--active' : 'bs-tab'}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              padding: '0 14px',
+              padding: '0 12px',
               height: '100%',
+              maxWidth: 160,
               background: active ? 'var(--bg-elev)' : 'transparent',
-              color: active ? 'var(--fg)' : 'var(--fg)',
+              color: 'var(--fg)',
               opacity: active ? 1 : 0.55,
+              fontWeight: active ? 500 : 400,
               border: 'none',
               borderRight: '1px solid var(--border)',
               borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
@@ -51,15 +72,27 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
               fontSize: 12,
               cursor: 'pointer',
               whiteSpace: 'nowrap',
+              overflow: 'hidden',
               flexShrink: 0,
             }}
           >
+            <span
+              style={{
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+              }}
+            >
+              {p.name}
+            </span>
             <span
               aria-hidden
               style={{
                 display: 'inline-block',
                 width: 6,
                 height: 6,
+                flexShrink: 0,
                 borderRadius: '50%',
                 background: p.hasBeads
                   ? active
@@ -69,7 +102,6 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
                 border: p.hasBeads ? 'none' : '1px solid var(--border)',
               }}
             />
-            <span>{p.name}</span>
           </button>
         )
       })}

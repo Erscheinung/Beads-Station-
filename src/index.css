@@ -2,3 +2,10 @@
 html, body, #root { height: 100%; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--fg); font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 13px; }
 * { box-sizing: border-box; }
+
+/* Bufferline-style tab strip — thin scrollbar, hover affordance for inactive tabs. */
+.bs-tabstrip { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.bs-tabstrip::-webkit-scrollbar { height: 4px; }
+.bs-tabstrip::-webkit-scrollbar-track { background: transparent; }
+.bs-tabstrip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.bs-tab:hover:not(.bs-tab--active) { background: color-mix(in srgb, var(--bg-elev) 50%, transparent); }
