@@ -6,6 +6,7 @@ import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
 import { Statusline } from './components/Statusline'
 import { Dashboard } from './components/Dashboard'
+import { WhichKey } from './components/WhichKey'
 import { useProjects } from './state/projects'
 import { useVim } from './state/vim'
 import { useVimNav } from './hooks/useVimNav'
@@ -120,6 +121,7 @@ export default function App() {
       <div style={{ gridColumn: '1 / span 2' }}>
         <Statusline repoPath={active.path} projectPath={active.path} />
       </div>
+      <WhichKey />
     </div>
   )
 }

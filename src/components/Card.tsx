@@ -32,23 +32,34 @@ export function Card({ issue }: CardProps) {
   const visibleLabels = labels.slice(0, 2)
   const overflow = labels.length - visibleLabels.length
 
+  const priorityColor = PRIORITY_COLORS[issue.priority] ?? PRIORITY_COLORS[3]
+
+  // Priority bar: 3px inset --bs-red/--bs-yellow/--bs-blue on the left, plus a
+  // 1px hairline border on the other three sides. We use inset box-shadow for
+  // the bar so it doesn't shift the layout. The priority color is exposed as
+  // a CSS custom property (--bs-card-bar) so the :hover rule in index.css can
+  // compose its hairline lift on top of the priority bar without clobbering
+  // the inset shadow.
   const style: CSSProperties = {
     background: 'var(--bs-bg-elev)',
     border: '1px solid var(--bs-border)',
+    borderLeft: '1px solid transparent',
     borderRadius: 4,
-    padding: '8px 10px',
+    padding: '8px 10px 8px 12px',
     marginBottom: 6,
     fontSize: 12,
     cursor: 'grab',
-    opacity: isDragging ? 0.5 : 1,
-    transform: isDragging ? 'rotate(-1deg)' : undefined,
-    // Shadow opacity, not a token color — leave as raw rgba.
-    boxShadow: isDragging ? '0 6px 14px rgba(0,0,0,0.35)' : undefined,
+    opacity: isDragging ? 0.55 : 1,
+    transform: isDragging ? 'rotate(-2deg)' : undefined,
+    boxShadow: isDragging
+      ? `inset 3px 0 0 ${priorityColor}, var(--bs-shadow-card)`
+      : `inset 3px 0 0 ${priorityColor}`,
+    // CSS variable used by .bs-card:hover so the hover lift can keep the
+    // priority bar intact.
+    ['--bs-card-bar' as string]: priorityColor,
     userSelect: 'none',
-    transition: 'background 120ms ease',
+    transition: 'background 120ms ease, box-shadow 120ms ease',
   }
-
-  const priorityColor = PRIORITY_COLORS[issue.priority] ?? PRIORITY_COLORS[3]
 
   return (
     <div
@@ -94,6 +105,8 @@ export function Card({ issue }: CardProps) {
           WebkitBoxOrient: 'vertical',
           overflow: 'hidden',
           lineHeight: 1.35,
+          fontSize: 13,
+          fontWeight: 500,
         }}
       >
         {issue.title}

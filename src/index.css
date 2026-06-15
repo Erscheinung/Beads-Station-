@@ -76,7 +76,26 @@ body {
 .bs-tabstrip::-webkit-scrollbar-thumb { background: var(--bs-border); border-radius: 2px; }
 .bs-tab:hover:not(.bs-tab--active) { background: color-mix(in srgb, var(--bs-bg-elev) 50%, transparent); }
 
-/* Phase 3 board styles — tokyonight tokens only. */
+/* Diagonal hairline separator between adjacent bufferline tabs. The right
+ * edge of every tab carries a 1px slash skewed -12deg; the trailing tab
+ * suppresses it so the strip doesn't dead-end with a visual edge. */
+.bs-tab { position: relative; }
+.bs-tab::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--bs-border);
+  transform: skewX(-12deg);
+  pointer-events: none;
+}
+.bs-tab:last-child::after { display: none; }
+
+/* Phase 3 board styles — tokyonight tokens only. The card's inline boxShadow
+ * holds the per-priority inset bar; on hover we compose a 1px hairline lift
+ * with the priority bar (--bs-card-bar is set inline by Card.tsx). */
 .bs-card { transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease; }
-.bs-card:hover { background: color-mix(in srgb, var(--bs-bg-elev) 70%, var(--bs-blue) 6%); }
+.bs-card:hover { box-shadow: inset 3px 0 0 var(--bs-card-bar, var(--bs-blue)), 0 1px 0 var(--bs-border); }
 .bs-card:active { cursor: grabbing; }
