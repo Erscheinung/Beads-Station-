@@ -1,9 +1,17 @@
-// bd subprocess bridge — Phase 1 (read-only).
-// Spawns the local `bd` CLI as a child process with `--json` and parses
-// its stdout into typed Rust structs. Mutations land in Phase 3.
+// bd subprocess bridge — Phase 1 (read-only) + Phase 3 (mutations).
+// Spawns the local `bd` CLI as a child process with `--json` for reads
+// and bare flags for writes, parsing stdout into typed Rust structs.
+//
+// IMPORTANT (BEADS-CONTEXT.md gotcha): bd reads `git config beads.role`
+// from the *process cwd*, not from `-C <path>`. If we use `-C` from a
+// different cwd, bd prints a role-not-configured warning and may
+// silently drop writes. We therefore set `current_dir(repo_path)` on
+// every spawn and never pass `-C`.
 
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+
+const ACTOR: &str = "Beads Station";
 
 /// Mirrors the bd issue JSON shape. Every field is `#[serde(default)]`
 /// because bd's JSON omits optional fields rather than emitting nulls,
@@ -43,13 +51,18 @@ pub struct Issue {
 }
 
 /// Run `bd` with the given args under `repo_path` and return stdout bytes.
+///
+/// Uses `current_dir(repo_path)` instead of bd's `-C` flag because bd
+/// reads `git config beads.role` from the process cwd. Setting cwd
+/// ensures the role check lands against the correct repo and writes
+/// actually persist.
 async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     // Phase 2.5: launchd-launched GUIs inherit an empty PATH, so
     // `Command::new("bd")` resolves to nothing. Always go through
     // binresolve::resolve_bin to find the canonical absolute path.
     let bd_path = crate::binresolve::resolve_bin("bd")?;
     let mut cmd = Command::new(&bd_path);
-    cmd.arg("-C").arg(repo_path);
+    cmd.current_dir(repo_path);
     for a in args {
         cmd.arg(a);
     }
@@ -69,12 +82,41 @@ async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(output.stdout)
 }
 
+/// Run a bd write subcommand and discard stdout. Returns trimmed
+/// stderr on non-zero exit (or spawn failure).
+async fn run_bd_write(repo_path: &str, args: &[&str]) -> Result<(), String> {
+    run_bd(repo_path, args).await.map(|_| ())
+}
+
+fn require_nonempty(field: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{field} must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Validates a status string against bd's canonical set. The four
+/// values the board exposes are open / in_progress / blocked / closed.
+/// bd also accepts deferred / pinned / hooked but those aren't board
+/// transitions, so we reject them at the boundary.
+fn validate_status(status: &str) -> Result<(), String> {
+    match status {
+        "open" | "in_progress" | "blocked" | "closed" => Ok(()),
+        other => Err(format!(
+            "invalid status \"{other}\" (expected open, in_progress, blocked, or closed)"
+        )),
+    }
+}
+
+// ---------- reads ----------
+
 /// `bd ready --json` — issues that have no open blockers.
 #[tauri::command]
 pub async fn bd_ready(repo_path: String) -> Result<Vec<Issue>, String> {
     let stdout = run_bd(
         &repo_path,
-        &["ready", "--json", "--actor", "Beads Station"],
+        &["ready", "--json", "--actor", ACTOR],
     )
     .await?;
     serde_json::from_slice::<Vec<Issue>>(&stdout)
@@ -103,4 +145,110 @@ pub async fn bd_list(
     let stdout = run_bd(&repo_path, &args).await?;
     serde_json::from_slice::<Vec<Issue>>(&stdout)
         .map_err(|e| format!("failed to parse bd list JSON: {e}"))
+}
+
+// ---------- writes (Phase 3) ----------
+
+/// `bd update <id> --claim --actor "Beads Station"` — atomically sets
+/// assignee=Beads Station and status=in_progress. Idempotent if the
+/// issue is already claimed by us.
+#[tauri::command]
+pub async fn bd_claim(repo_path: String, id: String) -> Result<(), String> {
+    require_nonempty("id", &id)?;
+    run_bd_write(
+        &repo_path,
+        &["update", &id, "--claim", "--actor", ACTOR],
+    )
+    .await
+}
+
+/// `bd update <id> --status <status> --actor "Beads Station"` —
+/// transitions the issue to `status`. Use `bd_close` for the closed
+/// transition when a reason is needed.
+#[tauri::command]
+pub async fn bd_set_status(
+    repo_path: String,
+    id: String,
+    status: String,
+) -> Result<(), String> {
+    require_nonempty("id", &id)?;
+    require_nonempty("status", &status)?;
+    validate_status(&status)?;
+    run_bd_write(
+        &repo_path,
+        &[
+            "update", &id, "--status", &status, "--actor", ACTOR,
+        ],
+    )
+    .await
+}
+
+/// `bd close <id> --reason "<text>" --actor "Beads Station"` —
+/// closes (status=closed) with an audit-trail reason.
+#[tauri::command]
+pub async fn bd_close(
+    repo_path: String,
+    id: String,
+    reason: String,
+) -> Result<(), String> {
+    require_nonempty("id", &id)?;
+    require_nonempty("reason", &reason)?;
+    run_bd_write(
+        &repo_path,
+        &["close", &id, "--reason", &reason, "--actor", ACTOR],
+    )
+    .await
+}
+
+/// `bd update <id> --add-label <label> --actor "Beads Station"` —
+/// adds a single label. Repeat the call for multiple labels.
+#[tauri::command]
+pub async fn bd_add_label(
+    repo_path: String,
+    id: String,
+    label: String,
+) -> Result<(), String> {
+    require_nonempty("id", &id)?;
+    require_nonempty("label", &label)?;
+    run_bd_write(
+        &repo_path,
+        &[
+            "update", &id, "--add-label", &label, "--actor", ACTOR,
+        ],
+    )
+    .await
+}
+
+/// `bd update <id> --remove-label <label> --actor "Beads Station"`.
+#[tauri::command]
+pub async fn bd_remove_label(
+    repo_path: String,
+    id: String,
+    label: String,
+) -> Result<(), String> {
+    require_nonempty("id", &id)?;
+    require_nonempty("label", &label)?;
+    run_bd_write(
+        &repo_path,
+        &[
+            "update", &id, "--remove-label", &label, "--actor", ACTOR,
+        ],
+    )
+    .await
+}
+
+/// `bd note <id> "<text>" --actor "Beads Station"` — appends a note.
+#[tauri::command]
+pub async fn bd_note(
+    repo_path: String,
+    id: String,
+    text: String,
+) -> Result<(), String> {
+    require_nonempty("id", &id)?;
+    require_nonempty("text", &text)?;
+    run_bd_write(
+        &repo_path,
+        &["note", &id, &text, "--actor", ACTOR],
+    )
+    .await
 }
