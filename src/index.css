@@ -9,3 +9,8 @@ body { background: var(--bg); color: var(--fg); font-family: 'JetBrains Mono', u
 .bs-tabstrip::-webkit-scrollbar-track { background: transparent; }
 .bs-tabstrip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 .bs-tab:hover:not(.bs-tab--active) { background: color-mix(in srgb, var(--bg-elev) 50%, transparent); }
+
+/* Phase 3 board styles — tokyonight tokens only. */
+.bs-card { transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease; }
+.bs-card:hover { background: color-mix(in srgb, var(--bg-elev) 70%, var(--accent) 6%); }
+.bs-card:active { cursor: grabbing; }
