@@ -7,11 +7,21 @@
 mod bd;
 mod binresolve;
 mod claude;
+mod envloader;
 mod projects;
 mod pty;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Phase 2.6: load .env before tauri builds so child processes spawned
+    // through Command::new (claude, bd, anything in pty) inherit the
+    // ANTHROPIC_* vars from std::env. install_into_process_env returns
+    // only the keys (never values) so the stderr line we print here is
+    // safe to read in production logs.
+    let map = envloader::load_dotenv();
+    let keys = envloader::install_into_process_env(&map);
+    eprintln!("{}", envloader::loaded_summary(&keys));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())

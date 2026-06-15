@@ -80,8 +80,13 @@ pub async fn claude_start(
 
     {
         let raw_event_name = format!("claude_event_raw:{project_id}");
+        let api_key_present = std::env::var("ANTHROPIC_API_KEY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        let base_url = std::env::var("ANTHROPIC_BASE_URL")
+            .unwrap_or_else(|_| "<unset>".into());
         let msg = format!(
-            "[claude_start] cwd={cwd} bin={} PATH={path_env}",
+            "[claude_start] cwd={cwd} bin={} api_key_present={api_key_present} base_url={base_url} (PATH={path_env})",
             claude_path.display()
         );
         eprintln!("{msg}");
@@ -105,6 +110,21 @@ pub async fn claude_start(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // Phase 2.6: explicitly forward the Anthropic-auth env vars envloader
+    // installed at startup. set_var should already make these visible to
+    // the child via inherited env, but tokio Command in some configs scrubs
+    // or overrides parts of the environment — re-asserting them via
+    // Command::env() makes propagation deterministic. We only forward the
+    // vars that are actually present so we don't clobber a child's view
+    // with empty strings.
+    for var in ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
+        if let Ok(val) = std::env::var(var) {
+            if !val.is_empty() {
+                cmd.env(var, val);
+            }
+        }
+    }
 
     let mut child = cmd
         .spawn()
