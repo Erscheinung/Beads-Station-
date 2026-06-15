@@ -4,19 +4,47 @@ import { listen } from '@tauri-apps/api/event'
 
 type Frame = any
 
-export function ClaudeChat() {
+interface ClaudeChatProps {
+  projectId: string
+  cwd: string
+  sessionId: string
+}
+
+export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
   const [frames, setFrames] = useState<Frame[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     let off: (() => void) | null = null
+    let cancelled = false
     ;(async () => {
-      await invoke('claude_start')
-      off = await listen<Frame>('claude_event', e => setFrames(f => [...f, e.payload]))
+      let sid = sessionId
+      // Defensive: post-W1 every Project carries a session id, but if it's
+      // missing we fall back to projects_get to read the auto-minted UUID.
+      if (!sid) {
+        try {
+          const proj = await invoke<{ claudeSessionId: string }>('projects_get', { id: projectId })
+          sid = proj.claudeSessionId
+        } catch (e) {
+          console.error('projects_get failed', e)
+        }
+      }
+      if (cancelled) return
+      try {
+        await invoke('claude_start', { projectId, cwd, sessionId: sid })
+      } catch (e) {
+        console.error('claude_start failed', e)
+      }
+      if (cancelled) return
+      off = await listen<Frame>(`claude_event:${projectId}`, e => setFrames(f => [...f, e.payload]))
     })()
-    return () => { off?.() }
-  }, [])
+    return () => {
+      cancelled = true
+      off?.()
+      // Phase 6 manages claude lifecycles — do NOT auto-kill on unmount.
+    }
+  }, [projectId, cwd, sessionId])
 
   const send = async () => {
     const text = input.trim()
@@ -24,7 +52,7 @@ export function ClaudeChat() {
     setBusy(true)
     setFrames(f => [...f, { _local: true, role: 'user', text }])
     setInput('')
-    try { await invoke('claude_send', { text }) } finally { setBusy(false) }
+    try { await invoke('claude_send', { projectId, text }) } finally { setBusy(false) }
   }
 
   return (
