@@ -51,7 +51,16 @@ The original `Code-8m7.*` IDs were lost in the data-loss event. The recreated ID
 | Epic | `Code-ky4` | open | — |
 | 1: Vertical slice | `Code-ky4.1` | **closed** (shipped commit `f3b24fc`) | — |
 | 2: Project picker + per-tab Claude | `Code-ky4.2` | **closed** (P2: `545b9e2..ab007e6`; P2.5 fix-up: `61815ea..ab1bde0`) | 3 |
-| 3: Jira board + drag-drop | `Code-ky4.3` | open, **ready** | 4, 7, 8 |
+| 2.5: PATH + tab overflow + Claude diagnostics | `Code-txf` | **closed** (`61815ea..ab1bde0`) | — |
+| 2.6: Gateway .env loader for Claude | `Code-guz` | **closed** (`704ec6d`, wired in `ba9fe3c`) | — |
+| 3: Jira board + drag-drop | `Code-ky4.3` | **closed** (`1f05080..ba9fe3c`) | 4, 7, 8 |
+| 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | open, **ready** | 5 |
+| 5: Issue tree + indent guides | `Code-ky4.5` | open, blocked by 4 | 6, 9 |
+| 6: Claude tool surface + cmux-style status | `Code-ky4.6` | open, blocked by 5 | — |
+| 7: Obsidian daily updates | `Code-ky4.7` | open, **ready** | — |
+| 8: First-run migration of `[Project]` brackets | `Code-ky4.8` | open, **ready** | — |
+| 9: Command palette + vim keybindings | `Code-ky4.9` | open, blocked by 5 | 10 |
+| 10: Polish + signed dmg | `Code-ky4.10` | open, blocked by 9 | — |
 | 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | open, blocked by 3 | 5 |
 | 5: Issue tree + indent guides | `Code-ky4.5` | open, blocked by 4 | 6, 9 |
 | 6: Claude tool surface + cmux-style status | `Code-ky4.6` | open, blocked by 5 | — |
@@ -64,36 +73,44 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 
 ---
 
-## What's already on disk (through Phase 2)
+## What's already on disk (through Phase 3)
 
 ```
 ~/Code/Beads-Station/
-├── artifacts/Beads-Station.dmg          # 3.7 MB (was 3.5 in P1), aarch64, identifier ai.beads-station.desktop, unsigned
+├── artifacts/Beads-Station.dmg          # 3.8 MB (was 3.69 in P2.5), aarch64, identifier ai.beads-station.desktop, unsigned
 ├── BUILD.md                              # phase 1 build report (still current — toolchain unchanged)
 ├── BEADS-CONTEXT.md                      # this file (canonical)
+├── .env                                  # GITIGNORED — ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL for Gateway
+├── .env.example                          # public template documenting the contract
 ├── rust-toolchain.toml                   # pinned to 1.90.0
-├── package.json + node_modules/...       # +@tauri-apps/plugin-store in P2
+├── package.json + node_modules/...       # +@tauri-apps/plugin-store (P2), +@dnd-kit/core +@dnd-kit/sortable (P3)
 ├── src/
-│   ├── App.tsx                           # tab-driven layout, NO hardcoded paths
-│   ├── main.tsx + index.css              # JetBrains Mono base, tokyonight tokens
+│   ├── App.tsx                           # tab-driven, vertical-flex main cell (TabBar | Board | Terminal)
+│   ├── main.tsx + index.css              # JetBrains Mono base, tokyonight tokens, P3 column/card styles
 │   ├── state/projects.ts                 # P2: useProjects() hook + activeId in localStorage
-│   ├── types/issue.ts                    # bd Issue interface + bdReady/bdShow/bdList helpers
+│   ├── hooks/useBdLive.ts                # P3: subscribes bd_changed:{repoPath} → debounced refetch
+│   ├── types/issue.ts                    # bd Issue interface + ready/show/list/claim/setStatus/close/label/note helpers
 │   └── components/
-│       ├── IssueList.tsx                 # left pane: bd ready --json (takes repoPath prop)
-│       ├── Terminal.tsx                  # center: xterm.js bound to PTY (takes cwd prop)
-│       ├── TabBar.tsx                    # P2: bufferline-style strip, hasBeads dot, accent border
-│       └── ClaudeChat.tsx                # bottom: stream-json chat (per-project, namespaced events)
+│       ├── IssueList.tsx                 # left pane: ALL READY (n) — bd ready --json
+│       ├── Terminal.tsx                  # collapsible 280px ↔ 24px, xterm.js bound to PTY
+│       ├── TabBar.tsx                    # P2/2.5: bufferline strip, ellipsis, scroll-into-view
+│       ├── ClaudeChat.tsx                # P2/2.5: per-project events, status dot, surfaces stderr+raw
+│       ├── Board.tsx                     # P3: 4-column drag-drop, optimistic UI + rollback toast
+│       ├── Column.tsx                    # P3: useDroppable
+│       └── Card.tsx                      # P3: useDraggable + priority pill + label chips
 └── src-tauri/
-    ├── tauri.conf.json                   # productName "Beads Station", identifier ai.beads-station.desktop
-    ├── Cargo.toml + Cargo.lock           # time pinned 0.3.47, +tauri-plugin-store 2 in P2
+    ├── tauri.conf.json
+    ├── Cargo.toml + Cargo.lock           # +tauri-plugin-store (P2), +notify 8.2 macos_fsevent (P3)
     └── src/
-        ├── lib.rs                        # invoke_handler now registers 13 commands + plugin-store
+        ├── lib.rs                        # 23 commands registered, plugin-store + envloader init in run()
         ├── main.rs
-        ├── bd.rs                         # bd_ready, bd_show, bd_list (subprocess + --json)
+        ├── envloader.rs                  # P2.6: .env loader (parses KEY=value, set_var into process env)
+        ├── binresolve.rs                 # P2.5: canonical-dir-first binary resolver
+        ├── bd.rs                         # P3: ready/show/list reads + claim/set_status/close/label/note writes; current_dir over -C
         ├── pty.rs                        # pty_spawn, pty_write, pty_resize, pty_kill (portable-pty)
-        ├── projects.rs                   # P2: scans ~/Code/, mints+persists per-project session UUIDs (P2.5: skips dirs with spaces in basename)
-        ├── binresolve.rs                 # P2.5: canonical-dir-first binary resolver (~/.local/bin → ... → PATH)
-        └── claude.rs                     # P2: per-project HashMap<id,Session>, namespaced events (P2.5: binresolve + augmented PATH on child)
+        ├── projects.rs                   # P2/2.5: scans ~/Code/, mints+persists session UUIDs, skips dirs with spaces
+        ├── claude.rs                     # P2/2.5/2.6: per-project HashMap, namespaced events, ANTHROPIC_* forwarding, [claude_start] diag frame
+        └── watcher.rs                    # P3: macOS FSEvents on <repo>/.beads/, 250ms debounce, emits bd_changed:{repoPath}
 
 ~/Documents/Beads/
 ├── SOURCE-PROMPT.md                      # original ask + locked decisions
@@ -125,8 +142,9 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 | Multi-project model | One canonical tracker at `~/Code/.beads/`. First-run wizard (Phase 8) migrates `[Project]` brackets to structured `project=<slug>` labels. |
 | Daily file shape | `/Documents/Beads/Daily/{YYYY-MM-DD}.md`, append `## HH:MM` subsections. Zero YAML frontmatter (matches vault convention). |
 | Packaging target | macOS only for v1 |
-| bd integration | Subprocess + `--json` only. Never read `embeddeddolt/*` or write `issues.jsonl`. |
+| bd integration | Subprocess + `--json` only. Never read `embeddeddolt/*` or write `issues.jsonl`. **P3:** writes go through `current_dir(repo_path)` instead of `-C` to dodge the bd-cli role-check quirk. |
 | Claude integration | `claude --print --input-format=stream-json --output-format=stream-json` per-project subprocess, resumable via stable `--session-id`. No SDK. |
+| Gateway gateway | **Routed via `claude` CLI's `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` env vars.** No SDK swap. The `.env` file at the repo root is the single source of truth — values forwarded explicitly via `Command::env()` from `claude.rs`. P2.6 also emits a `[claude_start]` diagnostic frame on `claude_event_raw:{pid}` showing whether the API key was loaded (bool only) and which `base_url` is active. |
 
 ---
 
