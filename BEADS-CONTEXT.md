@@ -46,12 +46,12 @@ cd ~/Code/Beads-Station && git config beads.role maintainer
 
 The original `Code-8m7.*` IDs were lost in the data-loss event. The recreated IDs are:
 
-| Phase | ID | Status (as of 2026-06-12 19:30) | Blocks |
+| Phase | ID | Status (as of 2026-06-15) | Blocks |
 |---|---|---|---|
 | Epic | `Code-ky4` | open | — |
 | 1: Vertical slice | `Code-ky4.1` | **closed** (shipped commit `f3b24fc`) | — |
-| 2: Project picker + per-tab Claude | `Code-ky4.2` | open, **ready** | 3 |
-| 3: Jira board + drag-drop | `Code-ky4.3` | open, blocked by 2 | 4, 7, 8 |
+| 2: Project picker + per-tab Claude | `Code-ky4.2` | **closed** (commits `545b9e2..ab007e6`) | 3 |
+| 3: Jira board + drag-drop | `Code-ky4.3` | open, **ready** | 4, 7, 8 |
 | 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | open, blocked by 3 | 5 |
 | 5: Issue tree + indent guides | `Code-ky4.5` | open, blocked by 4 | 6, 9 |
 | 6: Claude tool surface + cmux-style status | `Code-ky4.6` | open, blocked by 5 | — |
@@ -64,32 +64,35 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 
 ---
 
-## What's already on disk (Phase 1 deliverables)
+## What's already on disk (through Phase 2)
 
 ```
 ~/Code/Beads-Station/
-├── artifacts/Beads-Station.dmg          # 3.5 MB, aarch64, identifier ai.beads-station.desktop, unsigned
-├── BUILD.md                              # phase 1 build report
+├── artifacts/Beads-Station.dmg          # 3.7 MB (was 3.5 in P1), aarch64, identifier ai.beads-station.desktop, unsigned
+├── BUILD.md                              # phase 1 build report (still current — toolchain unchanged)
 ├── BEADS-CONTEXT.md                      # this file (canonical)
 ├── rust-toolchain.toml                   # pinned to 1.90.0
-├── package.json + node_modules/...
+├── package.json + node_modules/...       # +@tauri-apps/plugin-store in P2
 ├── src/
-│   ├── App.tsx                           # 3-pane layout, hardcoded to ~/Code/sample-project
-│   ├── main.tsx + index.css              # JetBrains Mono base
+│   ├── App.tsx                           # tab-driven layout, NO hardcoded paths
+│   ├── main.tsx + index.css              # JetBrains Mono base, tokyonight tokens
+│   ├── state/projects.ts                 # P2: useProjects() hook + activeId in localStorage
 │   ├── types/issue.ts                    # bd Issue interface + bdReady/bdShow/bdList helpers
 │   └── components/
-│       ├── IssueList.tsx                 # left pane: bd ready --json
-│       ├── Terminal.tsx                  # center: xterm.js bound to PTY
-│       └── ClaudeChat.tsx                # bottom: stream-json chat
+│       ├── IssueList.tsx                 # left pane: bd ready --json (takes repoPath prop)
+│       ├── Terminal.tsx                  # center: xterm.js bound to PTY (takes cwd prop)
+│       ├── TabBar.tsx                    # P2: bufferline-style strip, hasBeads dot, accent border
+│       └── ClaudeChat.tsx                # bottom: stream-json chat (per-project, namespaced events)
 └── src-tauri/
     ├── tauri.conf.json                   # productName "Beads Station", identifier ai.beads-station.desktop
-    ├── Cargo.toml + Cargo.lock           # time pinned to 0.3.47
+    ├── Cargo.toml + Cargo.lock           # time pinned 0.3.47, +tauri-plugin-store 2 in P2
     └── src/
-        ├── lib.rs                        # invoke_handler registers all 10 commands
+        ├── lib.rs                        # invoke_handler now registers 13 commands + plugin-store
         ├── main.rs
         ├── bd.rs                         # bd_ready, bd_show, bd_list (subprocess + --json)
         ├── pty.rs                        # pty_spawn, pty_write, pty_resize, pty_kill (portable-pty)
-        └── claude.rs                     # claude_start, claude_send, claude_kill (stream-json subprocess)
+        ├── projects.rs                   # P2: scans ~/Code/, mints+persists per-project session UUIDs
+        └── claude.rs                     # P2: per-project HashMap<id,Session>, namespaced events
 
 ~/Documents/Beads/
 ├── SOURCE-PROMPT.md                      # original ask + locked decisions
@@ -98,13 +101,14 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 └── Daily/2026-06-12.md                   # first daily rollup
 ```
 
-**Phase 1 hardcodes:**
-- Target project path: `~/Code/sample-project`
-- Claude session UUID: `00000000-0000-4000-8000-beadsphase01`
-- Claude binary path: `~/.local/bin/claude`
-- bd binary path: relies on PATH (typically `~/.local/bin/bd`)
+**Remaining hardcodes (post-P2):**
+- Claude binary path: `~/.local/bin/claude` — Phase 6 makes it configurable.
+- bd binary path: relies on PATH (typically `~/.local/bin/bd`) — same.
+- Project root: `~/Code/` is hardcoded as the scan root in `projects.rs`. Additional repos come from `~/Code/.beads/config.yaml` `repos.additional`. Phase 8 (first-run wizard) may add multi-root support.
 
-Phase 2 makes all four configurable per project.
+**Phase 2 lifted:** target project path and per-project Claude session UUID are now caller-supplied. Each project gets a UUID auto-minted on first scan and persisted via `tauri-plugin-store` to `~/Library/Application Support/ai.beads-station.desktop/projects.json` (or wherever `app.store("projects.json")` resolves on macOS).
+
+**Phase 2 events are namespaced:** `claude_event:{projectId}`, `claude_event_raw:{projectId}`, `claude_stderr:{projectId}`. Anything still listening on the bare `claude_event` name will silently miss frames.
 
 ---
 
@@ -164,6 +168,10 @@ open ~/Code/Beads-Station/artifacts/Beads-Station.dmg
 - **Toolchain pins**: `rust-toolchain.toml` (1.90.0) + `time = 0.3.47` are workarounds for an `E0119` collision in `time 0.3.48` vs `cookie 0.18.1`/`tauri-utils 2.9.2`. Revisit when Tauri ships a `tauri-utils` with a `time` upper bound.
 - **Vite warning**: `@tauri-apps/api/core` both statically and dynamically imported, prevents chunk splitting. Cosmetic.
 - **bd persistence preflight**: Phase 10 should add a startup check that fails loudly if `git config beads.role` is unset in any tracked project, so the data-loss event of 2026-06-12 cannot recur silently.
+- **`Code-urn` (P3)**: `claude_start` holds the SESSIONS tokio Mutex across `Command::spawn` — perf only; Phase 6 candidate.
+- **`Code-1u9` (P3)**: `projects.rs` mints UUIDs into the store but only `.save()`s once at the end of the scan. Loop body is essentially infallible so this rarely matters; revisit if anyone reports vanishing IDs.
+- **`Code-2a3` (P2)**: smoke-test that `claude --print --session-id <known-uuid>` actually replays prior frames to stdout. If it doesn't, Phase 6 needs to read `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` directly to seed scrollback. The P2 acceptance criterion "previous session's chat scrollback resumed via --session-id" hinges on this.
+- **Phase 2 unmount-on-tab-switch**: `App.tsx` uses `key={active.id}` on Terminal and ClaudeChat, so a tab switch tears down the PTY and unsubscribes from Claude events (the Claude *child process* keeps running because `claude_kill` is not called from `ClaudeChat` cleanup). Phase 6 will keep PTYs and listeners alive across switches, mirroring cmux's parallel-isolated-agents-per-tab model.
 
 ---
 
