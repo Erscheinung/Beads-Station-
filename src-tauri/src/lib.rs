@@ -30,6 +30,8 @@ pub fn run() {
             bd::bd_add_label,
             bd::bd_claim,
             bd::bd_close,
+            bd::bd_counts,
+            bd::bd_git_branch,
             bd::bd_list,
             bd::bd_note,
             bd::bd_ready,
