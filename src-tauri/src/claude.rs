@@ -1,25 +1,26 @@
-// Beads Station — Phase 1 claude stream-json bridge.
+// Beads Station — Phase 2 multi-session claude stream-json bridge.
 //
-// Spawns a single persistent `claude --print --input-format=stream-json
-// --output-format=stream-json` subprocess hardcoded against
-// ~/Code/sample-project. Stdout is parsed line-by-line as
-// stream-json frames and emitted to the UI via the "claude_event" Tauri
-// event. Stderr is forwarded as "claude_stderr".
+// Maintains a per-project map of persistent `claude --print
+// --input-format=stream-json --output-format=stream-json` subprocesses,
+// keyed by project id. Each session's stdout is parsed line-by-line as
+// stream-json frames and emitted to the UI via the namespaced Tauri event
+// `claude_event:{project_id}`. Stderr is forwarded as
+// `claude_stderr:{project_id}` and unparseable stdout lines as
+// `claude_event_raw:{project_id}`.
 
+use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::OnceLock;
 
+use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use tauri::{Emitter, Window};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
-// Phase 1 only: hardcoded path resolved at agent build time via `which claude`.
-// Phase 2 will make this configurable.
+// Phase 2 still hardcodes the claude binary path. Phase 6 will make this
+// configurable via settings.
 const CLAUDE_BIN: &str = "~/.local/bin/claude";
-const PROJECT_DIR: &str = "~/Code/sample-project";
-const PHASE1_SESSION_ID: &str = "00000000-0000-4000-8000-beadsphase01";
 
 struct ClaudeSession {
     stdin: ChildStdin,
@@ -27,17 +28,23 @@ struct ClaudeSession {
     session_id: String,
 }
 
-fn session_slot() -> &'static Mutex<Option<ClaudeSession>> {
-    static SLOT: OnceLock<Mutex<Option<ClaudeSession>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
-}
+/// Per-project session map. Outer Mutex is tokio so we can hold it across
+/// .await points (spawning the child, taking pipes); the inner HashMap is
+/// std because all map mutation happens while the lock is held.
+static SESSIONS: Lazy<Mutex<HashMap<String, ClaudeSession>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[tauri::command]
-pub async fn claude_start(window: Window) -> Result<String, String> {
-    let mut guard = session_slot().lock().await;
+pub async fn claude_start(
+    window: Window,
+    project_id: String,
+    cwd: String,
+    session_id: String,
+) -> Result<String, String> {
+    let mut guard = SESSIONS.lock().await;
 
-    // Idempotent: if a session is already alive, return its id.
-    if let Some(existing) = guard.as_ref() {
+    // Idempotent: if a session for this project already exists, return its id.
+    if let Some(existing) = guard.get(&project_id) {
         return Ok(existing.session_id.clone());
     }
 
@@ -48,12 +55,12 @@ pub async fn claude_start(window: Window) -> Result<String, String> {
         .arg("--include-partial-messages")
         .arg("--include-hook-events")
         .arg("--session-id")
-        .arg(PHASE1_SESSION_ID)
+        .arg(&session_id)
         .arg("--permission-mode")
         .arg("acceptEdits")
         .arg("--add-dir")
-        .arg(PROJECT_DIR)
-        .current_dir(PROJECT_DIR)
+        .arg(&cwd)
+        .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -75,10 +82,15 @@ pub async fn claude_start(window: Window) -> Result<String, String> {
         .take()
         .ok_or_else(|| "claude stderr not captured".to_string())?;
 
-    // stdout reader: parse line-by-line as JSON, emit "claude_event".
+    // stdout reader: parse line-by-line as JSON, emit
+    // `claude_event:{project_id}`. Capture project_id by clone so the
+    // event-name format string resolves correctly after the lock drops.
     {
         let win = window.clone();
+        let pid = project_id.clone();
         tokio::spawn(async move {
+            let event_name = format!("claude_event:{pid}");
+            let raw_event_name = format!("claude_event_raw:{pid}");
             let mut reader = BufReader::new(stdout).lines();
             loop {
                 match reader.next_line().await {
@@ -89,21 +101,18 @@ pub async fn claude_start(window: Window) -> Result<String, String> {
                         }
                         match serde_json::from_str::<Value>(trimmed) {
                             Ok(value) => {
-                                let _ = win.emit("claude_event", value);
+                                let _ = win.emit(&event_name, value);
                             }
                             Err(_) => {
                                 // Surface unparseable lines for diagnostics
                                 // instead of silently dropping them.
-                                let _ = win.emit("claude_event_raw", trimmed.to_string());
+                                let _ = win.emit(&raw_event_name, trimmed.to_string());
                             }
                         }
                     }
                     Ok(None) => break, // EOF
                     Err(e) => {
-                        let _ = win.emit(
-                            "claude_event_raw",
-                            format!("[stdout read error] {e}"),
-                        );
+                        let _ = win.emit(&raw_event_name, format!("[stdout read error] {e}"));
                         break;
                     }
                 }
@@ -111,15 +120,17 @@ pub async fn claude_start(window: Window) -> Result<String, String> {
         });
     }
 
-    // stderr reader: forward each line as "claude_stderr".
+    // stderr reader: forward each line as `claude_stderr:{project_id}`.
     {
         let win = window.clone();
+        let pid = project_id.clone();
         tokio::spawn(async move {
+            let event_name = format!("claude_stderr:{pid}");
             let mut reader = BufReader::new(stderr).lines();
             loop {
                 match reader.next_line().await {
                     Ok(Some(line)) => {
-                        let _ = win.emit("claude_stderr", line);
+                        let _ = win.emit(&event_name, line);
                     }
                     Ok(None) => break,
                     Err(_) => break,
@@ -128,21 +139,24 @@ pub async fn claude_start(window: Window) -> Result<String, String> {
         });
     }
 
-    *guard = Some(ClaudeSession {
-        stdin,
-        child,
-        session_id: PHASE1_SESSION_ID.to_string(),
-    });
+    guard.insert(
+        project_id.clone(),
+        ClaudeSession {
+            stdin,
+            child,
+            session_id: session_id.clone(),
+        },
+    );
 
-    Ok(PHASE1_SESSION_ID.to_string())
+    Ok(session_id)
 }
 
 #[tauri::command]
-pub async fn claude_send(text: String) -> Result<(), String> {
-    let mut guard = session_slot().lock().await;
+pub async fn claude_send(project_id: String, text: String) -> Result<(), String> {
+    let mut guard = SESSIONS.lock().await;
     let session = guard
-        .as_mut()
-        .ok_or_else(|| "claude session not started".to_string())?;
+        .get_mut(&project_id)
+        .ok_or_else(|| format!("claude session not started for project {project_id}"))?;
 
     let frame = json!({
         "type": "user",
@@ -173,9 +187,9 @@ pub async fn claude_send(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn claude_kill() -> Result<(), String> {
-    let mut guard = session_slot().lock().await;
-    if let Some(mut session) = guard.take() {
+pub async fn claude_kill(project_id: String) -> Result<(), String> {
+    let mut guard = SESSIONS.lock().await;
+    if let Some(mut session) = guard.remove(&project_id) {
         let _ = session.child.start_kill();
         let _ = session.child.wait().await;
     }
