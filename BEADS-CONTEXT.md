@@ -50,7 +50,7 @@ The original `Code-8m7.*` IDs were lost in the data-loss event. The recreated ID
 |---|---|---|---|
 | Epic | `Code-ky4` | open | — |
 | 1: Vertical slice | `Code-ky4.1` | **closed** (shipped commit `f3b24fc`) | — |
-| 2: Project picker + per-tab Claude | `Code-ky4.2` | **closed** (commits `545b9e2..ab007e6`) | 3 |
+| 2: Project picker + per-tab Claude | `Code-ky4.2` | **closed** (P2: `545b9e2..ab007e6`; P2.5 fix-up: `61815ea..ab1bde0`) | 3 |
 | 3: Jira board + drag-drop | `Code-ky4.3` | open, **ready** | 4, 7, 8 |
 | 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | open, blocked by 3 | 5 |
 | 5: Issue tree + indent guides | `Code-ky4.5` | open, blocked by 4 | 6, 9 |
@@ -91,8 +91,9 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
         ├── main.rs
         ├── bd.rs                         # bd_ready, bd_show, bd_list (subprocess + --json)
         ├── pty.rs                        # pty_spawn, pty_write, pty_resize, pty_kill (portable-pty)
-        ├── projects.rs                   # P2: scans ~/Code/, mints+persists per-project session UUIDs
-        └── claude.rs                     # P2: per-project HashMap<id,Session>, namespaced events
+        ├── projects.rs                   # P2: scans ~/Code/, mints+persists per-project session UUIDs (P2.5: skips dirs with spaces in basename)
+        ├── binresolve.rs                 # P2.5: canonical-dir-first binary resolver (~/.local/bin → ... → PATH)
+        └── claude.rs                     # P2: per-project HashMap<id,Session>, namespaced events (P2.5: binresolve + augmented PATH on child)
 
 ~/Documents/Beads/
 ├── SOURCE-PROMPT.md                      # original ask + locked decisions
@@ -101,10 +102,11 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 └── Daily/2026-06-12.md                   # first daily rollup
 ```
 
-**Remaining hardcodes (post-P2):**
-- Claude binary path: `~/.local/bin/claude` — Phase 6 makes it configurable.
-- bd binary path: relies on PATH (typically `~/.local/bin/bd`) — same.
+**Remaining hardcodes (post-P2.5):**
+- Claude binary path: `~/.local/bin/claude` is now a *fallback* — `binresolve::resolve_bin_or_default` checks the canonical-dir list first. Still a hardcode; Phase 6 makes it user-configurable.
+- bd binary: now resolved via `binresolve::resolve_bin("bd")` — checks `~/.local/bin → /opt/homebrew/bin → /usr/local/bin → /usr/bin → /bin`, then PATH. No bare `Command::new("bd")` left.
 - Project root: `~/Code/` is hardcoded as the scan root in `projects.rs`. Additional repos come from `~/Code/.beads/config.yaml` `repos.additional`. Phase 8 (first-run wizard) may add multi-root support.
+- Spaces-in-dir-name skip: `projects.rs` drops any candidate whose basename contains a space, working around a suspected Claude CLI session-id transcript-path encoding issue. Phase 6 will replace this with a direct JSONL-replay path that doesn't care about the cwd shape.
 
 **Phase 2 lifted:** target project path and per-project Claude session UUID are now caller-supplied. Each project gets a UUID auto-minted on first scan and persisted via `tauri-plugin-store` to `~/Library/Application Support/ai.beads-station.desktop/projects.json` (or wherever `app.store("projects.json")` resolves on macOS).
 
@@ -172,6 +174,7 @@ open ~/Code/Beads-Station/artifacts/Beads-Station.dmg
 - **`Code-1u9` (P3)**: `projects.rs` mints UUIDs into the store but only `.save()`s once at the end of the scan. Loop body is essentially infallible so this rarely matters; revisit if anyone reports vanishing IDs.
 - **`Code-2a3` (P2)**: smoke-test that `claude --print --session-id <known-uuid>` actually replays prior frames to stdout. If it doesn't, Phase 6 needs to read `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl` directly to seed scrollback. The P2 acceptance criterion "previous session's chat scrollback resumed via --session-id" hinges on this.
 - **Phase 2 unmount-on-tab-switch**: `App.tsx` uses `key={active.id}` on Terminal and ClaudeChat, so a tab switch tears down the PTY and unsubscribes from Claude events (the Claude *child process* keeps running because `claude_kill` is not called from `ClaudeChat` cleanup). Phase 6 will keep PTYs and listeners alive across switches, mirroring cmux's parallel-isolated-agents-per-tab model.
+- **Spaces-in-dir filter**: P2.5 workaround — projects.rs drops any candidate whose basename contains a space. Phase 6's JSONL-replay path should make this filter unnecessary; revisit then.
 
 ---
 
