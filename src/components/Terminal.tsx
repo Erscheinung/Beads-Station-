@@ -12,6 +12,7 @@ export function Terminal({ cwd }: { cwd: string }) {
     const xterm = new XTerm({
       fontFamily: "'JetBrains Mono', monospace",
       fontSize: 13,
+      /* mirrors --bs-bg / --bs-fg — xterm reads at instantiation, doesn't observe CSS vars */
       theme: { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' },
       convertEol: true,
       cursorBlink: true,

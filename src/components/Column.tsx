@@ -19,8 +19,8 @@ export function Column({ id, title, count, children }: ColumnProps) {
     display: 'flex',
     flexDirection: 'column',
     minHeight: 0,
-    background: isOver ? 'color-mix(in srgb, var(--accent) 8%, var(--bg))' : 'var(--bg)',
-    border: '1px solid var(--border)',
+    background: isOver ? 'color-mix(in srgb, var(--bs-blue) 8%, var(--bs-bg))' : 'var(--bs-bg)',
+    border: '1px solid var(--bs-border)',
     borderRadius: 4,
     transition: 'background 120ms ease',
   }
@@ -30,9 +30,9 @@ export function Column({ id, title, count, children }: ColumnProps) {
       <div
         style={{
           padding: '8px 10px',
-          borderBottom: '1px solid var(--border)',
+          borderBottom: '1px solid var(--bs-border)',
           fontSize: 11,
-          color: 'var(--fg)',
+          color: 'var(--bs-fg)',
           opacity: 0.7,
           display: 'flex',
           alignItems: 'center',

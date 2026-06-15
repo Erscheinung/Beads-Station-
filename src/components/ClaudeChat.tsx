@@ -81,18 +81,19 @@ export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
   }
 
   // Status dot: red if start failed or any stderr seen; yellow if started but
-  // no assistant frame yet; green once a frame has arrived.
+  // no assistant frame yet; green once a frame has arrived. These are
+  // semantic state markers (syntax-construct usage of tokyonight tokens).
   const dotColor =
-    status === 'failed' || stderrCount > 0 ? '#f7768e'
-    : status === 'frame' ? '#9ece6a'
-    : '#e0af68'
+    status === 'failed' || stderrCount > 0 ? 'var(--bs-red)'
+    : status === 'frame' ? 'var(--bs-green)'
+    : 'var(--bs-yellow)'
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', borderTop: '1px solid var(--border)' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', borderTop: '1px solid var(--bs-border)' }}>
       <div style={{
         height: 24, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8,
-        fontSize: 11, color: 'var(--fg)', opacity: 0.7,
-        borderBottom: '1px solid var(--border)', background: 'var(--bg-elev)',
+        fontSize: 11, color: 'var(--bs-fg)', opacity: 0.7,
+        borderBottom: '1px solid var(--bs-border)', background: 'var(--bs-bg-elev)',
       }}>
         <span style={{
           display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
@@ -103,15 +104,15 @@ export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
       <div style={{ flex: 1, overflowY: 'auto', padding: 12, fontSize: 12, lineHeight: 1.5 }}>
         {frames.map((f, i) => {
           const style: React.CSSProperties = { margin: '0 0 8px 0', whiteSpace: 'pre-wrap' }
-          if (f?._kind === 'stderr') { style.color = '#f7768e'; style.opacity = 0.8 }
-          else if (f?._kind === 'raw') { style.color = '#e0af68'; style.opacity = 0.8 }
+          if (f?._kind === 'stderr') { style.color = 'var(--bs-red)'; style.opacity = 0.8 }
+          else if (f?._kind === 'raw') { style.color = 'var(--bs-yellow)'; style.opacity = 0.8 }
           return <pre key={i} style={style}>{renderFrame(f)}</pre>
         })}
       </div>
-      <form onSubmit={e => { e.preventDefault(); send() }} style={{ display: 'flex', gap: 8, padding: 8, borderTop: '1px solid var(--border)' }}>
+      <form onSubmit={e => { e.preventDefault(); send() }} style={{ display: 'flex', gap: 8, padding: 8, borderTop: '1px solid var(--bs-border)' }}>
         <input value={input} onChange={e => setInput(e.target.value)} placeholder="ask claude" disabled={busy}
-          style={{ flex: 1, background: 'var(--bg-elev)', color: 'var(--fg)', border: '1px solid var(--border)', padding: '6px 8px', fontFamily: 'inherit' }} />
-        <button type="submit" disabled={busy} style={{ background: 'var(--accent)', color: '#1a1b26', border: 'none', padding: '6px 12px', fontFamily: 'inherit', cursor: 'pointer' }}>send</button>
+          style={{ flex: 1, background: 'var(--bs-bg-elev)', color: 'var(--bs-fg)', border: '1px solid var(--bs-border)', padding: '6px 8px', fontFamily: 'inherit' }} />
+        <button type="submit" disabled={busy} style={{ background: 'var(--bs-blue)', color: 'var(--bs-bg-dark)', border: 'none', padding: '6px 12px', fontFamily: 'inherit', cursor: 'pointer' }}>send</button>
       </form>
     </div>
   )

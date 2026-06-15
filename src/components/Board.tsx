@@ -208,14 +208,14 @@ export function Board({ repoPath, projectId }: BoardProps) {
         flexDirection: 'column',
         height: '100%',
         minHeight: 0,
-        background: 'var(--bg)',
+        background: 'var(--bs-bg)',
         position: 'relative',
       }}
     >
       <div
         style={{
           padding: '8px 12px',
-          borderBottom: '1px solid var(--border)',
+          borderBottom: '1px solid var(--bs-border)',
           fontSize: 11,
           opacity: 0.7,
           display: 'flex',
@@ -227,7 +227,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
         <span>BOARD · {projectId}</span>
         <span style={{ opacity: 0.5 }}>· {totalCount} issues</span>
         {error && (
-          <span style={{ marginLeft: 'auto', color: '#f7768e' }}>{error}</span>
+          <span style={{ marginLeft: 'auto', color: 'var(--bs-red)' }}>{error}</span>
         )}
       </div>
       <DndContext
@@ -276,9 +276,9 @@ export function Board({ repoPath, projectId }: BoardProps) {
               style={{
                 padding: '8px 12px',
                 fontSize: 12,
-                background: t.kind === 'error' ? '#f7768e' : 'var(--bg-elev)',
-                color: t.kind === 'error' ? '#1a1b26' : 'var(--fg)',
-                border: '1px solid var(--border)',
+                background: t.kind === 'error' ? 'var(--bs-red)' : 'var(--bs-bg-elev)',
+                color: t.kind === 'error' ? 'var(--bs-bg-dark)' : 'var(--bs-fg)',
+                border: '1px solid var(--bs-border)',
                 borderRadius: 4,
                 boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
                 maxWidth: 360,
