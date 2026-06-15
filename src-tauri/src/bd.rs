@@ -44,7 +44,11 @@ pub struct Issue {
 
 /// Run `bd` with the given args under `repo_path` and return stdout bytes.
 async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut cmd = Command::new("bd");
+    // Phase 2.5: launchd-launched GUIs inherit an empty PATH, so
+    // `Command::new("bd")` resolves to nothing. Always go through
+    // binresolve::resolve_bin to find the canonical absolute path.
+    let bd_path = crate::binresolve::resolve_bin("bd")?;
+    let mut cmd = Command::new(&bd_path);
     cmd.arg("-C").arg(repo_path);
     for a in args {
         cmd.arg(a);

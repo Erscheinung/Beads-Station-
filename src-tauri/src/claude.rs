@@ -19,8 +19,30 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
 
 // Phase 2 still hardcodes the claude binary path. Phase 6 will make this
-// configurable via settings.
-const CLAUDE_BIN: &str = "~/.local/bin/claude";
+// configurable via settings. Phase 2.5 routes the literal through
+// binresolve so we still find claude when it's been installed somewhere
+// else (e.g. /opt/homebrew/bin) and only fall back to the literal when
+// the resolver comes up empty.
+const CLAUDE_BIN_FALLBACK: &str = "~/.local/bin/claude";
+
+/// Build a colon-joined PATH that prepends the canonical install dirs to
+/// whatever PATH the GUI app inherited. Deduped while preserving order so
+/// child processes (claude itself, and anything claude shells out to like
+/// git) can find their tools even when launchd handed us an empty PATH.
+fn augmented_path() -> String {
+    let canonical = ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for entry in canonical.iter().map(|s| s.to_string()).chain(
+        inherited.split(':').filter(|s| !s.is_empty()).map(|s| s.to_string()),
+    ) {
+        if seen.insert(entry.clone()) {
+            out.push(entry);
+        }
+    }
+    out.join(":")
+}
 
 struct ClaudeSession {
     stdin: ChildStdin,
@@ -48,7 +70,25 @@ pub async fn claude_start(
         return Ok(existing.session_id.clone());
     }
 
-    let mut cmd = Command::new(CLAUDE_BIN);
+    // Resolve claude binary via binresolve; fall back to the literal if the
+    // resolver finds nothing. Also emit a diagnostic event so we can tell
+    // from the frontend exactly which binary + cwd we're spawning under —
+    // this is what made the Phase 2.5 dmg debugging trivial.
+    let claude_path = crate::binresolve::resolve_bin_or_default("claude", CLAUDE_BIN_FALLBACK)
+        .map_err(|e| format!("resolve claude binary: {e}"))?;
+    let path_env = augmented_path();
+
+    {
+        let raw_event_name = format!("claude_event_raw:{project_id}");
+        let msg = format!(
+            "[claude_start] cwd={cwd} bin={} PATH={path_env}",
+            claude_path.display()
+        );
+        eprintln!("{msg}");
+        let _ = window.emit(&raw_event_name, msg);
+    }
+
+    let mut cmd = Command::new(&claude_path);
     cmd.arg("--print")
         .arg("--input-format=stream-json")
         .arg("--output-format=stream-json")
@@ -61,6 +101,7 @@ pub async fn claude_start(
         .arg("--add-dir")
         .arg(&cwd)
         .current_dir(&cwd)
+        .env("PATH", &path_env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

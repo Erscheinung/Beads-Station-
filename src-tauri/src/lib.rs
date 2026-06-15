@@ -5,6 +5,7 @@
 // Keep that block easy to merge into.
 
 mod bd;
+mod binresolve;
 mod claude;
 mod projects;
 mod pty;
