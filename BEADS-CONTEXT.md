@@ -54,18 +54,11 @@ The original `Code-8m7.*` IDs were lost in the data-loss event. The recreated ID
 | 2.5: PATH + tab overflow + Claude diagnostics | `Code-txf` | **closed** (`61815ea..ab1bde0`) | — |
 | 2.6: Gateway .env loader for Claude | `Code-guz` | **closed** (`704ec6d`, wired in `ba9fe3c`) | — |
 | 3: Jira board + drag-drop | `Code-ky4.3` | **closed** (`1f05080..ba9fe3c`) | 4, 7, 8 |
-| 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | open, **ready** | 5 |
-| 5: Issue tree + indent guides | `Code-ky4.5` | open, blocked by 4 | 6, 9 |
+| 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | **closed** (`2491630..135447c`) | 5 |
+| 5: Issue tree + indent guides | `Code-ky4.5` | open, **ready** | 6, 9 |
 | 6: Claude tool surface + cmux-style status | `Code-ky4.6` | open, blocked by 5 | — |
 | 7: Obsidian daily updates | `Code-ky4.7` | open, **ready** | — |
 | 8: First-run migration of `[Project]` brackets | `Code-ky4.8` | open, **ready** | — |
-| 9: Command palette + vim keybindings | `Code-ky4.9` | open, blocked by 5 | 10 |
-| 10: Polish + signed dmg | `Code-ky4.10` | open, blocked by 9 | — |
-| 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | open, blocked by 3 | 5 |
-| 5: Issue tree + indent guides | `Code-ky4.5` | open, blocked by 4 | 6, 9 |
-| 6: Claude tool surface + cmux-style status | `Code-ky4.6` | open, blocked by 5 | — |
-| 7: Obsidian daily updates | `Code-ky4.7` | open, blocked by 3 | — |
-| 8: First-run migration of `[Project]` brackets | `Code-ky4.8` | open, blocked by 3 | — |
 | 9: Command palette + vim keybindings | `Code-ky4.9` | open, blocked by 5 | 10 |
 | 10: Polish + signed dmg | `Code-ky4.10` | open, blocked by 9 | — |
 
@@ -73,40 +66,46 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 
 ---
 
-## What's already on disk (through Phase 3)
+## What's already on disk (through Phase 4)
 
 ```
 ~/Code/Beads-Station/
-├── artifacts/Beads-Station.dmg          # 3.8 MB (was 3.69 in P2.5), aarch64, identifier ai.beads-station.desktop, unsigned
+├── artifacts/Beads-Station.dmg          # 3.92 MB (was 3.8 in P3), aarch64, identifier ai.beads-station.desktop, unsigned
 ├── BUILD.md                              # phase 1 build report (still current — toolchain unchanged)
 ├── BEADS-CONTEXT.md                      # this file (canonical)
 ├── .env                                  # GITIGNORED — ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL for Gateway
 ├── .env.example                          # public template documenting the contract
 ├── rust-toolchain.toml                   # pinned to 1.90.0
-├── package.json + node_modules/...       # +@tauri-apps/plugin-store (P2), +@dnd-kit/core +@dnd-kit/sortable (P3)
+├── package.json + node_modules/...       # +@tauri-apps/plugin-store (P2), +@dnd-kit/core +@dnd-kit/sortable (P3); P4: predev+prebuild → audit-emoji
+├── scripts/audit-emoji.mjs               # P4: emoji-glyph gate. fails build on U+1F300-1FAFF / U+2600-27BF / U+2300-23FF / U+1F000-1F2FF in JSX text. ▼ U+25BC and › U+203A explicitly allowed.
 ├── src/
-│   ├── App.tsx                           # tab-driven, vertical-flex main cell (TabBar | Board | Terminal)
-│   ├── main.tsx + index.css              # JetBrains Mono base, tokyonight tokens, P3 column/card styles
+│   ├── App.tsx                           # P4: useVimNav() at top, project:cycle listener, sidebar focus boxShadow, gridTemplateRows '1fr 280px 22px', <Statusline> + <Dashboard> + <WhichKey> mounted
+│   ├── main.tsx + index.css              # P4: full tokyonight Storm token set as --bs-* (bg/bg-dark/bg-float/bg-elev/fg/fg-muted/fg-faint/border/border-faint/blue/cyan/magenta/purple/orange/yellow/green/red/accent/shadow-card/shadow-modal). Legacy --bg/--fg/--bg-elev/--border/--accent kept as aliases. JetBrains Mono enforced via html/body/button/input/textarea/select rule + * { font-family: inherit }. .bs-grid-1px utility, .bs-tab::after diagonal slash separator, .bs-card hover composes priority bar + hairline shadow.
 │   ├── state/projects.ts                 # P2: useProjects() hook + activeId in localStorage
+│   ├── state/vim.ts                      # P4: useSyncExternalStore-based store {mode, leaderActive, focused}; mirrors to window.__bsVim
 │   ├── hooks/useBdLive.ts                # P3: subscribes bd_changed:{repoPath} → debounced refetch
+│   ├── hooks/useVimNav.ts                # P4: global window keydown — Space leader (1s window), p/b/c/s/q bindings, j/k/h/l per-pane routing, Tab/Shift+Tab on board, Enter/o issue:open, gq quit combo, INPUT/TEXTAREA/.xterm/.ProseMirror/contentEditable bypass
 │   ├── types/issue.ts                    # bd Issue interface + ready/show/list/claim/setStatus/close/label/note helpers
 │   └── components/
 │       ├── IssueList.tsx                 # left pane: ALL READY (n) — bd ready --json
 │       ├── Terminal.tsx                  # collapsible 280px ↔ 24px, xterm.js bound to PTY
-│       ├── TabBar.tsx                    # P2/2.5: bufferline strip, ellipsis, scroll-into-view
+│       ├── TabBar.tsx                    # P2/2.5: bufferline strip, ellipsis, scroll-into-view; P4: diagonal slash separator via .bs-tab::after, active gets BOTH 2px --bs-blue top+bottom
 │       ├── ClaudeChat.tsx                # P2/2.5: per-project events, status dot, surfaces stderr+raw
 │       ├── Board.tsx                     # P3: 4-column drag-drop, optimistic UI + rollback toast
 │       ├── Column.tsx                    # P3: useDroppable
-│       └── Card.tsx                      # P3: useDraggable + priority pill + label chips
+│       ├── Card.tsx                      # P3 useDraggable + P4: 3px inset priority bar via boxShadow, --bs-card-bar custom prop for hover composition, 13px/500 title, drag rotate -2deg + var(--bs-shadow-card)
+│       ├── Statusline.tsx                # P4: 22px lualine — mode pill | path | branch | counts | spacer | clock | pending dot. Polls 5s + listens bd_changed:{repoPath}
+│       ├── Dashboard.tsx                 # P4: empty-state ANSI Shadow BEADS ASCII + tip table; rendered when no projects or no active selection
+│       └── WhichKey.tsx                  # P4: leader-overlay; subscribes useVim().leaderActive; centered modal, 5 hints (p/b/c/s/q)
 └── src-tauri/
     ├── tauri.conf.json
     ├── Cargo.toml + Cargo.lock           # +tauri-plugin-store (P2), +notify 8.2 macos_fsevent (P3)
     └── src/
-        ├── lib.rs                        # 23 commands registered, plugin-store + envloader init in run()
+        ├── lib.rs                        # 25 commands registered (P4: +bd_counts +bd_git_branch), plugin-store + envloader init in run()
         ├── main.rs
         ├── envloader.rs                  # P2.6: .env loader (parses KEY=value, set_var into process env)
         ├── binresolve.rs                 # P2.5: canonical-dir-first binary resolver
-        ├── bd.rs                         # P3: ready/show/list reads + claim/set_status/close/label/note writes; current_dir over -C
+        ├── bd.rs                         # P3: ready/show/list reads + claim/set_status/close/label/note writes; P4: +bd_git_branch (rev-parse --abbrev-ref HEAD; "(detached)"/"(no-git)" fallbacks) +bd_counts (BdCounts {ready,in_progress,blocked,closed}); current_dir over -C
         ├── pty.rs                        # pty_spawn, pty_write, pty_resize, pty_kill (portable-pty)
         ├── projects.rs                   # P2/2.5: scans ~/Code/, mints+persists session UUIDs, skips dirs with spaces
         ├── claude.rs                     # P2/2.5/2.6: per-project HashMap, namespaced events, ANTHROPIC_* forwarding, [claude_start] diag frame
