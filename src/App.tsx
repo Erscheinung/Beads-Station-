@@ -1,19 +1,37 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { IssueList } from './components/IssueList'
 import { Terminal } from './components/Terminal'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
 import { useProjects } from './state/projects'
+import { useVim } from './state/vim'
+import { useVimNav } from './hooks/useVimNav'
 
 export default function App() {
+  useVimNav()
+  const vim = useVim()
   const { projects, activeId, setActive, loaded } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
 
+  // <leader>p — cycle to the next project. Wraps at end. The custom
+  // event is dispatched by the global vim keymap; this keeps
+  // useVimNav decoupled from project state.
+  useEffect(() => {
+    const onCycle = () => {
+      if (projects.length === 0) return
+      const idx = projects.findIndex(p => p.id === activeId)
+      const next = projects[(idx + 1) % projects.length]
+      if (next) setActive(next.id)
+    }
+    window.addEventListener('project:cycle', onCycle)
+    return () => window.removeEventListener('project:cycle', onCycle)
+  }, [projects, activeId, setActive])
+
   if (loaded && projects.length === 0) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--fg)', opacity: 0.6, fontSize: 13 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--bs-fg)', opacity: 0.6, fontSize: 13 }}>
         No projects under ~/Code/
       </div>
     )
@@ -23,7 +41,7 @@ export default function App() {
     // First load before projects_list resolves — render the chrome so the
     // viewport doesn't flicker.
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--fg)', opacity: 0.4, fontSize: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--bs-fg)', opacity: 0.4, fontSize: 12 }}>
         loading projects…
       </div>
     )
@@ -43,14 +61,14 @@ export default function App() {
   const terminalHeight = terminalCollapsed ? 24 : 280
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1fr 280px', height: '100vh', gap: 1, background: 'var(--border)' }}>
-      <aside style={{ background: 'var(--bg)', gridRow: '1 / span 2', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', fontSize: 11, opacity: 0.7 }}>BEADS · ALL READY</div>
+    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1fr 280px', height: '100vh' }}>
+      <aside style={{ background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
+        <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--bs-border)', fontSize: 11, opacity: 0.7 }}>BEADS · ALL READY</div>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
         </div>
       </aside>
-      <main style={{ background: 'var(--bg)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <main style={{ background: 'var(--bs-bg)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <TabBar projects={projects} activeId={activeId} onSelect={setActive} />
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <div style={{ flex: 1, minHeight: 0 }}>
@@ -59,7 +77,7 @@ export default function App() {
           <div
             style={{
               height: terminalHeight,
-              borderTop: '1px solid var(--border)',
+              borderTop: '1px solid var(--bs-border)',
               display: 'flex',
               flexDirection: 'column',
               flexShrink: 0,
@@ -75,11 +93,11 @@ export default function App() {
                 alignItems: 'center',
                 gap: 8,
                 fontSize: 11,
-                color: 'var(--fg)',
+                color: 'var(--bs-fg)',
                 opacity: 0.7,
-                background: 'var(--bg-elev)',
+                background: 'var(--bs-bg-elev)',
                 border: 'none',
-                borderBottom: '1px solid var(--border)',
+                borderBottom: '1px solid var(--bs-border)',
                 fontFamily: 'inherit',
                 cursor: 'pointer',
                 textAlign: 'left',
@@ -97,7 +115,7 @@ export default function App() {
           </div>
         </div>
       </main>
-      <section style={{ background: 'var(--bg)', overflow: 'hidden' }}>
+      <section style={{ background: 'var(--bs-bg)', overflow: 'hidden' }}>
         <ClaudeChat
           key={active.id}
           projectId={active.id}

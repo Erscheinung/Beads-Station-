@@ -1,16 +1,82 @@
-:root { color-scheme: dark; --bg: #1f2335; --fg: #c0caf5; --bg-elev: #24283b; --border: #2e3349; --accent: #7aa2f7; }
+/*
+ * Tokyonight Storm tokens. Locked rule: --bs-magenta/--bs-purple is for syntax
+ * constructs only (priority pills, label chips, syntax highlighting). Never
+ * use as a primary surface, brand color, or gradient. Dominant accent stays
+ * --bs-blue.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces (translated from tokyonight_storm.lua) */
+  --bs-bg: #24283b;             /* storm bg */
+  --bs-bg-dark: #1f2335;        /* storm bg_dark — used as outer canvas / hairline gap fill */
+  --bs-bg-float: #1f2335;       /* storm bg_float */
+  --bs-bg-elev: #292e42;        /* storm bg_highlight — elevated surface */
+
+  /* Text */
+  --bs-fg: #c0caf5;             /* storm fg */
+  --bs-fg-muted: #a9b1d6;       /* storm fg_dark */
+  --bs-fg-faint: #565f89;       /* storm comment */
+
+  /* Borders / hairlines */
+  --bs-border: #2e3349;         /* storm fg_gutter brightened slightly */
+  --bs-border-faint: #1a1b26;   /* canvas color used between grid cells so 1px gap reads as hairline */
+
+  /* Syntax accents (tokyonight) */
+  --bs-blue:    #7aa2f7;
+  --bs-cyan:    #7dcfff;
+  --bs-magenta: #bb9af7;
+  --bs-purple:  #bb9af7;        /* alias of magenta — syntax accent only */
+  --bs-orange:  #ff9e64;
+  --bs-yellow:  #e0af68;
+  --bs-green:   #9ece6a;
+  --bs-red:     #f7768e;
+
+  /* Semantic */
+  --bs-accent: var(--bs-blue);
+
+  /* Hairline shadows — never glowing halos */
+  --bs-shadow-card:  0 1px 0 var(--bs-border);
+  --bs-shadow-modal: 0 1px 0 var(--bs-border), 0 8px 16px rgba(0, 0, 0, 0.35);
+
+  /* Legacy aliases — kept so existing component literals still resolve while
+     we migrate. Prefer the --bs-* tokens above for all new code. */
+  --bg: var(--bs-bg-dark);
+  --fg: var(--bs-fg);
+  --bg-elev: var(--bs-bg-elev);
+  --border: var(--bs-border);
+  --accent: var(--bs-blue);
+}
+
 html, body, #root { height: 100%; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--fg); font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 13px; }
-* { box-sizing: border-box; }
+
+/* JetBrains Mono everywhere in chrome. */
+html, body, button, input, textarea, select {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+}
+* { font-family: inherit; box-sizing: border-box; }
+
+body {
+  background: var(--bs-bg-dark);
+  color: var(--bs-fg);
+  font-size: 13px;
+}
+
+/* Outer 1px hairline grid utility — matches App.tsx outer grid (gap: 1px,
+   background: --bs-border-faint so the gap reads as a single-pixel rule). */
+.bs-grid-1px {
+  gap: 1px;
+  background: var(--bs-border-faint);
+}
 
 /* Bufferline-style tab strip — thin scrollbar, hover affordance for inactive tabs. */
-.bs-tabstrip { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.bs-tabstrip { scrollbar-width: thin; scrollbar-color: var(--bs-border) transparent; }
 .bs-tabstrip::-webkit-scrollbar { height: 4px; }
 .bs-tabstrip::-webkit-scrollbar-track { background: transparent; }
-.bs-tabstrip::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-.bs-tab:hover:not(.bs-tab--active) { background: color-mix(in srgb, var(--bg-elev) 50%, transparent); }
+.bs-tabstrip::-webkit-scrollbar-thumb { background: var(--bs-border); border-radius: 2px; }
+.bs-tab:hover:not(.bs-tab--active) { background: color-mix(in srgb, var(--bs-bg-elev) 50%, transparent); }
 
 /* Phase 3 board styles — tokyonight tokens only. */
 .bs-card { transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease; }
-.bs-card:hover { background: color-mix(in srgb, var(--bg-elev) 70%, var(--accent) 6%); }
+.bs-card:hover { background: color-mix(in srgb, var(--bs-bg-elev) 70%, var(--bs-blue) 6%); }
 .bs-card:active { cursor: grabbing; }

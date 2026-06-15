@@ -252,3 +252,56 @@ pub async fn bd_note(
     )
     .await
 }
+
+// ---------- Phase 4: statusline helpers ----------
+
+/// `git -C <repo_path> rev-parse --abbrev-ref HEAD` — returns
+/// the current branch name, or "(detached)" / "(no-git)" / "(unknown)"
+/// when the repo is detached / not a git repo / fails to spawn.
+#[tauri::command]
+pub async fn bd_git_branch(repo_path: String) -> Result<String, String> {
+    // Use std::process not tokio — tiny one-shot, doesn't need async I/O
+    // but we keep the signature async for tauri compat. Use tokio::process.
+    let output = tokio::process::Command::new("git")
+        .arg("-C").arg(&repo_path)
+        .arg("rev-parse").arg("--abbrev-ref").arg("HEAD")
+        .output()
+        .await
+        .map_err(|e| format!("git spawn failed: {e}"))?;
+    if !output.status.success() {
+        return Ok("(no-git)".into());
+    }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if s == "HEAD" { Ok("(detached)".into()) } else { Ok(s) }
+}
+
+/// Returns ready/in_progress/blocked/closed counts for the repo so the
+/// statusline can render `ready=N blocked=M closed=K` in one round-trip.
+#[derive(serde::Serialize)]
+pub struct BdCounts {
+    pub ready: usize,
+    pub in_progress: usize,
+    pub blocked: usize,
+    pub closed: usize,
+}
+
+#[tauri::command]
+pub async fn bd_counts(repo_path: String) -> Result<BdCounts, String> {
+    let ready = bd_ready(repo_path.clone()).await?;
+    let all = bd_list(repo_path.clone(), None).await?;
+    let mut c = BdCounts {
+        ready: ready.len(),
+        in_progress: 0,
+        blocked: 0,
+        closed: 0,
+    };
+    for i in &all {
+        match i.status.as_str() {
+            "in_progress" => c.in_progress += 1,
+            "blocked" => c.blocked += 1,
+            "closed" => c.closed += 1,
+            _ => {}
+        }
+    }
+    Ok(c)
+}

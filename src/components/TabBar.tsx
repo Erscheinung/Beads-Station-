@@ -10,9 +10,9 @@ interface TabBarProps {
 /**
  * Bufferline-style horizontal tab strip. Tokyonight palette only — no new
  * colors. Each tab is capped at 160px and truncates with an ellipsis. Active
- * tab gets a solid bottom-border in --accent, raised --bg-elev background and
- * brightened foreground; inactive tabs sit muted with a transparent bottom
- * border so the active swap doesn't shift layout. Overflow scrolls
+ * tab gets a solid bottom-border in --bs-blue, raised --bs-bg-elev background
+ * and brightened foreground; inactive tabs sit muted with a transparent
+ * bottom border so the active swap doesn't shift layout. Overflow scrolls
  * horizontally with a thin custom scrollbar, and the active tab is scrolled
  * into view on selection change.
  */
@@ -35,8 +35,8 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
         flexDirection: 'row',
         alignItems: 'stretch',
         height: 32,
-        background: 'var(--bg)',
-        borderBottom: '1px solid var(--border)',
+        background: 'var(--bs-bg)',
+        borderBottom: '1px solid var(--bs-border)',
         overflowX: 'auto',
         overflowY: 'hidden',
         flexShrink: 0,
@@ -61,13 +61,13 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
               padding: '0 12px',
               height: '100%',
               maxWidth: 160,
-              background: active ? 'var(--bg-elev)' : 'transparent',
-              color: 'var(--fg)',
+              background: active ? 'var(--bs-bg-elev)' : 'transparent',
+              color: 'var(--bs-fg)',
               opacity: active ? 1 : 0.55,
               fontWeight: active ? 500 : 400,
               border: 'none',
-              borderRight: '1px solid var(--border)',
-              borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
+              borderRight: '1px solid var(--bs-border)',
+              borderBottom: active ? '2px solid var(--bs-blue)' : '2px solid transparent',
               fontFamily: 'inherit',
               fontSize: 12,
               cursor: 'pointer',
@@ -96,10 +96,10 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
                 borderRadius: '50%',
                 background: p.hasBeads
                   ? active
-                    ? 'var(--accent)'
-                    : 'var(--border)'
+                    ? 'var(--bs-blue)'
+                    : 'var(--bs-border)'
                   : 'transparent',
-                border: p.hasBeads ? 'none' : '1px solid var(--border)',
+                border: p.hasBeads ? 'none' : '1px solid var(--bs-border)',
               }}
             />
           </button>
