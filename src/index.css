@@ -124,3 +124,17 @@ body {
 .bs-tree-row--group { color: var(--bs-fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .bs-tree-row--active { background: var(--bs-bg-elev); box-shadow: inset 1px 0 0 var(--bs-blue); }
 .bs-tree-row:hover:not(.bs-tree-row--active) { background: color-mix(in srgb, var(--bs-bg-elev) 50%, transparent); }
+
+/* Indent guides — absolute children of each row at left=(d+0.5)*16px. Default
+ * --bs-border-faint; --bs-border on rows whose ancestor at depth d is on the
+ * cursor row's path (the lit-on-active-branch rule). The 1px hairline runs the
+ * full row height so adjacent rows visually stitch into a continuous guide. */
+.bs-tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--bs-border-faint); pointer-events: none; }
+.bs-tree-guide--lit { background: var(--bs-border); }
+
+/* Tree container + leaf row spans. Mostly inherits row defaults; the id
+ * fades to --bs-fg-faint and the title flexes to fill remaining width. */
+.bs-tree { padding: 4px 0; }
+.bs-tree-grouplabel { color: inherit; }
+.bs-tree-id { color: var(--bs-fg-faint); font-size: 11px; }
+.bs-tree-title { color: var(--bs-fg); font-size: 12px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
