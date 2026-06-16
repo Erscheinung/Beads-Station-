@@ -8,21 +8,7 @@
 // Sort:     priority asc, then id asc (stable).
 
 import type { Issue } from '../types/issue';
-
-// ---------------------------------------------------------------------------
-// Worker-1 stub for projectLabelFor. Worker 3 will land the real impl in
-// src/state/projectLabel.ts and replace this import. Keep the algorithm
-// consistent with the brief so the tree shapes the same way under both.
-// ---------------------------------------------------------------------------
-function projectLabelFor(issue: Issue): string {
-  // TODO(Worker3): replace with real impl in src/state/projectLabel.ts.
-  const labels = issue.labels ?? [];
-  const project = labels.find((l) => /^[A-Z]/.test(l));
-  if (project) return project;
-  const m = issue.title.match(/^\s*\[([^\]]+)\]/);
-  if (m) return m[1].trim();
-  return '(unlabeled)';
-}
+import { projectLabelFor } from './projectLabel';
 
 // ---------------------------------------------------------------------------
 // Types

@@ -156,6 +156,14 @@ export function IssueTree({
 // and the status-dot color rules; here we only stamp the carrier class names.
 function IssueRowContent({ issue }: { issue: Issue }) {
   const typeKey = issue.issue_type || 'unknown';
+  // Downstream-ring indicator: open issues that block other open work get a
+  // 2px yellow ring around their status dot so reviewers can see at a glance
+  // that something is parked behind them.
+  const showDownstreamRing =
+    issue.status === 'open' && (issue.dependent_count ?? 0) > 0;
+  const dotStyle = showDownstreamRing
+    ? { boxShadow: '0 0 0 2px var(--bs-yellow)' }
+    : undefined;
   return (
     <>
       <span
@@ -166,6 +174,7 @@ function IssueRowContent({ issue }: { issue: Issue }) {
       <span className="bs-tree-title">{issue.title}</span>
       <span
         className={`bs-status-dot bs-status--${issue.status}`}
+        style={dotStyle}
         aria-label={`status: ${issue.status}`}
       />
     </>
