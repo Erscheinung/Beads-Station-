@@ -8,11 +8,17 @@
 //
 // Bindings (no leader):
 //   j / k             — cursor down/up in the focused pane
-//   h / l             — cursor left/right when board is focused
+//   h / l             — cursor left/right when board is focused;
+//                       collapse / expand row when sidebar is focused
 //   Tab / Shift+Tab   — column nav when board is focused
-//   Enter / o         — open issue (focused !== chat)
+//   Enter / o         — open issue (focused !== chat); when sidebar is
+//                       focused, dispatches sidebar:cmd { open }
 //   /                 — focus the terminal
 //   gq (within 700ms) — quit, with confirm
+//   gg (within 250ms) — first row in sidebar
+//   G                 — last row in sidebar
+//   zR (within 250ms) — expand all rows in sidebar
+//   zM (within 250ms) — collapse all rows in sidebar
 //
 // Leader (Space, then within 1s):
 //   p — project:cycle
@@ -29,6 +35,7 @@ import { setFocused, setLeaderActive } from '../state/vim'
 
 const LEADER_TIMEOUT_MS = 1000
 const GQ_COMBO_TIMEOUT_MS = 700
+const COMBO_TIMEOUT_MS = 250
 
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!target || !(target instanceof Element)) return false
@@ -71,10 +78,19 @@ function focusXterm(): void {
   if (ta) ta.focus()
 }
 
+function dispatchSidebarCmd(cmd: string): void {
+  window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd } }))
+}
+
 export function useVimNav(): void {
   useEffect(() => {
     let leaderTimer: number | null = null
-    let lastGTime = 0
+    // Pending leading key for multi-char combos (g, z). The 'g' family
+    // splits between gq (quit, 700ms window) and gg (first row, 250ms);
+    // we track the timestamp and the leading char and route on the
+    // second key. 'z' is the leader for zR / zM (expand/collapse all).
+    let pendingKey: 'g' | 'z' | null = null
+    let pendingAt = 0
 
     const onKeyDown = (event: KeyboardEvent) => {
       // Bypass — typing into an editable surface; we have no business
@@ -142,17 +158,71 @@ export function useVimNav(): void {
         return
       }
 
-      // ----- gq combo (g then q within 700ms) -----
+      // ----- Combo second-key resolution (g* / z*) -----
+      // We resolve the second key BEFORE letting the regular bindings
+      // fire so e.g. 'q' after 'g' doesn't get swallowed by anything
+      // else, and 'g' after 'g' doesn't re-arm and then immediately
+      // fall through to a no-op.
+      if (pendingKey !== null && !hasMod) {
+        const now = Date.now()
+        const window_ms = pendingKey === 'g' && key === 'q' ? GQ_COMBO_TIMEOUT_MS : COMBO_TIMEOUT_MS
+        if (now - pendingAt <= window_ms) {
+          // gq — quit
+          if (pendingKey === 'g' && key === 'q') {
+            pendingKey = null
+            event.preventDefault()
+            void tryQuit()
+            return
+          }
+          // gg — first row in sidebar
+          if (pendingKey === 'g' && key === 'g' && focused === 'sidebar') {
+            pendingKey = null
+            dispatchSidebarCmd('first')
+            event.preventDefault()
+            return
+          }
+          // zR / zM — expand-all / collapse-all in sidebar.
+          // R and M are uppercase; that means Shift was held, which
+          // means the regular hasMod check would have rejected. So we
+          // accept Shift specifically for the second key of a z-combo.
+          // Re-check with the original event (which still has shiftKey).
+          if (pendingKey === 'z' && focused === 'sidebar') {
+            // Allow only Shift modifier; reject ctrl/meta/alt.
+            if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+              if (key === 'R') {
+                pendingKey = null
+                dispatchSidebarCmd('expandAll')
+                event.preventDefault()
+                return
+              }
+              if (key === 'M') {
+                pendingKey = null
+                dispatchSidebarCmd('collapseAll')
+                event.preventDefault()
+                return
+              }
+            }
+          }
+        }
+        // Fall through — combo expired or didn't match. Clear the
+        // pending state and let the regular bindings handle this key.
+        pendingKey = null
+      }
+
+      // ----- Arm combos -----
       if (key === 'g' && !hasMod) {
-        lastGTime = Date.now()
-        // Don't preventDefault — 'g' alone isn't bound and we want the
-        // page to remain inert on it. It's harmless either way.
+        pendingKey = 'g'
+        pendingAt = Date.now()
+        // Don't preventDefault — 'g' alone isn't bound and the page is
+        // inert on it.
         return
       }
-      if (key === 'q' && !hasMod && Date.now() - lastGTime <= GQ_COMBO_TIMEOUT_MS) {
-        lastGTime = 0
-        event.preventDefault()
-        void tryQuit()
+      if (key === 'z' && !hasMod) {
+        // 'z' is only meaningful as a sidebar prefix today. Arm it
+        // unconditionally (cheaper than gating); the second-key check
+        // gates on focus.
+        pendingKey = 'z'
+        pendingAt = Date.now()
         return
       }
 
@@ -162,6 +232,15 @@ export function useVimNav(): void {
         window.dispatchEvent(
           new CustomEvent('board:cursor', { detail: { delta, axis: 'horizontal' } }),
         )
+        event.preventDefault()
+        return
+      }
+
+      // ----- Shift+G on sidebar -> last row -----
+      // 'G' arrives with shiftKey:true; that's the only modifier we
+      // accept. We check this BEFORE the global hasMod gate below.
+      if (key === 'G' && focused === 'sidebar' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        dispatchSidebarCmd('last')
         event.preventDefault()
         return
       }
@@ -192,19 +271,30 @@ export function useVimNav(): void {
         }
       }
 
-      // ----- h / l on board -----
-      if ((key === 'h' || key === 'l') && focused === 'board') {
-        const delta = key === 'l' ? 1 : -1
-        window.dispatchEvent(
-          new CustomEvent('board:cursor', { detail: { delta, axis: 'horizontal' } }),
-        )
-        event.preventDefault()
-        return
+      // ----- h / l -----
+      if (key === 'h' || key === 'l') {
+        if (focused === 'sidebar') {
+          dispatchSidebarCmd(key === 'h' ? 'collapse' : 'expand')
+          event.preventDefault()
+          return
+        }
+        if (focused === 'board') {
+          const delta = key === 'l' ? 1 : -1
+          window.dispatchEvent(
+            new CustomEvent('board:cursor', { detail: { delta, axis: 'horizontal' } }),
+          )
+          event.preventDefault()
+          return
+        }
       }
 
-      // ----- Enter / o -> open issue -----
+      // ----- Enter / o -> open -----
       if ((key === 'Enter' || key === 'o') && focused !== 'chat') {
-        window.dispatchEvent(new CustomEvent('issue:open'))
+        if (focused === 'sidebar') {
+          dispatchSidebarCmd('open')
+        } else {
+          window.dispatchEvent(new CustomEvent('issue:open'))
+        }
         event.preventDefault()
         return
       }

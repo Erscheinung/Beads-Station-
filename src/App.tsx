@@ -58,7 +58,6 @@ export default function App() {
   return (
     <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
       <aside style={{ background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
-        <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--bs-border)', fontSize: 11, opacity: 0.7 }}>BEADS · ALL READY</div>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
         </div>
