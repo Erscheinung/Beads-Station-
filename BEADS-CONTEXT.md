@@ -55,48 +55,52 @@ The original `Code-8m7.*` IDs were lost in the data-loss event. The recreated ID
 | 2.6: Gateway .env loader for Claude | `Code-guz` | **closed** (`704ec6d`, wired in `ba9fe3c`) | — |
 | 3: Jira board + drag-drop | `Code-ky4.3` | **closed** (`1f05080..ba9fe3c`) | 4, 7, 8 |
 | 4: LazyVim aesthetic + functional ports | `Code-ky4.4` | **closed** (`2491630..135447c`) | 5 |
-| 5: Issue tree + indent guides | `Code-ky4.5` | open, **ready** | 6, 9 |
-| 6: Claude tool surface + cmux-style status | `Code-ky4.6` | open, blocked by 5 | — |
+| 5: Issue tree + indent guides | `Code-ky4.5` | **closed** (`4233249..c32b35c`) | 6, 9 |
+| 6: Claude tool surface + cmux-style status | `Code-ky4.6` | open, **ready** | — |
 | 7: Obsidian daily updates | `Code-ky4.7` | open, **ready** | — |
 | 8: First-run migration of `[Project]` brackets | `Code-ky4.8` | open, **ready** | — |
-| 9: Command palette + vim keybindings | `Code-ky4.9` | open, blocked by 5 | 10 |
+| 9: Command palette + vim keybindings | `Code-ky4.9` | open, **ready** | 10 |
 | 10: Polish + signed dmg | `Code-ky4.10` | open, blocked by 9 | — |
 
 Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria of any phase.
 
 ---
 
-## What's already on disk (through Phase 4)
+## What's already on disk (through Phase 5)
 
 ```
 ~/Code/Beads-Station/
-├── artifacts/Beads-Station.dmg          # 3.92 MB (was 3.8 in P3), aarch64, identifier ai.beads-station.desktop, unsigned
+├── artifacts/Beads-Station.dmg          # 3.89 MB (P5 — codicons font added 125 KB), aarch64, identifier ai.beads-station.desktop, unsigned
 ├── BUILD.md                              # phase 1 build report (still current — toolchain unchanged)
 ├── BEADS-CONTEXT.md                      # this file (canonical)
 ├── .env                                  # GITIGNORED — ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL for Gateway
 ├── .env.example                          # public template documenting the contract
 ├── rust-toolchain.toml                   # pinned to 1.90.0
-├── package.json + node_modules/...       # +@tauri-apps/plugin-store (P2), +@dnd-kit/core +@dnd-kit/sortable (P3); P4: predev+prebuild → audit-emoji
+├── package.json + node_modules/...       # +@tauri-apps/plugin-store (P2), +@dnd-kit/core +@dnd-kit/sortable (P3); P4: predev+prebuild → audit-emoji; P5: +@vscode/codicons (icon font, MIT)
 ├── scripts/audit-emoji.mjs               # P4: emoji-glyph gate. fails build on U+1F300-1FAFF / U+2600-27BF / U+2300-23FF / U+1F000-1F2FF in JSX text. ▼ U+25BC and › U+203A explicitly allowed.
 ├── src/
-│   ├── App.tsx                           # P4: useVimNav() at top, project:cycle listener, sidebar focus boxShadow, gridTemplateRows '1fr 280px 22px', <Statusline> + <Dashboard> + <WhichKey> mounted
-│   ├── main.tsx + index.css              # P4: full tokyonight Storm token set as --bs-* (bg/bg-dark/bg-float/bg-elev/fg/fg-muted/fg-faint/border/border-faint/blue/cyan/magenta/purple/orange/yellow/green/red/accent/shadow-card/shadow-modal). Legacy --bg/--fg/--bg-elev/--border/--accent kept as aliases. JetBrains Mono enforced via html/body/button/input/textarea/select rule + * { font-family: inherit }. .bs-grid-1px utility, .bs-tab::after diagonal slash separator, .bs-card hover composes priority bar + hairline shadow.
+│   ├── App.tsx                           # P4: useVimNav() at top, project:cycle listener, sidebar focus boxShadow, gridTemplateRows '1fr 280px 22px', <Statusline> + <Dashboard> + <WhichKey> mounted. P5: inline 'BEADS · ALL READY' header lifted (IssueList renders its own).
+│   ├── main.tsx + index.css              # P4: full tokyonight Storm token set as --bs-*. JetBrains Mono enforced. .bs-grid-1px utility, .bs-tab::after diagonal slash separator, .bs-card hover composes priority bar + hairline shadow. P5: '/* Phase 5 — issue tree */' block — bs-issuetype--{epic|feature|task|bug|chore|unknown} codicon glyphs (rocket eb44 magenta, sparkle ec10 blue, checklist eab3 cyan, bug eaaf red, tools eb6d, circle-outline eabc); bs-status-dot 6px + bs-status--{open|in_progress|blocked|closed|deferred}; bs-tree-chevron + --expanded/--leaf rotation; bs-tree-row + --group/--active; bs-tree-guide (1px abs --bs-border-faint default, --lit --bs-border on cursor row's ancestor path); bs-tree-{,grouplabel,id,title} container/leaf-span styles. main.tsx imports '@vscode/codicons/dist/codicon.css' once.
 │   ├── state/projects.ts                 # P2: useProjects() hook + activeId in localStorage
 │   ├── state/vim.ts                      # P4: useSyncExternalStore-based store {mode, leaderActive, focused}; mirrors to window.__bsVim
+│   ├── state/tree.ts                     # P5: pure tree shaping (NO React). buildTree(issues) → roots grouped project→status→parent; flattenVisible(roots, expanded) DFS; firstIssueId; idToPath. DEV-only inline smoke tests at bottom.
+│   ├── state/projectLabel.ts             # P5: projectLabelFor(issue) — first PascalCase label, else bracketed-title prefix, else '(unlabeled)'.
 │   ├── hooks/useBdLive.ts                # P3: subscribes bd_changed:{repoPath} → debounced refetch
-│   ├── hooks/useVimNav.ts                # P4: global window keydown — Space leader (1s window), p/b/c/s/q bindings, j/k/h/l per-pane routing, Tab/Shift+Tab on board, Enter/o issue:open, gq quit combo, INPUT/TEXTAREA/.xterm/.ProseMirror/contentEditable bypass
+│   ├── hooks/useVimNav.ts                # P4: global window keydown — Space leader (1s window), p/b/c/s/q bindings, j/k/h/l per-pane routing, Tab/Shift+Tab on board, Enter/o issue:open, gq quit combo, INPUT/TEXTAREA/.xterm/.ProseMirror/contentEditable bypass. P5: extends with sidebar-gated h/l (collapse/expand current row), zR (expandAll), zM (collapseAll), gg (first row), G (last row); j/k now dispatch sidebar:cursor {detail.delta}; Enter/o on sidebar dispatch sidebar:cmd {cmd:'open'}; gq combo coexists with new gg combo (routes on second char).
+│   ├── hooks/useTreeNav.ts               # P5: useTreeNav(issues) → {rows, cursorIndex, expanded, move, toggle, expandToward, open, expandAll, collapseAll, jumpTo}. Default-expanded set: project + status group ids; parent issues collapsed. open() emits 'issue:open' window event.
 │   ├── types/issue.ts                    # bd Issue interface + ready/show/list/claim/setStatus/close/label/note helpers
 │   └── components/
-│       ├── IssueList.tsx                 # left pane: ALL READY (n) — bd ready --json
+│       ├── IssueList.tsx                 # P5 REWRITE: thin wrapper. bdList(repoPath, null) (was bdReady) → useBdLive refetch on bd_changed → buildTree → useTreeNav → renders 'BEADS · {label} ({count})' header + <IssueTree>. Subscribes 'sidebar:cursor' (delta) and 'sidebar:cmd' (cmd: expand|collapse|open|expandAll|collapseAll|first|last) window events.
+│       ├── IssueTree.tsx                 # P5: visual primitive. renders rows from flatRows; bs-tree-row[--group|--active] divs (position:relative, height:22px); per-depth absolute bs-tree-guide divs at left=(d+0.5)*16px (--lit when ancestor on cursor path); bs-tree-chevron[--expanded|--leaf] codicon-chevron-right; bs-issuetype + bs-status-dot per issue; downstream-ring (yellow boxShadow) on open issues with dependent_count>0. single-click selects, double-click opens, Enter on group toggles.
 │       ├── Terminal.tsx                  # collapsible 280px ↔ 24px, xterm.js bound to PTY
-│       ├── TabBar.tsx                    # P2/2.5: bufferline strip, ellipsis, scroll-into-view; P4: diagonal slash separator via .bs-tab::after, active gets BOTH 2px --bs-blue top+bottom
+│       ├── TabBar.tsx                    # P2/2.5: bufferline strip; P4: diagonal slash separator, active gets 2px --bs-blue top+bottom
 │       ├── ClaudeChat.tsx                # P2/2.5: per-project events, status dot, surfaces stderr+raw
 │       ├── Board.tsx                     # P3: 4-column drag-drop, optimistic UI + rollback toast
 │       ├── Column.tsx                    # P3: useDroppable
-│       ├── Card.tsx                      # P3 useDraggable + P4: 3px inset priority bar via boxShadow, --bs-card-bar custom prop for hover composition, 13px/500 title, drag rotate -2deg + var(--bs-shadow-card)
-│       ├── Statusline.tsx                # P4: 22px lualine — mode pill | path | branch | counts | spacer | clock | pending dot. Polls 5s + listens bd_changed:{repoPath}
-│       ├── Dashboard.tsx                 # P4: empty-state ANSI Shadow BEADS ASCII + tip table; rendered when no projects or no active selection
-│       └── WhichKey.tsx                  # P4: leader-overlay; subscribes useVim().leaderActive; centered modal, 5 hints (p/b/c/s/q)
+│       ├── Card.tsx                      # P3 useDraggable + P4: 3px inset priority bar, --bs-card-bar custom prop, 13px/500 title, drag rotate -2deg + var(--bs-shadow-card)
+│       ├── Statusline.tsx                # P4: 22px lualine — mode pill | path | branch | counts | spacer | clock | pending dot
+│       ├── Dashboard.tsx                 # P4: empty-state ANSI Shadow BEADS ASCII + tip table
+│       └── WhichKey.tsx                  # P4: leader-overlay; subscribes useVim().leaderActive
 └── src-tauri/
     ├── tauri.conf.json
     ├── Cargo.toml + Cargo.lock           # +tauri-plugin-store (P2), +notify 8.2 macos_fsevent (P3)
