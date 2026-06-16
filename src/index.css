@@ -99,3 +99,28 @@ body {
 .bs-card { transition: background 120ms ease, transform 120ms ease, box-shadow 120ms ease; }
 .bs-card:hover { box-shadow: inset 3px 0 0 var(--bs-card-bar, var(--bs-blue)), 0 1px 0 var(--bs-border); }
 .bs-card:active { cursor: grabbing; }
+
+/* Phase 5 — issue tree */
+.bs-issuetype { display:inline-block; width:14px; text-align:center; font-family:"codicon"; font-size:13px; color: var(--bs-fg-faint); margin-right: 6px; }
+.bs-issuetype--epic::before    { content: "\eb44"; color: var(--bs-magenta); }
+.bs-issuetype--feature::before { content: "\ec10"; color: var(--bs-blue); }
+.bs-issuetype--task::before    { content: "\eab3"; color: var(--bs-cyan); }
+.bs-issuetype--bug::before     { content: "\eaaf"; color: var(--bs-red); }
+.bs-issuetype--chore::before   { content: "\eb6d"; color: var(--bs-fg-faint); }
+.bs-issuetype--unknown::before { content: "\eabc"; color: var(--bs-fg-faint); }
+
+.bs-status-dot { display:inline-block; width:6px; height:6px; border-radius:3px; border:1px solid transparent; flex-shrink:0; }
+.bs-status--open               { background: var(--bs-blue);    border-color: color-mix(in srgb, var(--bs-blue) 60%, var(--bs-bg)); }
+.bs-status--in_progress        { background: var(--bs-yellow);  border-color: color-mix(in srgb, var(--bs-yellow) 60%, var(--bs-bg)); }
+.bs-status--blocked            { background: var(--bs-red);     border-color: color-mix(in srgb, var(--bs-red) 60%, var(--bs-bg)); }
+.bs-status--closed             { background: var(--bs-fg-faint);border-color: transparent; opacity: 0.6; }
+.bs-status--deferred           { background: transparent;       border-color: var(--bs-fg-faint); }
+
+.bs-tree-chevron { display:inline-block; width:12px; text-align:center; transition: transform 80ms ease; color: var(--bs-fg-faint); cursor: pointer; }
+.bs-tree-chevron--expanded { transform: rotate(90deg); }
+.bs-tree-chevron--leaf     { visibility: hidden; }
+
+.bs-tree-row { position: relative; display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 12px; line-height: 18px; height: 22px; cursor: pointer; }
+.bs-tree-row--group { color: var(--bs-fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.bs-tree-row--active { background: var(--bs-bg-elev); box-shadow: inset 1px 0 0 var(--bs-blue); }
+.bs-tree-row:hover:not(.bs-tree-row--active) { background: color-mix(in srgb, var(--bs-bg-elev) 50%, transparent); }
