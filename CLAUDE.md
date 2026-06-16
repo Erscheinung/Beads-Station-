@@ -41,7 +41,7 @@ Always run bd commands from inside this repo (`~/Code/Beads-Station`). Do NOT us
 
 ### Architecture
 
-Issue data lives in a local Dolt DB at `.beads/embeddeddolt/`. The DB itself is gitignored via `.beads/.gitignore` (the bd installer wrote that file — don't fight it). `.beads/issues.jsonl` is also gitignored at the repo level.
+Issue data lives in a local Dolt DB at `.beads/embeddeddolt/`. The DB itself is gitignored via `.beads/.gitignore` (the bd installer wrote that file — don't fight it). `.beads/issues.jsonl` is the passive export and **is** committed alongside code changes so the export tracks reality.
 
 Phase tickets actually live in `~/.beads-planning/.beads/` — bd here uses the federated-repo model, with `repos.primary: "."` and `repos.additional: [~/.beads-planning]` configured in `.beads/config.yaml`. That means `bd ready` from this repo sees both local issues and the planning repo's tickets. Most Beads-Station phase work is in the planning repo (it survives a delete of this repo's `.beads/`).
 
