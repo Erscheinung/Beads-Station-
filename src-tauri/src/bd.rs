@@ -305,3 +305,39 @@ pub async fn bd_counts(repo_path: String) -> Result<BdCounts, String> {
     }
     Ok(c)
 }
+
+// ---------- Phase 6: bd prime injector ----------
+
+/// `bd prime` — runs the bd workflow primer subcommand under
+/// `current_dir(repo_path)` and returns its stdout. The FE injects this
+/// text as a `<system-reminder>...</system-reminder>` block at the top of
+/// every Claude session so the agent loads the project's beads workflow
+/// rules before its first user turn.
+///
+/// 5-second hard timeout: bd prime should be a near-instant local read;
+/// if it stalls (Dolt lock contention, missing binary, etc.) we'd rather
+/// surface a non-fatal error to the FE than block ClaudeChat mount.
+#[tauri::command]
+pub async fn bd_prime(repo_path: String) -> Result<String, String> {
+    let bd_path = crate::binresolve::resolve_bin("bd")?;
+    let mut cmd = tokio::process::Command::new(&bd_path);
+    cmd.current_dir(&repo_path);
+    cmd.arg("prime");
+
+    let fut = cmd.output();
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
+        .await
+        .map_err(|_| "bd prime timed out after 5s".to_string())?
+        .map_err(|e| format!("failed to spawn bd prime: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "bd prime exited with {}: {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
