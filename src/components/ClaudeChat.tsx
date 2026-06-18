@@ -1,6 +1,33 @@
-import { useEffect, useState } from 'react'
+// Phase 6 — ClaudeChat with tool-surface drawer + inline approval cards +
+// cost meter + bd-prime system-reminder injection.
+//
+// The pre-Phase-6 ClaudeChat was a flat per-project stream-json bridge with
+// a status dot and a stderr pass-through. Phase 6 deepens it without
+// changing the prop surface (App.tsx still mounts <ClaudeChat key={id}
+// projectId/cwd/sessionId/permissionMode/>):
+//
+//   * On mount we ask the backend for `bd prime` stdout, prepend it as a
+//     synthetic system-reminder frame (locally), and ALSO send it to the
+//     model as a user-role message so the running session sees the rules.
+//   * Hook frames (type==='hook' OR subtype matches pre/post_tool_use) get
+//     partitioned out of the main scroll into a collapsible <ToolDrawer>.
+//   * Permission-request frames render an inline <ApprovalCard> at their
+//     position in the scroll. Approve/Deny buttons fire the new
+//     claude_approve/claude_deny commands; keyboard shortcut a/d resolves
+//     the topmost pending card when the chat pane is focused.
+//   * <CostMeter projectId={projectId}/> sits between the scroll body and
+//     the input form, accumulating tokens + USD as result frames land.
+//   * The 24px header keeps a stable slot at #bs-claude-header-right that
+//     <PermissionModePicker> portals into.
+
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { ToolDrawer, frameToHookEvent, type HookEvent } from './ToolDrawer'
+import { ApprovalCard, type ApprovalStatus } from './ApprovalCard'
+import { CostMeter } from './CostMeter'
+import { accumulate as accumulateUsage } from '../state/claudeUsage'
+import { useVim } from '../state/vim'
 
 type Frame = any
 
@@ -8,27 +35,106 @@ interface ClaudeChatProps {
   projectId: string
   cwd: string
   sessionId: string
+  permissionMode?: 'acceptEdits' | 'default' | 'plan'
 }
 
 type StartStatus = 'pending' | 'started' | 'frame' | 'failed'
 
-export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
+interface PendingApproval {
+  requestId: string
+  toolName: string
+  input: unknown
+  status: ApprovalStatus
+}
+
+// Pull a request_id out of a permission_request frame — defensively across
+// the three plausible shapes the Claude CLI might use:
+//   1. { type: 'permission_request', request_id, tool_name, input }
+//   2. { subtype: 'permission_request', request_id, tool_name, input }
+//   3. { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } }
+// Returns null if no permission shape can be extracted, in which case the
+// frame falls through to the default render path.
+function extractApproval(frame: any): PendingApproval | null {
+  if (!frame || typeof frame !== 'object') return null
+  if (frame.type === 'permission_request' || frame.subtype === 'permission_request') {
+    const requestId =
+      typeof frame.request_id === 'string'
+        ? frame.request_id
+        : typeof frame.id === 'string'
+        ? frame.id
+        : null
+    if (!requestId) return null
+    return {
+      requestId,
+      toolName: String(frame.tool_name ?? frame.tool ?? 'unknown'),
+      input: frame.input ?? frame.tool_input ?? null,
+      status: 'pending',
+    }
+  }
+  // Tool-use shape — only treat as a request when permission mode is default
+  // and the parent transcript is going to gate on it. We surface the card
+  // unconditionally; if the CLI proceeds without waiting, the user can
+  // still resolve it manually and the BE round-trip is a no-op.
+  if (frame.type === 'assistant' && frame.message?.content) {
+    const parts = Array.isArray(frame.message.content) ? frame.message.content : []
+    const tu = parts.find((p: any) => p?.type === 'tool_use' && typeof p?.id === 'string')
+    if (tu) {
+      return {
+        requestId: tu.id,
+        toolName: String(tu.name ?? 'unknown'),
+        input: tu.input ?? null,
+        status: 'pending',
+      }
+    }
+  }
+  return null
+}
+
+function isHookFrame(frame: any): boolean {
+  if (!frame || typeof frame !== 'object') return false
+  if (frame.type === 'hook') return true
+  if (frame.type === 'system') {
+    return frame.subtype === 'hook_started' || frame.subtype === 'hook_response'
+  }
+  if (frame.subtype === 'pre_tool_use' || frame.subtype === 'post_tool_use') return true
+  return false
+}
+
+function isEditableFocus(): boolean {
+  const el = document.activeElement
+  if (!el || !(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  if (el.isContentEditable) return true
+  return false
+}
+
+export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: ClaudeChatProps) {
   const [frames, setFrames] = useState<Frame[]>([])
+  const [hookEvents, setHookEvents] = useState<HookEvent[]>([])
+  const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalStatus>>({})
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<StartStatus>('pending')
   const [stderrCount, setStderrCount] = useState(0)
+  const vim = useVim()
+  const inputRef = useRef<HTMLInputElement | null>(null)
+
+  // Resolve approvals to refs so the global keydown listener doesn't capture
+  // a stale snapshot. This is the same trick useVimNav uses for vim state.
+  const framesRef = useRef<Frame[]>([])
+  framesRef.current = frames
+  const approvalsRef = useRef<Record<string, ApprovalStatus>>({})
+  approvalsRef.current = approvalStates
 
   useEffect(() => {
-    console.info('[ClaudeChat] starting', { projectId, cwd, sessionId })
+    console.info('[ClaudeChat] starting', { projectId, cwd, sessionId, permissionMode })
     let offEvent: (() => void) | null = null
     let offRaw: (() => void) | null = null
     let offStderr: (() => void) | null = null
     let cancelled = false
     ;(async () => {
       let sid = sessionId
-      // Defensive: post-W1 every Project carries a session id, but if it's
-      // missing we fall back to projects_get to read the auto-minted UUID.
       if (!sid) {
         try {
           const proj = await invoke<{ claudeSessionId: string }>('projects_get', { id: projectId })
@@ -39,7 +145,12 @@ export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
       }
       if (cancelled) return
       try {
-        await invoke('claude_start', { projectId, cwd, sessionId: sid })
+        await invoke('claude_start', {
+          projectId,
+          cwd,
+          sessionId: sid,
+          permissionMode: permissionMode ?? 'acceptEdits',
+        })
         if (!cancelled) setStatus('started')
       } catch (e) {
         console.error('claude_start failed', e)
@@ -50,8 +161,38 @@ export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
         }
       }
       if (cancelled) return
+
+      // Phase 6 — fetch bd prime and inject as a system-reminder. Non-fatal
+      // on error so a missing/broken bd doesn't keep the chat from working.
+      try {
+        const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
+        if (!cancelled && bdPrimeOut && bdPrimeOut.trim()) {
+          const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
+          setFrames(f => [...f, { _kind: 'system-reminder', text: bdPrimeOut }])
+          // Send the reminder text as a user message so the running session
+          // sees the rules. Wrapped in <system-reminder> tags by convention.
+          try {
+            await invoke('claude_send', { projectId, text: reminder })
+          } catch (e) {
+            console.warn('[ClaudeChat] bd-prime claude_send failed (non-fatal)', e)
+          }
+        }
+      } catch (e) {
+        console.warn('[ClaudeChat] bd_prime failed (non-fatal)', e)
+      }
+
       offEvent = await listen<Frame>(`claude_event:${projectId}`, e => {
-        setFrames(f => [...f, e.payload])
+        const frame = e.payload
+        // Always feed the usage accumulator; it ignores frames it can't use.
+        accumulateUsage(projectId, frame)
+        if (isHookFrame(frame)) {
+          const hev = frameToHookEvent(frame)
+          if (hev) setHookEvents(h => [...h, hev])
+          // Don't push hook frames into the main scroll.
+          setStatus(s => (s === 'failed' ? s : 'frame'))
+          return
+        }
+        setFrames(f => [...f, frame])
         setStatus(s => (s === 'failed' ? s : 'frame'))
       })
       offRaw = await listen<string>(`claude_event_raw:${projectId}`, e => {
@@ -69,7 +210,51 @@ export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
       offStderr?.()
       // Phase 6 manages claude lifecycles — do NOT auto-kill on unmount.
     }
-  }, [projectId, cwd, sessionId])
+  }, [projectId, cwd, sessionId, permissionMode])
+
+  // Compute the topmost-pending approval for the keyboard shortcut. Walk
+  // frames in order; the first frame that yields an extractable approval
+  // whose state is 'pending' wins.
+  const topmostPending = useMemo<PendingApproval | null>(() => {
+    for (const f of frames) {
+      const a = extractApproval(f)
+      if (!a) continue
+      const state = approvalStates[a.requestId] ?? 'pending'
+      if (state === 'pending') return a
+    }
+    return null
+  }, [frames, approvalStates])
+
+  // Keyboard shortcut: a / d when chat is focused and a pending approval
+  // exists. Bypass when an editable element (the input field) has focus.
+  useEffect(() => {
+    if (vim.focused !== 'chat') return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isEditableFocus()) return
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+      const key = event.key
+      if (key !== 'a' && key !== 'd') return
+      // Read the latest frames+states from refs (closure may be stale).
+      let pending: PendingApproval | null = null
+      for (const f of framesRef.current) {
+        const a = extractApproval(f)
+        if (!a) continue
+        const state = approvalsRef.current[a.requestId] ?? 'pending'
+        if (state === 'pending') { pending = a; break }
+      }
+      if (!pending) return
+      event.preventDefault()
+      const decide = key === 'a' ? 'approved' : 'denied'
+      const cmd = key === 'a' ? 'claude_approve' : 'claude_deny'
+      setApprovalStates(s => ({ ...s, [pending!.requestId]: decide }))
+      invoke(cmd, { projectId, requestId: pending.requestId }).catch(err => {
+        console.error('[ClaudeChat] approval rpc failed', err)
+        setApprovalStates(s => ({ ...s, [pending!.requestId]: 'pending' }))
+      })
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [vim.focused, projectId])
 
   const send = async () => {
     const text = input.trim()
@@ -80,38 +265,77 @@ export function ClaudeChat({ projectId, cwd, sessionId }: ClaudeChatProps) {
     try { await invoke('claude_send', { projectId, text }) } finally { setBusy(false) }
   }
 
-  // Status dot: red if start failed or any stderr seen; yellow if started but
-  // no assistant frame yet; green once a frame has arrived. These are
-  // semantic state markers (syntax-construct usage of tokyonight tokens).
+  // Status dot — same logic as pre-Phase-6.
   const dotColor =
     status === 'failed' || stderrCount > 0 ? 'var(--bs-red)'
     : status === 'frame' ? 'var(--bs-green)'
     : 'var(--bs-yellow)'
 
+  const onResolveApproval = (requestId: string, next: 'approved' | 'denied') => {
+    setApprovalStates(s => ({ ...s, [requestId]: next }))
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', borderTop: '1px solid var(--bs-border)' }}>
       <div style={{
         height: 24, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8,
-        fontSize: 11, color: 'var(--bs-fg)', opacity: 0.7,
+        fontSize: 11, color: 'var(--bs-fg)', opacity: 0.85,
         borderBottom: '1px solid var(--bs-border)', background: 'var(--bs-bg-elev)',
       }}>
         <span style={{
           display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
           background: dotColor, flexShrink: 0,
         }} />
-        <span>claude · {projectId}</span>
+        <span style={{ opacity: 0.7 }}>claude · {projectId}</span>
+        {/* Stable slot for PermissionModePicker (Worker 3 portals into this id). */}
+        <span id="bs-claude-header-right" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }} />
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: 12, fontSize: 12, lineHeight: 1.5 }}>
+
+      <ToolDrawer projectId={projectId} events={hookEvents} />
+
+      <div className="bs-chat-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12, fontSize: 12, lineHeight: 1.5 }}>
         {frames.map((f, i) => {
+          if (f?._kind === 'system-reminder') {
+            return (
+              <div key={i} className="bs-system-reminder">
+                {String(f.text ?? '')}
+              </div>
+            )
+          }
+          // Approval card — render in place if this frame yields one.
+          const a = extractApproval(f)
+          if (a) {
+            const state = approvalStates[a.requestId] ?? 'pending'
+            return (
+              <ApprovalCard
+                key={`approval-${i}-${a.requestId}`}
+                projectId={projectId}
+                requestId={a.requestId}
+                toolName={a.toolName}
+                input={a.input}
+                status={state}
+                onResolve={next => onResolveApproval(a.requestId, next)}
+              />
+            )
+          }
           const style: React.CSSProperties = { margin: '0 0 8px 0', whiteSpace: 'pre-wrap' }
           if (f?._kind === 'stderr') { style.color = 'var(--bs-red)'; style.opacity = 0.8 }
           else if (f?._kind === 'raw') { style.color = 'var(--bs-yellow)'; style.opacity = 0.8 }
           return <pre key={i} style={style}>{renderFrame(f)}</pre>
         })}
       </div>
+
+      <CostMeter projectId={projectId} />
+
       <form onSubmit={e => { e.preventDefault(); send() }} style={{ display: 'flex', gap: 8, padding: 8, borderTop: '1px solid var(--bs-border)' }}>
-        <input value={input} onChange={e => setInput(e.target.value)} placeholder="ask claude" disabled={busy}
-          style={{ flex: 1, background: 'var(--bs-bg-elev)', color: 'var(--bs-fg)', border: '1px solid var(--bs-border)', padding: '6px 8px', fontFamily: 'inherit' }} />
+        <input
+          ref={inputRef}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          placeholder={topmostPending ? `pending: approve(a)/deny(d) ${topmostPending.toolName}` : 'ask claude'}
+          disabled={busy}
+          style={{ flex: 1, background: 'var(--bs-bg-elev)', color: 'var(--bs-fg)', border: '1px solid var(--bs-border)', padding: '6px 8px', fontFamily: 'inherit' }}
+        />
         <button type="submit" disabled={busy} style={{ background: 'var(--bs-blue)', color: 'var(--bs-bg-dark)', border: 'none', padding: '6px 12px', fontFamily: 'inherit', cursor: 'pointer' }}>send</button>
       </form>
     </div>

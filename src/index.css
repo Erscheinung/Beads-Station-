@@ -138,3 +138,61 @@ body {
 .bs-tree-grouplabel { color: inherit; }
 .bs-tree-id { color: var(--bs-fg-faint); font-size: 11px; }
 .bs-tree-title { color: var(--bs-fg); font-size: 12px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Phase 6 — claude tool surface */
+
+/* Hook events drawer above the main chat scroll. Default closed; toggles
+ * via a 22px header. Body scrolls to 240px max so a noisy session can't
+ * push the assistant transcript off-screen. */
+.bs-claude-drawer        { border: 1px solid var(--bs-border); background: var(--bs-bg-elev); margin: 8px 12px; border-radius: 2px; }
+.bs-claude-drawer-header { display: flex; align-items: center; gap: 8px; padding: 4px 10px; height: 22px; cursor: pointer; font-size: 11px; color: var(--bs-fg-muted); user-select: none; }
+.bs-claude-drawer-body   { max-height: 240px; overflow-y: auto; border-top: 1px solid var(--bs-border); }
+.bs-claude-drawer-row    { padding: 2px 10px; height: 18px; line-height: 18px; font-size: 11px; color: var(--bs-fg-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; }
+
+/* Inline approval card — pending state. Resolved state collapses to a
+ * single muted line via the .bs-approval--resolved modifier. */
+.bs-approval                  { border: 1px solid var(--bs-border); background: var(--bs-bg-elev); margin: 8px 0; padding: 8px; }
+.bs-approval--resolved        { padding: 4px 8px; font-size: 11px; }
+.bs-approval-tool             { font-size: 12px; color: var(--bs-fg); margin-bottom: 4px; }
+.bs-approval-input            { background: var(--bs-bg-dark); padding: 6px; max-height: 120px; overflow: auto; font-size: 11px; color: var(--bs-fg-muted); margin: 0; white-space: pre-wrap; word-break: break-all; }
+.bs-approval-actions          { display: flex; gap: 8px; margin-top: 6px; }
+.bs-approval-btn              { background: var(--bs-bg); color: var(--bs-fg); border: 1px solid var(--bs-border); padding: 4px 10px; font-family: inherit; font-size: 11px; cursor: pointer; }
+.bs-approval-btn:disabled     { opacity: 0.5; cursor: not-allowed; }
+.bs-approval-btn--approve     { border-color: var(--bs-blue); color: var(--bs-blue); }
+.bs-approval-btn--deny        { border-color: var(--bs-red);  color: var(--bs-red);  }
+
+/* Cost & token meter — pinned 22px strip between the chat scroll and the
+ * input form. JetBrains Mono throughout; labels muted, values full-fg. */
+.bs-cost-meter         { height: 22px; padding: 0 12px; display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--bs-border); background: var(--bs-bg-elev); font-size: 11px; color: var(--bs-fg-muted); font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; }
+.bs-cost-meter strong  { color: var(--bs-fg); font-weight: 500; }
+
+/* Synthetic system-reminder frame — the bd-prime injection rendered at
+ * the top of the transcript with a 2px --bs-blue left-border so a reader
+ * can tell at a glance that it's inserted by Beads Station, not by the
+ * model. Muted text color so it sits below assistant frames in hierarchy. */
+.bs-system-reminder { border-left: 2px solid var(--bs-blue); padding: 6px 10px; margin: 0 0 8px 0; color: var(--bs-fg-muted); font-size: 11px; line-height: 1.5; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: color-mix(in srgb, var(--bs-blue) 6%, transparent); }
+
+/* Permission-mode picker — segmented control mounted in the ClaudeChat
+ * header right slot. Three pills, 1px hairlines, no glow. Active pill
+ * sits flat (--bs-bg) while inactive pills float on --bs-bg-elev. */
+.bs-permmode             { display: inline-flex; height: 18px; border: 1px solid var(--bs-border); border-radius: 2px; overflow: hidden; }
+.bs-permmode-seg         { padding: 0 8px; display: inline-flex; align-items: center; background: var(--bs-bg-elev); color: var(--bs-fg-muted); font-size: 10px; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; cursor: pointer; border: none; border-right: 1px solid var(--bs-border); }
+.bs-permmode-seg:last-child  { border-right: none; }
+.bs-permmode-seg--active     { background: var(--bs-bg); color: var(--bs-fg); }
+
+/* Morning-confirmation modal — backdrop + centered card. Tokyonight bg-float,
+ * 1px hairline, no glassmorphism. Buttons inherit the bs-approval-btn shape. */
+.bs-modal-backdrop      { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.bs-modal-card          { background: var(--bs-bg-float); border: 1px solid var(--bs-border); padding: 24px; min-width: 360px; max-width: 480px; box-shadow: var(--bs-shadow-modal); }
+.bs-modal-title         { font-size: 14px; color: var(--bs-fg); margin: 0 0 8px 0; font-weight: 500; }
+.bs-modal-sub           { font-size: 11px; color: var(--bs-fg-muted); margin: 0 0 16px 0; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; word-break: break-all; }
+.bs-modal-actions       { display: flex; gap: 8px; justify-content: flex-end; }
+.bs-modal-btn           { padding: 6px 14px; border: 1px solid var(--bs-border); font-family: inherit; font-size: 12px; cursor: pointer; }
+.bs-modal-btn--primary  { background: var(--bs-blue); color: var(--bs-bg-dark); border-color: var(--bs-blue); }
+.bs-modal-btn--ghost    { background: var(--bs-bg-elev); color: var(--bs-fg); }
+
+/* Tab status dot — second 6px circle to the right of the existing
+ * hasBeads dot, no border, sized to read at glance. visibility:hidden
+ * (not display:none) when idle to preserve horizontal spacing. */
+.bs-tab-status { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-left: 2px; }
+.bs-tab-status--idle { visibility: hidden; }
