@@ -1,10 +1,37 @@
 import { useEffect, useRef } from 'react'
 import type { Project } from '../state/projects'
+import { useClaudeStatus, type ClaudeStatus } from '../state/claudeStatus'
 
 interface TabBarProps {
   projects: Project[]
   activeId: string | null
   onSelect: (id: string) => void
+}
+
+// Phase 6 — per-tab Claude status dot. Mounted as a child component so each
+// tab subscribes to claudeStatus independently (one useSyncExternalStore per
+// projectId; no top-level subscribe storm). Idle uses visibility:hidden so
+// the slot keeps its width and the existing hasBeads dot doesn't shift when
+// a session starts.
+function statusColor(s: ClaudeStatus): string {
+  switch (s) {
+    case 'running':        return 'var(--bs-green)'
+    case 'awaiting-input': return 'var(--bs-yellow)'
+    case 'error':          return 'var(--bs-red)'
+    default:               return 'transparent'
+  }
+}
+
+function TabStatusDot({ projectId }: { projectId: string }) {
+  const status = useClaudeStatus(projectId)
+  const className = status === 'idle' ? 'bs-tab-status bs-tab-status--idle' : 'bs-tab-status'
+  return (
+    <span
+      aria-label={`claude status: ${status}`}
+      className={className}
+      style={{ background: statusColor(status) }}
+    />
+  )
 }
 
 /**
@@ -103,6 +130,7 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
                 border: p.hasBeads ? 'none' : '1px solid var(--bs-border)',
               }}
             />
+            <TabStatusDot projectId={p.id} />
           </button>
         )
       })}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { Terminal } from './components/Terminal'
 import { ClaudeChat } from './components/ClaudeChat'
@@ -7,16 +8,29 @@ import { Board } from './components/Board'
 import { Statusline } from './components/Statusline'
 import { Dashboard } from './components/Dashboard'
 import { WhichKey } from './components/WhichKey'
+import { MorningConfirm, shouldConfirm, recordConfirmation } from './components/MorningConfirm'
 import { useProjects } from './state/projects'
 import { useVim } from './state/vim'
 import { useVimNav } from './hooks/useVimNav'
+import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 
 export default function App() {
   useVimNav()
   const vim = useVim()
-  const { projects, activeId, setActive, loaded } = useProjects()
+  const { projects, activeId, setActive, refresh, loaded } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
+  // Phase 6 — track which projectId the user has already confirmed THIS day.
+  // Persisted state lives in localStorage (see MorningConfirm.tsx); the
+  // in-memory copy here is a per-render shortcut so React knows when to
+  // unmount the modal and mount ClaudeChat. We initialize lazily based on
+  // the persisted today's-YMD on mount.
+  const [confirmedFor, setConfirmedFor] = useState<Set<string>>(() => new Set())
+
+  // Phase 6 — pull permissionMode for the active project so we can thread
+  // it into ClaudeChat. The hook is called unconditionally with a stable
+  // string; when there's no active project we pass a stub id and ignore.
+  const permissionApi = usePermissionMode(active?.id ?? '__none__')
 
   // <leader>p — cycle to the next project. Wraps at end. The custom
   // event is dispatched by the global vim keymap; this keeps
@@ -42,18 +56,40 @@ export default function App() {
     return <Dashboard />
   }
 
-  // Layout strategy (Phase 3):
-  //   Sidebar (320px, full height) — IssueList ALL READY.
-  //   Main pane top — TabBar.
-  //   Main pane center — Board (1fr).
-  //   Main pane bottom — Terminal (280px, collapsible).
-  //   Bottom strip (full width) — ClaudeChat.
-  //
-  // We keep the existing 2-row outer grid. The main cell is now an internal
-  // vertical flex: TabBar | Board (1fr) | Terminal (280px or 24px header
-  // when collapsed). This keeps Phase-2 chrome and just swaps Terminal-only
-  // content for Board+Terminal stack.
   const terminalHeight = terminalCollapsed ? 24 : 280
+
+  // Phase 6 — show MorningConfirm when this project hasn't been confirmed
+  // today AND we haven't already confirmed it this session. The session-
+  // tracked Set lets a project re-confirm if the user toggles back to it
+  // intentionally without re-prompting.
+  const needsConfirm = !confirmedFor.has(active.id) && shouldConfirm(active.id)
+
+  const handleResume = () => {
+    recordConfirmation(active.id)
+    setConfirmedFor(s => {
+      const next = new Set(s)
+      next.add(active.id)
+      return next
+    })
+  }
+
+  const handleNew = async () => {
+    try {
+      await invoke('projects_set_claude_session', {
+        id: active.id,
+        sessionId: crypto.randomUUID(),
+      })
+      await refresh()
+    } catch (e) {
+      console.error('[App] projects_set_claude_session failed', e)
+    }
+    recordConfirmation(active.id)
+    setConfirmedFor(s => {
+      const next = new Set(s)
+      next.add(active.id)
+      return next
+    })
+  }
 
   return (
     <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
@@ -110,17 +146,33 @@ export default function App() {
         </div>
       </main>
       <section style={{ background: 'var(--bs-bg)', overflow: 'hidden' }}>
-        <ClaudeChat
-          key={active.id}
-          projectId={active.id}
-          cwd={active.path}
-          sessionId={active.claudeSessionId}
-        />
+        {needsConfirm ? (
+          <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--bs-fg-muted)', fontSize: 11 }}>
+            awaiting confirmation
+          </div>
+        ) : (
+          <ClaudeChat
+            key={active.id}
+            projectId={active.id}
+            cwd={active.path}
+            sessionId={active.claudeSessionId}
+            permissionMode={permissionApi.mode}
+          />
+        )}
       </section>
       <div style={{ gridColumn: '1 / span 2' }}>
         <Statusline repoPath={active.path} projectPath={active.path} />
       </div>
       <WhichKey />
+      {!needsConfirm && <PermissionModePicker projectId={active.id} />}
+      {needsConfirm && (
+        <MorningConfirm
+          projectId={active.id}
+          sessionId={active.claudeSessionId}
+          onResume={handleResume}
+          onNew={handleNew}
+        />
+      )}
     </div>
   )
 }
