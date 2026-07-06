@@ -10,6 +10,7 @@ mod claude;
 mod envloader;
 mod projects;
 mod pty;
+mod telemetry;
 mod watcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,6 +27,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .setup(|app| {
+            telemetry::start(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             bd::bd_add_label,
             bd::bd_claim,

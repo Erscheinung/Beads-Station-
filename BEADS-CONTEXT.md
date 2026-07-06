@@ -61,6 +61,7 @@ The original `Code-8m7.*` IDs were lost in the data-loss event. The recreated ID
 | 8: First-run migration of `[Project]` brackets | `Code-ky4.8` | open, **ready** | — |
 | 9: Command palette + vim keybindings | `Code-ky4.9` | open, **ready** | 10 |
 | 10: Polish + signed dmg | `Code-ky4.10` | open, blocked by 9 | — |
+| R0: Stabilization + telemetry baseline (reboot phase 1 of 12) | `Code-mua` | **closed** (shipped 2026-07-06) | R1 |
 
 Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria of any phase.
 
@@ -79,8 +80,9 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 ├── package.json + node_modules/...       # +@tauri-apps/plugin-store (P2), +@dnd-kit/core +@dnd-kit/sortable (P3); P4: predev+prebuild → audit-emoji; P5: +@vscode/codicons (icon font, MIT)
 ├── scripts/audit-emoji.mjs               # P4: emoji-glyph gate. fails build on U+1F300-1FAFF / U+2600-27BF / U+2300-23FF / U+1F000-1F2FF in JSX text. ▼ U+25BC and › U+203A explicitly allowed.
 ├── src/
-│   ├── App.tsx                           # P4: useVimNav() at top, project:cycle listener, sidebar focus boxShadow, gridTemplateRows '1fr 280px 22px', <Statusline> + <Dashboard> + <WhichKey> mounted. P5: inline 'BEADS · ALL READY' header lifted (IssueList renders its own). P6: usePermissionMode(active.id) + thread permissionMode into ClaudeChat; needsConfirm gate (shouldConfirm + confirmedFor session set) suspends ClaudeChat behind a centered <MorningConfirm/> modal until Resume/New; <PermissionModePicker/> mounted globally and portals into the chat header slot.
-│   ├── main.tsx + index.css              # P4: full tokyonight Storm token set as --bs-*. JetBrains Mono enforced. .bs-grid-1px utility, .bs-tab::after diagonal slash separator, .bs-card hover composes priority bar + hairline shadow. P5: '/* Phase 5 — issue tree */' block — bs-issuetype--{epic|feature|task|bug|chore|unknown} codicon glyphs (rocket eb44 magenta, sparkle ec10 blue, checklist eab3 cyan, bug eaaf red, tools eb6d, circle-outline eabc); bs-status-dot 6px + bs-status--{open|in_progress|blocked|closed|deferred}; bs-tree-chevron + --expanded/--leaf rotation; bs-tree-row + --group/--active; bs-tree-guide (1px abs --bs-border-faint default, --lit --bs-border on cursor row's ancestor path); bs-tree-{,grouplabel,id,title} container/leaf-span styles. main.tsx imports '@vscode/codicons/dist/codicon.css' once. P6: '/* Phase 6 — claude tool surface */' block — bs-claude-drawer/header/body/row (collapsible hook-events drawer above chat scroll), bs-approval (+ --resolved variant) + bs-approval-tool/input/actions/btn (+ --approve --deny color modifiers), bs-cost-meter (22px JetBrains Mono strip, --bs-fg-muted labels + --bs-fg <strong>), bs-system-reminder (2px --bs-blue left-border + 6%-tint background), bs-permmode segmented control 3-pill picker, bs-modal-backdrop + bs-modal-card + bs-modal-title/sub/actions/btn (+ --primary --ghost), bs-tab-status 6px circle (+ --idle visibility:hidden).
+│   ├── App.tsx                           # P4: useVimNav() at top, project:cycle listener, sidebar focus boxShadow, gridTemplateRows '1fr 280px 22px', <Statusline> + <Dashboard> + <WhichKey> mounted. P5: inline 'BEADS · ALL READY' header lifted (IssueList renders its own). P6: usePermissionMode(active.id) + thread permissionMode into ClaudeChat; needsConfirm gate (shouldConfirm + confirmedFor session set) suspends ClaudeChat behind a centered <MorningConfirm/> modal until Resume/New; <PermissionModePicker/> mounted globally and portals into the chat header slot. R0: {import.meta.env.DEV && <DebugOverlay/>} mounted immediately after <WhichKey/> — Vite const-folds the branch out of production bundles.
+│   ├── main.tsx + index.css              # P4: full tokyonight Storm token set as --bs-*. JetBrains Mono enforced. .bs-grid-1px utility, .bs-tab::after diagonal slash separator, .bs-card hover composes priority bar + hairline shadow. P5: '/* Phase 5 — issue tree */' block — bs-issuetype--{epic|feature|task|bug|chore|unknown} codicon glyphs (rocket eb44 magenta, sparkle ec10 blue, checklist eab3 cyan, bug eaaf red, tools eb6d, circle-outline eabc); bs-status-dot 6px + bs-status--{open|in_progress|blocked|closed|deferred}; bs-tree-chevron + --expanded/--leaf rotation; bs-tree-row + --group/--active; bs-tree-guide (1px abs --bs-border-faint default, --lit --bs-border on cursor row's ancestor path); bs-tree-{,grouplabel,id,title} container/leaf-span styles. main.tsx imports '@vscode/codicons/dist/codicon.css' once. P6: '/* Phase 6 — claude tool surface */' block — bs-claude-drawer/header/body/row (collapsible hook-events drawer above chat scroll), bs-approval (+ --resolved variant) + bs-approval-tool/input/actions/btn (+ --approve --deny color modifiers), bs-cost-meter (22px JetBrains Mono strip, --bs-fg-muted labels + --bs-fg <strong>), bs-system-reminder (2px --bs-blue left-border + 6%-tint background), bs-permmode segmented control 3-pill picker, bs-modal-backdrop + bs-modal-card + bs-modal-title/sub/actions/btn (+ --primary --ghost), bs-tab-status 6px circle (+ --idle visibility:hidden). R0: '/* R0 — debug overlay (dev only) */' block — bs-debug-overlay (fixed bottom-right, min-width 220px, opacity 0.9, z-index 9999) + bs-debug-header/body/row/row--sub/key/unit/empty/hint (JetBrains Mono 11px, --bs-bg-dark background, --bs-border hairline). CSS rule set ships in every build; JS ref is dev-only via App.tsx guard.
+│   ├── lib/listenerRegistry.ts           # R0: safeListen<T>(channel, handler, options) wrapper over @tauri-apps/api/event listen(). Buckets channel by first-colon prefix (claude_event:{pid} → 'claude_event'). Increments/decrements a per-bucket count map ONLY in import.meta.env.DEV; production returns raw listen() unchanged. Exports getListenerCounts() snapshot + subscribeListenerCounts(cb) for useSyncExternalStore. Idempotent unlisten via `released` flag + Math.max(0, …) defense-in-depth. Not yet adopted by call sites — R1 migrates the 5 raw listen() sites.
 │   ├── state/projects.ts                 # P2: useProjects() hook + activeId in localStorage
 │   ├── state/vim.ts                      # P4: useSyncExternalStore-based store {mode, leaderActive, focused}; mirrors to window.__bsVim
 │   ├── state/tree.ts                     # P5: pure tree shaping (NO React). buildTree(issues) → roots grouped project→status→parent; flattenVisible(roots, expanded) DFS; firstIssueId; idToPath. DEV-only inline smoke tests at bottom.
@@ -108,11 +110,13 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 │       ├── Statusline.tsx                # P4: 22px lualine — mode pill | path | branch | counts | spacer | clock | pending dot
 │       ├── Dashboard.tsx                 # P4: empty-state ANSI Shadow BEADS ASCII + tip table
 │       └── WhichKey.tsx                  # P4: leader-overlay; subscribes useVim().leaderActive
+│       ├── DebugOverlay.tsx              # R0: fixed bottom-right dev-only panel. F12 toggles (INPUT/TEXTAREA/contentEditable bypass). Subscribes 'debug_stats' via raw listen() only while visible (unopened overlay costs 0 listeners) with cancelled-flag async race guard. Renders rss MB + tokio_tasks + total listeners + per-bucket sub-rows from useSyncExternalStore over listenerRegistry. Mounted in App.tsx behind import.meta.env.DEV.
 └── src-tauri/
     ├── tauri.conf.json
-    ├── Cargo.toml + Cargo.lock           # +tauri-plugin-store (P2), +notify 8.2 macos_fsevent (P3)
+    ├── Cargo.toml + Cargo.lock           # +tauri-plugin-store (P2), +notify 8.2 macos_fsevent (P3), +sysinfo 0.38 default-features=false features=["system"] (R0 — pinned 0.38 not 0.39 because 0.39.5 needs rustc 1.95 and toolchain is 1.90; API surface is identical for our use)
     └── src/
-        ├── lib.rs                        # 29 commands registered (P4: +bd_counts +bd_git_branch; P6: +bd_prime +claude_approve +claude_deny +claude_set_permission_mode), plugin-store + envloader init in run()
+        ├── lib.rs                        # 29 commands registered (P4: +bd_counts +bd_git_branch; P6: +bd_prime +claude_approve +claude_deny +claude_set_permission_mode), plugin-store + envloader init in run(). R0: added `mod telemetry;` (alphabetized between pty and watcher) + a `.setup(|app| { telemetry::start(app.handle().clone()); Ok(()) })` closure between plugin(store) and invoke_handler — first .setup() in this project. No new commands registered.
+        ├── telemetry.rs                  # R0: 1s tokio::time::interval sampler (MissedTickBehavior::Skip) — cfg(debug_assertions) only; release-build start() is a no-op. Emits bare 'debug_stats' event with DebugStats {rss_mb: u64, tokio_tasks: usize, sampled_at_ms: u128}. RSS via sysinfo::System::refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_memory()); process.memory() bytes / (1024*1024). tokio_tasks via tokio::runtime::Handle::current().metrics().num_alive_tasks() — stable, no tokio_unstable cfg. Spawns via tauri::async_runtime::spawn (NOT bare tokio::spawn — .setup() runs outside a live runtime context; bare tokio::spawn panics with "there is no reactor running"; the tauri wrapper routes onto the runtime tauri owns).
         ├── main.rs
         ├── envloader.rs                  # P2.6: .env loader (parses KEY=value, set_var into process env)
         ├── binresolve.rs                 # P2.5: canonical-dir-first binary resolver
@@ -139,6 +143,39 @@ Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria 
 **Phase 2 lifted:** target project path and per-project Claude session UUID are now caller-supplied. Each project gets a UUID auto-minted on first scan and persisted via `tauri-plugin-store` to `~/Library/Application Support/ai.beads-station.desktop/projects.json` (or wherever `app.store("projects.json")` resolves on macOS).
 
 **Phase 2 events are namespaced:** `claude_event:{projectId}`, `claude_event_raw:{projectId}`, `claude_stderr:{projectId}`. Anything still listening on the bare `claude_event` name will silently miss frames.
+
+---
+
+## Reboot baseline (R0)
+
+Debug-build main-process RSS captured 2026-07-06 via `ps -o rss=` against `target/debug/beads-station`. Sampled after `npm run tauri dev` boot completed and the WKWebView + JS runtime had settled. No project opened, no Claude session started, no bd operations run.
+
+| Sample | RSS | Notes |
+|---|---|---|
+| Cold-start (t=0, immediately after webview settled) | **125,680 KB (122.7 MB)** | Debug build, dev mode. Includes vite HMR client + full source maps. |
+| 5-min idle | 125,680 KB (122.7 MB) | Flat. No drift. |
+| 10-min idle | **125,712 KB (122.8 MB)** | +32 KB drift over 10 min (0.03%). Steady-state confirmed. |
+| Post 20-frame Claude session | **pending** | Requires user-driven Claude session. Deferred to R1 first-run — R1 opens with this measurement as gate condition. Follow-up: `Code-*` R0.1 to be filed if R1 forgets. |
+
+**tokio_tasks (num_alive_tasks) baseline:** not captured — requires opening the F12 overlay in the running app, which is user-driven. R1 will read this from the overlay during its first project-switch cycle. Sanity floor: at cold start, expect ~4 (tauri runtime workers + 1 sampler). Under an idle open project: +1 for watcher (`watcher.rs:108`); once a Claude session is started, +2 for claude stdout/stderr readers (`claude.rs:194, 248`).
+
+**Listener-channel prefix baseline:** the JS-side `listenerRegistry` (`src/lib/listenerRegistry.ts`) reports only channels wrapped via `safeListen()`. On 2026-07-06, **zero call sites use `safeListen`** — the overlay's listeners sub-rows will read empty and show the string `no tracked channels — call sites still on raw listen()`. R1 migrates the five raw sites in one go (`bd_changed`, `claude_event`, `claude_status`, `claude_stderr`, `pty_data`+`pty_exit` = 6 channels, 5 files). At that point the overlay will populate with 5 prefix buckets and R1's leak-hunt verification ("listener counts return to baseline within 500ms of unmount") becomes measurable.
+
+**Interpretation.** 122 MB is a debug-build number and includes vite HMR + Tauri devtools bridges — the release-build cold RSS from a signed dmg will be materially lower (P6 dmg is 4.12 MB on disk; runtime footprint TBD in R4 soak). The zero-idle-drift is the useful signal: it establishes the "nothing should grow while idle" contract R2 (bounded collections) and R4 (soak) will assert against. Under load, the four documented leak classes (ClaudeChat IIFE, Terminal PTY, claudeStatus subscription, double-`useBdLive`) are expected to push RSS monotonically upward — that curve is what R1 must eliminate.
+
+**How to sample yourself.**
+
+```bash
+# 1. Boot dev (blocks — leave running)
+cd ~/Code/Beads-Station && npm run tauri dev &
+
+# 2. After Tauri window appears, sample RSS from another shell:
+ps ax -o rss=,command= | grep 'target/debug/beads-station' | grep -v grep
+
+# 3. Alternatively, open the app → press F12 → read overlay.
+#    RSS = the `rss` row. tokio_tasks = the `tokio tasks` row.
+#    Listener counts = the `· <prefix>` sub-rows (empty until R1).
+```
 
 ---
 

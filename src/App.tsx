@@ -8,6 +8,7 @@ import { Board } from './components/Board'
 import { Statusline } from './components/Statusline'
 import { Dashboard } from './components/Dashboard'
 import { WhichKey } from './components/WhichKey'
+import { DebugOverlay } from './components/DebugOverlay'
 import { MorningConfirm, shouldConfirm, recordConfirmation } from './components/MorningConfirm'
 import { useProjects } from './state/projects'
 import { useVim } from './state/vim'
@@ -164,6 +165,7 @@ export default function App() {
         <Statusline repoPath={active.path} projectPath={active.path} />
       </div>
       <WhichKey />
+      {import.meta.env.DEV && <DebugOverlay />}
       {!needsConfirm && <PermissionModePicker projectId={active.id} />}
       {needsConfirm && (
         <MorningConfirm
