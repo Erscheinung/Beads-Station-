@@ -63,6 +63,8 @@ The original `Code-8m7.*` IDs were lost in the data-loss event. The recreated ID
 | 10: Polish + signed dmg | `Code-ky4.10` | open, blocked by 9 | — |
 | R0: Stabilization + telemetry baseline (reboot phase 1 of 12) | `Code-mua` | **closed** (shipped 2026-07-06) | R1 |
 | R1: Async-cleanup helper + eliminate 4 known leaks (reboot phase 2 of 12) | `Code-5hs` | **closed** (shipped 2026-07-07) | R2 |
+| R2: Bounded collections + IssueTree virtualization (reboot phase 3 of 12) | `Code-3w2` | **closed** (shipped 2026-07-08) | R3 |
+| R3: bd surface hardening + crash-free bd view (reboot phase 4 of 12) | `Code-992` | **closed** (shipped 2026-07-09) | R4 |
 
 Run `bd -C ~/Code show Code-ky4.<N>` for full description / acceptance criteria of any phase.
 
@@ -301,6 +303,66 @@ These are the R0-baseline follow-ups the overlay was built for; the code is corr
 The bar per §10 is "measurably better and documented," not "perfect": the DFS-per-keystroke cost is eliminated by construction (ancestorPath precompute + Set-lit + virtualized DOM), and the caps bound memory by construction. The live Profiler/RSS curves are the outstanding proof, filed here rather than blocking the phase.
 
 **Follow-ups:** none opened (no virtualizer breakage, no <16ms miss observed in code review). The Profiler-fixture + RSS-soak measurement rolls into R4 (leak-hunt soak week), which already owns the live-app measurement harness.
+
+---
+
+## R3 shipped (2026-07-09) — bd surface hardening + crash-free bd view
+
+**Issue:** `Code-992` (closed). Reboot phase 4 of 12, Pillar "bd surface hardening + crash-free bd view". Depends on R1 (`Code-5hs`) + R2 (`Code-3w2`).
+
+**What shipped.** Every `bd_*` type contract is now correct, every invoke failure surfaces as a toast instead of a silent no-op / uncaught rejection, `bd_counts` runs concurrent, drag rollback can't clobber a concurrent refetch, and the "bd view crash" is root-caused + fixed (it was never a bd-binary crash).
+
+### Type-contract diff table (every `bd_*` command)
+
+| command | Rust sig | TS wrapper sends | matched? | fix |
+|---|---|---|---|---|
+| `bd_ready` | `repo_path: String` | `{ repoPath }` | ✓ | — |
+| `bd_show` | `repo_path: String, id: String` | `{ repoPath, id }` | ✓ | — |
+| `bd_list` | `repo_path: String, status_filter: Option<String>` | `{ repoPath, statusFilter: x ?? null }` | ✓ | — (already Option) |
+| `bd_claim` | `repo_path: String, id: String` | `{ repoPath, id }` | ✓ | — |
+| `bd_set_status` | `repo_path: String, id: String, status: String` | `{ repoPath, id, status }` | ✓ | — |
+| `bd_close` | ~~`reason: String`~~ → **`reason: Option<String>`** | `{ repoPath, id, reason: x ?? null }` | ✗→✓ | **Rust→Option + default fallback** |
+| `bd_add_label` | `repo_path, id, label: String` | `{ repoPath, id, label }` | ✓ | — |
+| `bd_remove_label` | `repo_path, id, label: String` | `{ repoPath, id, label }` | ✓ | — |
+| `bd_note` | `repo_path, id, text: String` | `{ repoPath, id, text }` | ✓ | — |
+| `bd_git_branch` | `repo_path: String` | `{ repoPath }` | ✓ | — |
+| `bd_counts` | `repo_path: String` | `{ repoPath }` | ✓ | — (parallelized internally) |
+| `bd_prime` | `repo_path: String` | `{ repoPath }` | ✓ | — |
+
+**Only real offender: `bd_close`.** TS `bdCloseIssue(repoPath, id)` with no reason sends `reason: null`; the bare `reason: String` Rust sig made serde reject the invoke, which the UI never surfaced — a silent no-op (the exact "user sees nothing happen" symptom). Fix: `reason: Option<String>` with an `unwrap_or_else(|| "Closed via Beads Station")` default. All other params are required-and-always-populated, so they were already correct. No `R3-followup` issue needed — the audit surfaced exactly one mismatch.
+
+### Changes
+
+- **src-tauri/src/bd.rs** — `bd_close` reason→`Option<String>` (line ~189). `bd_counts` (line ~288) rewritten: `tokio::try_join!(bd_ready(..), bd_list(.., None))` runs the two subprocess reads concurrently (was sequential `.await?` then `.await?`); wrapped with a `std::time::Instant` + one `tracing::info!(repo, elapsed_ms, ready, in_progress, blocked, closed, "bd_counts")` emit (no span guard held across await).
+- **src-tauri/Cargo.toml** — `+tracing = "0.1"`, `+tracing-subscriber = { version = "0.3", features = ["env-filter","fmt"] }`.
+- **src-tauri/src/lib.rs** — first line of `run()`: `tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("beads_station=info"))).try_init()`. `RUST_LOG=beads_station=debug,tauri=info` now controls output. (First structured-logging init in this project; telemetry.rs's `debug_stats` sampler is unrelated and untouched.)
+- **src/lib/invokeErrorBoundary.tsx** (NEW) — `safeInvoke<T>(cmd, args, { rethrow?, label? })` wraps the dynamic-imported `invoke`; on rejection pushes a toast then either resolves `undefined` (fire-and-forget) or re-throws (opts.rethrow, to preserve callers' own try/catch). `InvokeErrorBoundary` React class boundary (getDerivedStateFromError + componentDidCatch→toast) with a recoverable fallback (retry button) instead of a white screen. `InvokeToasts` (useSyncExternalStore atom) renders a bottom-anchored, `--bs-red`-accented, `column-reverse` stack: message + timestamp + "copy details" (clipboard) + dismiss `x`; auto-dismiss 8s, paused on hover via ref-armed timer.
+- **main.tsx** — `<InvokeErrorBoundary>` wraps `<App/>` under StrictMode.
+- **src/types/issue.ts** — all 9 bd_* wrappers migrated to `safeInvoke(..., { rethrow: true })` (reads + mutations rethrow so Board rollback / IssueList error state still fire; the toast surfaces first).
+- **src/components/Statusline.tsx** — `bd_git_branch` + `bd_counts` (both the 5s poll and the bd_changed refetch) → `safeInvoke(..., { rethrow: true })`; local catch handling kept.
+- **src/components/ClaudeChat.tsx** — `bd_prime` → `safeInvoke(..., { rethrow: true })` into the existing non-fatal catch. `claude_send`/`claude_*` stay raw (not bd_*).
+- **src/components/Board.tsx** — drag generation counter: `dragGenRef = useRef(0)`; `refetch` bumps `dragGenRef.current++` as its first `try` line; `handleDragEnd` captures `const gen = dragGenRef.current` at snapshot time and the catch only `setState(snapshot)`s `if (dragGenRef.current === gen)` — a concurrent `bd_changed` refetch that lands mid-drag bumps the gen, so a subsequently-rejected mutation no longer reverts the newer data. Toast still fires either way.
+- **src/components/IssueDetail.tsx** (NEW) — the missing `issue:open` listener (see root cause below). Fetches `bdShow(activePath, id)`, renders an overlay detail card (title/status/priority/type/assignee/labels/description/counts); Escape or backdrop-click dismisses. All fetch errors → inline error row + safeInvoke toast; never throws into render.
+- **App.tsx** — `<IssueDetail repoPath={active.path} />` mounted next to `<WhichKey/>`.
+- **index.css** — R3 block: `.bs-invoke-toasts`/`.bs-invoke-toast*` (toast stack), `.bs-eb-*` (boundary fallback), `.bs-detail-*` (issue detail overlay). All ASCII glyphs (`x` close buttons) — audit-emoji clean.
+- **Test infra (NEW)** — `+vitest @testing-library/react @testing-library/jest-dom jsdom @testing-library/user-event` (devDeps), `vitest.config.ts` (jsdom, globals, setup), `src/test/setup.ts` (jest-dom + `IS_REACT_ACT_ENVIRONMENT=true` for React 19 act support), `package.json` scripts `test`/`test:watch`, tsconfig `types: [vitest/globals, @testing-library/jest-dom]`.
+- **src/components/Board.test.tsx** (NEW) — drag generation-guard regression test. Mocks `@tauri-apps/api/core`, `../lib/invokeErrorBoundary`, `../lib/BdLiveProvider` (captures the bd-live onChange), and `@dnd-kit/core`'s `DndContext` (captures onDragEnd) so the scenario runs deterministically with no pointer physics + no fake timers. Fires: initial paint → arm mutation-reject (delayed 20ms) → start drag → land a bd_changed refetch that publishes newer state (ISSUE-NEW) → let the delayed rejection roll back → assert the newer state survives. **Mutation-verified non-vacuous:** passes with the gen guard, FAILS when the guard is reverted to unconditional `setState(snapshot)`.
+
+### `bd view` crash — root cause + fix
+
+**It was never a bd-binary crash.** "bd view" is the app's issue-detail action: the sidebar's `useTreeNav.open()` (Enter / `o` on an issue row) dispatches an `issue:open` CustomEvent (`useTreeNav.ts:161`) — but **no component listened for it**. The detail pane was never implemented (a "Worker 4" TODO). So pressing Enter on an issue did nothing; the user read the dead no-op as a crash. Fix location: **new `src/components/IssueDetail.tsx`** (the listener) + App.tsx mount. Because the fetch goes through `bdShow`→`safeInvoke` (rethrows into an inline error row + toast) and the whole tree sits under `InvokeErrorBoundary`, the worst case for any bad id / broken bd is a toast — never a white screen. No upstream bd issue filed (nothing crashes in the bd binary; `.beads/config.yaml` has no bd-upstream remote anyway — only the work-internal `origin`).
+
+### bd_counts before/after timing
+
+**Not captured live** (display-bound — the timing shows in the R0 F12 telemetry overlay / `tracing` stderr of the running dev app, which can't be driven headless). The mechanism is in place: `tokio::try_join!` makes the two `bd` subprocess reads concurrent instead of sequential, so wall-clock is `max(ready, list)` not `ready + list` — expected ~halving since the two calls are near-equal-cost `bd` spawns. The `tracing::info!(elapsed_ms=…)` line is the instrument; whoever boots the dev app with `RUST_LOG=beads_station=debug` should record the pre/post numbers here. Filed as the same class of display-bound follow-up as R1/R2's overlay measurements (rolls into R4 soak).
+
+### Verification
+
+`npm run build` clean (tsc + vite + audit-emoji 0 violations across 38 files). `cargo check` clean. `npx vitest run` 1 passed (the gen-guard regression, mutation-verified). Grep confirms **zero raw `invoke("bd_` / `invoke('bd_` outside `safeInvoke`**. bd_close(null) is now a valid default-reason close (no serde reject). InvokeErrorBoundary + safeInvoke would surface a forced `safeInvoke("bd_nonexistent")` rejection as a toast (by construction; the catch → pushInvokeToast path).
+
+**NOT done — display-bound (can't drive the GUI headless):** bd_counts pre/post wall-clock numbers; opening the detail pane 10× live; forced-rejection toast visually confirmed on screen. These are the same measure-in-the-running-app follow-ups R1/R2 deferred to R4's soak harness. The code paths are correct by construction + unit-tested where headless-testable.
+
+**Newly ready:** R4 (leak-hunt soak week — owns the live-app measurement harness that clears R1/R2/R3's deferred display-bound checks).
 
 ---
 

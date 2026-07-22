@@ -15,6 +15,13 @@ mod watcher;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("beads_station=info")),
+        )
+        .try_init();
+
     // Phase 2.6: load .env before tauri builds so child processes spawned
     // through Command::new (claude, bd, anything in pty) inherit the
     // ANTHROPIC_* vars from std::env. install_into_process_env returns

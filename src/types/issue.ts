@@ -1,6 +1,14 @@
 // TypeScript mirror of the Rust `Issue` struct in src-tauri/src/bd.rs.
 // Field names are snake_case to match bd's JSON output (no camelCase
 // translation in serde, so the wire format flows through unchanged).
+//
+// R3: every `invoke("bd_*")` here now routes through `safeInvoke`. Reads and
+// mutations pass { rethrow: true } so the caller's own logic (Board rollback,
+// IssueList error state) still runs — the toast fires first, then the error
+// propagates. This keeps working error handling intact while guaranteeing no
+// failure is silent (the "silent no-op" class the audit found on bd_close).
+
+import { safeInvoke } from '../lib/invokeErrorBoundary';
 
 export interface Issue {
   id: string;
@@ -22,14 +30,12 @@ export interface Issue {
 
 /** `bd ready --json` — issues with no open blockers. */
 export async function bdReady(repoPath: string): Promise<Issue[]> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<Issue[]>('bd_ready', { repoPath });
+  return (await safeInvoke<Issue[]>('bd_ready', { repoPath }, { rethrow: true }))!;
 }
 
 /** `bd show <id> --json --long` — full issue detail. */
 export async function bdShow(repoPath: string, id: string): Promise<Issue> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<Issue>('bd_show', { repoPath, id });
+  return (await safeInvoke<Issue>('bd_show', { repoPath, id }, { rethrow: true }))!;
 }
 
 /**
@@ -40,11 +46,11 @@ export async function bdList(
   repoPath: string,
   statusFilter?: string | null,
 ): Promise<Issue[]> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<Issue[]>('bd_list', {
-    repoPath,
-    statusFilter: statusFilter ?? null,
-  });
+  return (await safeInvoke<Issue[]>(
+    'bd_list',
+    { repoPath, statusFilter: statusFilter ?? null },
+    { rethrow: true },
+  ))!;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,14 +61,16 @@ export async function bdList(
 // follow camelCase on the JS side; the underlying Tauri commands are
 // snake_case (`bd_claim`, `bd_set_status`, …).
 //
+// R3: all mutations pass { rethrow: true } so Board.tsx's optimistic-rollback
+// catch still fires. The toast surfaces the raw error regardless.
+//
 // Note: the close wrapper is named `bdCloseIssue` to avoid colliding with
 // the tab-close metaphor used in the UI layer.
 // ---------------------------------------------------------------------------
 
 /** `bd update <id> --claim` — assigns the issue to the current user and flips status to in_progress. */
 export async function bdClaim(repoPath: string, id: string): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<void>('bd_claim', { repoPath, id });
+  await safeInvoke<void>('bd_claim', { repoPath, id }, { rethrow: true });
 }
 
 /** `bd update <id> --status <status>` — set the issue status to one of open/in_progress/blocked/closed. */
@@ -71,18 +79,21 @@ export async function bdSetStatus(
   id: string,
   status: string,
 ): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<void>('bd_set_status', { repoPath, id, status });
+  await safeInvoke<void>('bd_set_status', { repoPath, id, status }, { rethrow: true });
 }
 
-/** `bd close <id> [--reason ...]` — closes an issue with an optional close reason. */
+/**
+ * `bd close <id> [--reason ...]` — closes an issue with an optional close reason.
+ * R3: the Rust command now accepts `reason: Option<String>`, so passing `null`
+ * (the "close without note" path) is a valid default-reason close rather than
+ * a serde-reject silent no-op.
+ */
 export async function bdCloseIssue(
   repoPath: string,
   id: string,
   reason?: string | null,
 ): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<void>('bd_close', { repoPath, id, reason: reason ?? null });
+  await safeInvoke<void>('bd_close', { repoPath, id, reason: reason ?? null }, { rethrow: true });
 }
 
 /** `bd label add <id> <label>` — attach a label. */
@@ -91,8 +102,7 @@ export async function bdAddLabel(
   id: string,
   label: string,
 ): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<void>('bd_add_label', { repoPath, id, label });
+  await safeInvoke<void>('bd_add_label', { repoPath, id, label }, { rethrow: true });
 }
 
 /** `bd label remove <id> <label>` — detach a label. */
@@ -101,8 +111,7 @@ export async function bdRemoveLabel(
   id: string,
   label: string,
 ): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<void>('bd_remove_label', { repoPath, id, label });
+  await safeInvoke<void>('bd_remove_label', { repoPath, id, label }, { rethrow: true });
 }
 
 /** `bd note add <id> <text>` — append a note/comment to an issue. */
@@ -111,6 +120,5 @@ export async function bdNote(
   id: string,
   text: string,
 ): Promise<void> {
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<void>('bd_note', { repoPath, id, text });
+  await safeInvoke<void>('bd_note', { repoPath, id, text }, { rethrow: true });
 }

@@ -22,6 +22,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { safeInvoke } from '../lib/invokeErrorBoundary'
 import { safeListen } from '../lib/safeListen'
 import { ToolDrawer, frameToHookEvent, type HookEvent } from './ToolDrawer'
 import { ApprovalCard, type ApprovalStatus } from './ApprovalCard'
@@ -194,7 +195,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
       // Phase 6 — fetch bd prime and inject as a system-reminder. Non-fatal
       // on error so a missing/broken bd doesn't keep the chat from working.
       try {
-        const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
+        const bdPrimeOut = await safeInvoke<string>('bd_prime', { repoPath: cwd }, { rethrow: true })
         if (!signal.aborted && bdPrimeOut && bdPrimeOut.trim()) {
           const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
           appendFrame({ _kind: 'system-reminder', text: bdPrimeOut })

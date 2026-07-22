@@ -5,6 +5,7 @@ import { Terminal } from './components/Terminal'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
+import { IssueDetail } from './components/IssueDetail'
 import { Statusline } from './components/Statusline'
 import { Dashboard } from './components/Dashboard'
 import { WhichKey } from './components/WhichKey'
@@ -167,6 +168,7 @@ export default function App() {
         <Statusline repoPath={active.path} projectPath={active.path} />
       </div>
       <WhichKey />
+      <IssueDetail repoPath={active.path} />
       {import.meta.env.DEV && <DebugOverlay />}
       {!needsConfirm && <PermissionModePicker projectId={active.id} />}
       {needsConfirm && (

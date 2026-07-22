@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   DragOverlay,
@@ -72,6 +72,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
   const [toasts, setToasts] = useState<Toast[]>([])
   // Bumped after every successful mutation to force a refetch.
   const [version, setVersion] = useState(0)
+  const dragGenRef = useRef(0)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -85,6 +86,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
 
   const refetch = useCallback(async () => {
     try {
+      dragGenRef.current++
       const [ready, all] = await Promise.all([bdReady(repoPath), bdList(repoPath, null)])
 
       // Project filter: prefer label-based when present anywhere in the repo.
@@ -166,6 +168,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
       if (!found || found.column === targetCol) return
 
       const fromCol = found.column
+      const gen = dragGenRef.current
       // Snapshot for rollback.
       const snapshot = state
       // Optimistic update.
@@ -189,7 +192,9 @@ export function Board({ repoPath, projectId }: BoardProps) {
         await mutate()
         setVersion(v => v + 1)
       } catch (err) {
-        setState(snapshot)
+        if (dragGenRef.current === gen) {
+          setState(snapshot)
+        }
         pushToast(`bd error: ${err}`, 'error')
       }
     },

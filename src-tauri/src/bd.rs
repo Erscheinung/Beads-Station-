@@ -189,9 +189,10 @@ pub async fn bd_set_status(
 pub async fn bd_close(
     repo_path: String,
     id: String,
-    reason: String,
+    reason: Option<String>,
 ) -> Result<(), String> {
     require_nonempty("id", &id)?;
+    let reason = reason.unwrap_or_else(|| "Closed via Beads Station".to_string());
     require_nonempty("reason", &reason)?;
     run_bd_write(
         &repo_path,
@@ -287,8 +288,11 @@ pub struct BdCounts {
 
 #[tauri::command]
 pub async fn bd_counts(repo_path: String) -> Result<BdCounts, String> {
-    let ready = bd_ready(repo_path.clone()).await?;
-    let all = bd_list(repo_path.clone(), None).await?;
+    let start = std::time::Instant::now();
+    let (ready, all) = tokio::try_join!(
+        bd_ready(repo_path.clone()),
+        bd_list(repo_path.clone(), None),
+    )?;
     let mut c = BdCounts {
         ready: ready.len(),
         in_progress: 0,
@@ -303,6 +307,7 @@ pub async fn bd_counts(repo_path: String) -> Result<BdCounts, String> {
             _ => {}
         }
     }
+    tracing::info!(repo = %repo_path, elapsed_ms = start.elapsed().as_millis() as u64, ready = c.ready, in_progress = c.in_progress, blocked = c.blocked, closed = c.closed, "bd_counts");
     Ok(c)
 }
 

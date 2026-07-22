@@ -6,8 +6,8 @@
 // reactive count updates.
 
 import { useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { safeInvoke } from '../lib/invokeErrorBoundary'
 
 declare global {
   interface Window {
@@ -65,12 +65,12 @@ export function Statusline({ repoPath, projectPath }: Props) {
     async function refresh() {
       try {
         const [b, c] = await Promise.all([
-          invoke<string>('bd_git_branch', { repoPath }),
-          invoke<BdCounts>('bd_counts', { repoPath }),
+          safeInvoke<string>('bd_git_branch', { repoPath }, { rethrow: true }),
+          safeInvoke<BdCounts>('bd_counts', { repoPath }, { rethrow: true }),
         ])
         if (cancelled) return
-        setBranch(b)
-        setCounts(c)
+        setBranch(b!)
+        setCounts(c!)
       } catch {
         if (cancelled) return
         setBranch('(unknown)')
@@ -93,8 +93,8 @@ export function Statusline({ repoPath, projectPath }: Props) {
     let cancelled = false
     listen(`bd_changed:${repoPath}`, async () => {
       try {
-        const c = await invoke<BdCounts>('bd_counts', { repoPath })
-        if (!cancelled) setCounts(c)
+        const c = await safeInvoke<BdCounts>('bd_counts', { repoPath }, { rethrow: true })
+        if (!cancelled) setCounts(c!)
       } catch {
         /* swallow */
       }
