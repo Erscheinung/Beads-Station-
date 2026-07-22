@@ -113,6 +113,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
   const [frames, setFrames] = useState<Frame[]>([])
   const [hookEvents, setHookEvents] = useState<HookEvent[]>([])
   const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalStatus>>({})
+  const [evictedCount, setEvictedCount] = useState(0)
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<StartStatus>('pending')
@@ -126,6 +127,36 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
   framesRef.current = frames
   const approvalsRef = useRef<Record<string, ApprovalStatus>>({})
   approvalsRef.current = approvalStates
+
+  // R2 §5a — bounded frames collection. Cap at 500; when appending overflows,
+  // trim to the last 500, tally eviction, and GC approvalStates keys whose
+  // requestId no longer appears in the surviving frames. GC runs in the same
+  // event handler right after the setFrames call (functional setApprovalStates
+  // keeps only live keys), so no orphan approval state can linger past eviction.
+  const FRAME_CAP = 500
+  const appendFrame = (next: Frame) => {
+    setFrames(prev => {
+      const merged = [...prev, next]
+      if (merged.length > FRAME_CAP) {
+        const dropped = merged.length - FRAME_CAP
+        const trimmed = merged.slice(-FRAME_CAP)
+        setEvictedCount(c => c + dropped)
+        // GC approvalStates: keep only keys whose requestId still appears.
+        const live = new Set<string>()
+        for (const f of trimmed) {
+          const a = extractApproval(f)
+          if (a) live.add(a.requestId)
+        }
+        setApprovalStates(s => {
+          const kept: Record<string, ApprovalStatus> = {}
+          for (const k of Object.keys(s)) if (live.has(k)) kept[k] = s[k]
+          return kept
+        })
+        return trimmed
+      }
+      return merged
+    })
+  }
 
   useEffect(() => {
     console.info('[ClaudeChat] starting', { projectId, cwd, sessionId, permissionMode })
@@ -154,7 +185,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         console.error('claude_start failed', e)
         if (!signal.aborted) {
           setStatus('failed')
-          setFrames(f => [...f, { _kind: 'stderr', line: 'claude_start failed: ' + String(e) }])
+          appendFrame({ _kind: 'stderr', line: 'claude_start failed: ' + String(e) })
           setStderrCount(c => c + 1)
         }
       }
@@ -166,7 +197,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
         if (!signal.aborted && bdPrimeOut && bdPrimeOut.trim()) {
           const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
-          setFrames(f => [...f, { _kind: 'system-reminder', text: bdPrimeOut }])
+          appendFrame({ _kind: 'system-reminder', text: bdPrimeOut })
           // Send the reminder text as a user message so the running session
           // sees the rules. Wrapped in <system-reminder> tags by convention.
           try {
@@ -185,19 +216,19 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         accumulateUsage(projectId, frame)
         if (isHookFrame(frame)) {
           const hev = frameToHookEvent(frame)
-          if (hev) setHookEvents(h => [...h, hev])
+          if (hev) setHookEvents(h => [...h, hev].slice(-200))
           // Don't push hook frames into the main scroll.
           setStatus(s => (s === 'failed' ? s : 'frame'))
           return
         }
-        setFrames(f => [...f, frame])
+        appendFrame(frame)
         setStatus(s => (s === 'failed' ? s : 'frame'))
       }, signal)
       await safeListen<string>(`claude_event_raw:${projectId}`, e => {
-        setFrames(f => [...f, { _kind: 'raw', line: String(e.payload) }])
+        appendFrame({ _kind: 'raw', line: String(e.payload) })
       }, signal)
       await safeListen<string>(`claude_stderr:${projectId}`, e => {
-        setFrames(f => [...f, { _kind: 'stderr', line: String(e.payload) }])
+        appendFrame({ _kind: 'stderr', line: String(e.payload) })
         setStderrCount(c => c + 1)
       }, signal)
     })()
@@ -255,7 +286,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
     const text = input.trim()
     if (!text || busy) return
     setBusy(true)
-    setFrames(f => [...f, { _local: true, role: 'user', text }])
+    appendFrame({ _local: true, role: 'user', text })
     setInput('')
     try { await invoke('claude_send', { projectId, text }) } finally { setBusy(false) }
   }
@@ -289,6 +320,9 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
       <ToolDrawer projectId={projectId} events={hookEvents} />
 
       <div className="bs-chat-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12, fontSize: 12, lineHeight: 1.5 }}>
+        {evictedCount > 0 && (
+          <div style={{ color: 'var(--bs-fg-muted)', fontSize: 11, padding: '2px 0 8px', opacity: 0.7 }}>— {evictedCount} earlier frames evicted —</div>
+        )}
         {frames.map((f, i) => {
           if (f?._kind === 'system-reminder') {
             return (

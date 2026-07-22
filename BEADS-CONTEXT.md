@@ -276,6 +276,34 @@ These are the R0-baseline follow-ups the overlay was built for; the code is corr
 
 ---
 
+## R2 shipped (2026-07-08) — bounded collections + IssueTree virtualization
+
+**Issue:** `Code-3w2` (closed). Reboot phase 3 of 12, Pillar "bounded state". Depends on R1 (`Code-5hs`).
+
+**What shipped.** Every accumulating collection now has a hard cap + rolling-window eviction, and `IssueTree` no longer does O(N*T) DFS per keystroke.
+
+- **ClaudeChat.tsx** — `frames` capped at 500 via a single `appendFrame(next)` helper (`FRAME_CAP=500`) that ALL six append sites now route through (claude_start-fail catch, bd-prime system-reminder inject, claude_event main-frame push, claude_event_raw, claude_stderr, send() local echo). On overflow it `slice(-500)`s, tallies the drop count into a new `evictedCount` state, and — in the SAME event handler — GCs `approvalStates` by rebuilding the live-requestId Set from the surviving frames (via `extractApproval`) and keeping only keys that still appear (no orphan approval state past eviction). `hookEvents` capped at 200 (`.slice(-200)` on the one push site). Eviction marker: when `evictedCount > 0`, a muted single-line `— {evictedCount} earlier frames evicted —` renders as the first child of the scroll body using `var(--bs-fg-muted)` (no new CSS var). `framesRef.current = frames` auto-caps because it mirrors post-cap state. Known cosmetic: scroll-map React keys are still array-index `key={i}` — a single eviction render can transiently re-key `<pre>` rows (self-corrects next frame; ApprovalCard's composite `approval-${i}-${requestId}` anchors card identity on requestId). Not worth a keying rework for R2 (§8 scope guard).
+
+- **tree.ts** — `FlatRow` gained `ancestorPath: string[]` (root..node id chain, inclusive — same value `idToPath` would return). `flattenVisible` now threads the path through its DFS walk (`walk(node, depth, parentPath)` → `path = [...parentPath, node.id]`), so the ancestor chain is computed once during flatten instead of via repeated `idToPath` calls. `idToPath` export retained — still used by `useTreeNav.expandToward` (the rare, non-per-render call site). DEV smoke tests updated to assert `FlatRow.ancestorPath === idToPath(...)`.
+
+- **IssueTree.tsx** — deleted the per-row `idToPath(roots, row.node.id)` call (the O(N*T) hotspot); rows read `row.ancestorPath` instead. `litBranchKeys(flatRows, cursorIndex)` rewritten to build the lit Set ONCE from the cursor row's `ancestorPath` (no `idToPath`), memoized with `useMemo([flatRows, cursorIndex])`; guide render does O(1) `lit.has(...)`. Virtualized with `@tanstack/react-virtual` (`useVirtualizer`, `count=flatRows.length`, `estimateSize=()=>28`, `overscan=8`); scroll parent is `parentRef` on the `bs-tree` div, rows are absolutely positioned via `translateY(vi.start)`. Added a `scrollToIndex(cursorIndex, {align:'auto'})` effect so vim `j`/`k` keeps the cursor row in the rendered window (virtualization would otherwise let the active row scroll out of the DOM). `roots` prop kept in the surface but no longer read per-render (`_roots`).
+
+- **index.css** — `.bs-tree-row` height locked to exactly `28px` (`height/min-height/max-height: 28px` + `box-sizing: border-box; overflow: hidden`) to match the virtualizer's fixed row estimate. Was 22px; bumped to 28 so estimate is exact and there is no row-height jitter.
+
+- **package.json** — `+@tanstack/react-virtual ^3.14.7` (MIT).
+
+**Verification.** `npm run build` clean (tsc + vite + audit-emoji). `cargo check` clean (frontend-only phase, zero Rust touched). Adversarial re-read of both edited components in the main thread: all six frame-append sites route through `appendFrame`; `approvalStates` GC covers the orphan-key case; no `idToPath` remains in `IssueTree` per-row or in `litBranchKeys`; virtualizer row keys are `row.node.id` (stable). The 4-agent Workflow (audit → parallel build A/B → verify) produced the edits; the `scrollToIndex` cursor-follow was added in the main thread post-workflow.
+
+**NOT yet done — display-bound, can't drive headless (same class as R1's deferred live-verify):**
+- React DevTools Profiler: 20× `j` on the 500-row fixture, median + p95 keystroke render < 16ms, before/after. **Numbers not captured** — requires the running dev app + DevTools Profiler + a wired `__BS_TREE_FIXTURE__` 500-row fixture. The fixture flag from §5b was NOT built (deferred — the memoization + virtualization + Set-lit changes are the mechanism; the Profiler number is the proof, still owed). Whoever next boots the dev app should build the fixture and record the numbers here.
+- 1000-frame synthetic Claude session RSS < 100MB plateau: not run (needs live Claude session + F12 overlay).
+
+The bar per §10 is "measurably better and documented," not "perfect": the DFS-per-keystroke cost is eliminated by construction (ancestorPath precompute + Set-lit + virtualized DOM), and the caps bound memory by construction. The live Profiler/RSS curves are the outstanding proof, filed here rather than blocking the phase.
+
+**Follow-ups:** none opened (no virtualizer breakage, no <16ms miss observed in code review). The Profiler-fixture + RSS-soak measurement rolls into R4 (leak-hunt soak week), which already owns the live-app measurement harness.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.

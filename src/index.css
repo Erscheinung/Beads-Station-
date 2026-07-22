@@ -120,7 +120,7 @@ body {
 .bs-tree-chevron--expanded { transform: rotate(90deg); }
 .bs-tree-chevron--leaf     { visibility: hidden; }
 
-.bs-tree-row { position: relative; display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 12px; line-height: 18px; height: 22px; cursor: pointer; }
+.bs-tree-row { position: relative; display: flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 12px; line-height: 18px; height: 28px; min-height: 28px; max-height: 28px; box-sizing: border-box; overflow: hidden; cursor: pointer; }
 .bs-tree-row--group { color: var(--bs-fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .bs-tree-row--active { background: var(--bs-bg-elev); box-shadow: inset 1px 0 0 var(--bs-blue); }
 .bs-tree-row:hover:not(.bs-tree-row--active) { background: color-mix(in srgb, var(--bs-bg-elev) 50%, transparent); }

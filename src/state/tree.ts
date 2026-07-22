@@ -37,6 +37,10 @@ export interface FlatRow {
   depth: number;
   hasChildren: boolean;
   expanded: boolean;
+  /** Node id chain root..this (inclusive), same as idToPath would return.
+   *  Computed inline during flattenVisible so IssueTree never calls idToPath
+   *  per-row. */
+  ancestorPath: string[];
 }
 
 type StatusBucket = 'ready' | 'in_progress' | 'blocked' | 'closed';
@@ -198,19 +202,20 @@ export function flattenVisible(
 ): FlatRow[] {
   const out: FlatRow[] = [];
 
-  function walk(node: TreeNode, depth: number) {
+  function walk(node: TreeNode, depth: number, parentPath: string[]) {
+    const path = [...parentPath, node.id];
     const hasChildren = node.children.length > 0;
     const isExpanded = expanded.has(node.id);
-    out.push({ node, depth, hasChildren, expanded: isExpanded });
+    out.push({ node, depth, hasChildren, expanded: isExpanded, ancestorPath: path });
     if (hasChildren && isExpanded) {
       for (const child of node.children) {
-        walk(child, depth + 1);
+        walk(child, depth + 1, path);
       }
     }
   }
 
   for (const root of roots) {
-    walk(root, root.depth);
+    walk(root, root.depth, []);
   }
   return out;
 }
@@ -304,4 +309,21 @@ if (import.meta.env && import.meta.env.DEV) {
   // idToPath should hit the leaf.
   const path = idToPath(fam, 'X-102');
   console.assert(path.length === 4 && path[path.length - 1] === 'X-102', 'tree.ts: idToPath reaches leaf');
+
+  // 4) flattenVisible must carry ancestorPath identical to idToPath per row.
+  const famExpanded = new Set<string>();
+  for (const p of fam) collectExpandKeys(p, famExpanded);
+  const famRows = flattenVisible(fam, famExpanded);
+  const leafRow = famRows.find((r) => r.node.id === 'X-102');
+  console.assert(!!leafRow, 'tree.ts: flattenVisible surfaces X-102 when expanded');
+  console.assert(
+    JSON.stringify(leafRow!.ancestorPath) === JSON.stringify(idToPath(fam, 'X-102')),
+    'tree.ts: FlatRow.ancestorPath === idToPath',
+  );
+}
+
+/** DEV-only: collect every id so a subtree flattens fully. */
+function collectExpandKeys(node: TreeNode, out: Set<string>): void {
+  out.add(node.id);
+  for (const child of node.children) collectExpandKeys(child, out);
 }
