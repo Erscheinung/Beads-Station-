@@ -1,3 +1,4 @@
+// DEPRECATED (R1): superseded by src/lib/BdLiveProvider.tsx (useBdLiveContext). Kept for reference; no live callers.
 // Phase 3 — file-watch bridge.
 //
 // Wires a Tauri-side notify::RecommendedWatcher (FSEvents on macOS) to

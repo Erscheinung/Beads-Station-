@@ -22,7 +22,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { safeListen } from '../lib/safeListen'
 import { ToolDrawer, frameToHookEvent, type HookEvent } from './ToolDrawer'
 import { ApprovalCard, type ApprovalStatus } from './ApprovalCard'
 import { CostMeter } from './CostMeter'
@@ -129,10 +129,8 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
 
   useEffect(() => {
     console.info('[ClaudeChat] starting', { projectId, cwd, sessionId, permissionMode })
-    let offEvent: (() => void) | null = null
-    let offRaw: (() => void) | null = null
-    let offStderr: (() => void) | null = null
-    let cancelled = false
+    const ac = new AbortController()
+    const { signal } = ac
     ;(async () => {
       let sid = sessionId
       if (!sid) {
@@ -143,7 +141,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
           console.error('projects_get failed', e)
         }
       }
-      if (cancelled) return
+      if (signal.aborted) return
       try {
         await invoke('claude_start', {
           projectId,
@@ -151,22 +149,22 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
           sessionId: sid,
           permissionMode: permissionMode ?? 'acceptEdits',
         })
-        if (!cancelled) setStatus('started')
+        if (!signal.aborted) setStatus('started')
       } catch (e) {
         console.error('claude_start failed', e)
-        if (!cancelled) {
+        if (!signal.aborted) {
           setStatus('failed')
           setFrames(f => [...f, { _kind: 'stderr', line: 'claude_start failed: ' + String(e) }])
           setStderrCount(c => c + 1)
         }
       }
-      if (cancelled) return
+      if (signal.aborted) return
 
       // Phase 6 — fetch bd prime and inject as a system-reminder. Non-fatal
       // on error so a missing/broken bd doesn't keep the chat from working.
       try {
         const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
-        if (!cancelled && bdPrimeOut && bdPrimeOut.trim()) {
+        if (!signal.aborted && bdPrimeOut && bdPrimeOut.trim()) {
           const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
           setFrames(f => [...f, { _kind: 'system-reminder', text: bdPrimeOut }])
           // Send the reminder text as a user message so the running session
@@ -181,7 +179,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         console.warn('[ClaudeChat] bd_prime failed (non-fatal)', e)
       }
 
-      offEvent = await listen<Frame>(`claude_event:${projectId}`, e => {
+      await safeListen<Frame>(`claude_event:${projectId}`, e => {
         const frame = e.payload
         // Always feed the usage accumulator; it ignores frames it can't use.
         accumulateUsage(projectId, frame)
@@ -194,20 +192,17 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         }
         setFrames(f => [...f, frame])
         setStatus(s => (s === 'failed' ? s : 'frame'))
-      })
-      offRaw = await listen<string>(`claude_event_raw:${projectId}`, e => {
+      }, signal)
+      await safeListen<string>(`claude_event_raw:${projectId}`, e => {
         setFrames(f => [...f, { _kind: 'raw', line: String(e.payload) }])
-      })
-      offStderr = await listen<string>(`claude_stderr:${projectId}`, e => {
+      }, signal)
+      await safeListen<string>(`claude_stderr:${projectId}`, e => {
         setFrames(f => [...f, { _kind: 'stderr', line: String(e.payload) }])
         setStderrCount(c => c + 1)
-      })
+      }, signal)
     })()
     return () => {
-      cancelled = true
-      offEvent?.()
-      offRaw?.()
-      offStderr?.()
+      ac.abort()
       // Phase 6 manages claude lifecycles — do NOT auto-kill on unmount.
     }
   }, [projectId, cwd, sessionId, permissionMode])

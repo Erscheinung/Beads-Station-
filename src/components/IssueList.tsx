@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { IssueTree } from './IssueTree';
-import { useBdLive } from '../hooks/useBdLive';
+import { useBdLiveContext } from '../lib/BdLiveProvider';
 import { useTreeNav } from '../hooks/useTreeNav';
 import { buildTree } from '../state/tree';
 import { projectLabelFor } from '../state/projectLabel';
@@ -53,7 +53,7 @@ export function IssueList({ repoPath }: { repoPath: string }) {
   useEffect(() => {
     refetch();
   }, [refetch]);
-  useBdLive(repoPath, refetch);
+  useBdLiveContext(repoPath, refetch);
 
   const roots = useMemo(() => buildTree(issues), [issues]);
   const nav = useTreeNav(issues);

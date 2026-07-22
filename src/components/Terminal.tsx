@@ -3,11 +3,12 @@ import { Terminal as XTerm } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { safeListen } from '../lib/safeListen'
 import 'xterm/css/xterm.css'
 
 export function Terminal({ cwd }: { cwd: string }) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const ptyIdRef = useRef<number | null>(null)
   useEffect(() => {
     const xterm = new XTerm({
       fontFamily: "'JetBrains Mono', monospace",
@@ -23,37 +24,46 @@ export function Terminal({ cwd }: { cwd: string }) {
     xterm.open(hostRef.current!)
     fit.fit()
 
-    let id: number | null = null
-    let unlistenData: (() => void) | null = null
-    let unlistenExit: (() => void) | null = null
+    const ac = new AbortController()
+    const { signal } = ac
     let ro: ResizeObserver | null = null
 
     ;(async () => {
-      id = await invoke<number>('pty_spawn', { cwd })
-      unlistenData = await listen<{ id: number; data: string }>(
+      const id = await invoke<number>('pty_spawn', { cwd })
+      ptyIdRef.current = id
+      if (signal.aborted) {
+        invoke('pty_kill', { id }).catch(() => {})
+        ptyIdRef.current = null
+        return
+      }
+      await safeListen<{ id: number; data: string }>(
         `pty_data:${id}`,
         (e) => xterm.write(e.payload.data),
+        signal,
       )
-      unlistenExit = await listen<{ id: number }>(
+      await safeListen<{ id: number }>(
         `pty_exit:${id}`,
         () => xterm.write('\r\n[process exited]\r\n'),
+        signal,
       )
       xterm.onData((d) => {
-        if (id !== null) invoke('pty_write', { id, data: d })
+        if (ptyIdRef.current !== null) invoke('pty_write', { id: ptyIdRef.current, data: d })
       })
       ro = new ResizeObserver(() => {
         fit.fit()
-        if (id !== null) invoke('pty_resize', { id, cols: xterm.cols, rows: xterm.rows })
+        if (ptyIdRef.current !== null) invoke('pty_resize', { id: ptyIdRef.current, cols: xterm.cols, rows: xterm.rows })
       })
       ro.observe(hostRef.current!)
     })()
 
     return () => {
+      ac.abort()
       ro?.disconnect()
-      unlistenData?.()
-      unlistenExit?.()
-      if (id !== null) invoke('pty_kill', { id }).catch(() => {})
       xterm.dispose()
+      if (ptyIdRef.current !== null) {
+        invoke('pty_kill', { id: ptyIdRef.current }).catch(() => {})
+        ptyIdRef.current = null
+      }
     }
   }, [cwd])
   return <div ref={hostRef} style={{ width: '100%', height: '100%' }} />

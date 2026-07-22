@@ -27,6 +27,7 @@ interface ProjectEntry {
   refCount: number
   unlisten: UnlistenFn[]
   startedAt: number
+  terminated: boolean
 }
 
 const entries = new Map<string, ProjectEntry>()
@@ -64,6 +65,7 @@ async function startSubscription(projectId: string): Promise<void> {
       const v = String(ev.payload)
       if (VALID.has(v as ClaudeStatus)) setStatus(projectId, v as ClaudeStatus)
     })
+    if (e.terminated) { off(); return }
     e.unlisten.push(off)
   } catch (err) {
     console.warn('[claudeStatus] failed to attach claude_status listener', err)
@@ -74,6 +76,7 @@ async function startSubscription(projectId: string): Promise<void> {
       const next = deriveFromFrame(ev.payload)
       if (next) setStatus(projectId, next)
     })
+    if (e.terminated) { off(); return }
     e.unlisten.push(off)
   } catch (err) {
     console.warn('[claudeStatus] failed to attach claude_event listener', err)
@@ -83,6 +86,7 @@ async function startSubscription(projectId: string): Promise<void> {
     const off = await listen(`claude_stderr:${projectId}`, () => {
       setStatus(projectId, 'error')
     })
+    if (e.terminated) { off(); return }
     e.unlisten.push(off)
   } catch (err) {
     console.warn('[claudeStatus] failed to attach claude_stderr listener', err)
@@ -92,7 +96,7 @@ async function startSubscription(projectId: string): Promise<void> {
 function ensureEntry(projectId: string): ProjectEntry {
   let e = entries.get(projectId)
   if (!e) {
-    e = { status: 'idle', refCount: 0, unlisten: [], startedAt: Date.now() }
+    e = { status: 'idle', refCount: 0, unlisten: [], startedAt: Date.now(), terminated: false }
     entries.set(projectId, e)
     void startSubscription(projectId)
   }
@@ -122,6 +126,7 @@ export function subscribeClaudeStatus(projectId: string, listener: () => void): 
     if (ent) {
       ent.refCount -= 1
       if (ent.refCount <= 0) {
+        ent.terminated = true
         ent.unlisten.forEach(u => {
           try { u() } catch { /* noop */ }
         })
