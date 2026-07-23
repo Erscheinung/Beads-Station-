@@ -13,6 +13,22 @@ use tokio::process::Command;
 
 const ACTOR: &str = "Beads Station";
 
+/// Outcome of a `bd` subprocess run. `NoDatabase` is the classified
+/// "no beads database found" case (project has no `.beads/` dir). Reads
+/// map it to an empty result; writes surface it as a real error so a
+/// mutation never silently succeeds against a missing db.
+enum BdOutcome {
+    Ok(Vec<u8>),
+    NoDatabase,
+}
+
+/// Pure classifier: does this bd stderr indicate a missing database?
+/// Pinned to bd 1.0.4 wording. A wording change breaks the test, which is
+/// the point — we want to catch it.
+fn is_no_database(stderr: &str) -> bool {
+    stderr.contains("no beads database found")
+}
+
 /// Mirrors the bd issue JSON shape. Every field is `#[serde(default)]`
 /// because bd's JSON omits optional fields rather than emitting nulls,
 /// and the schema has drifted across releases.
@@ -50,13 +66,17 @@ pub struct Issue {
     pub parent: Option<String>,
 }
 
-/// Run `bd` with the given args under `repo_path` and return stdout bytes.
+/// Run `bd` and classify the outcome. Returns `BdOutcome::Ok(stdout)` on
+/// success and `BdOutcome::NoDatabase` when bd exited nonzero solely because
+/// the project has no `.beads/` dir. Any other nonzero exit is a real
+/// `Err`. This lets read commands degrade to empty on a dbless repo while
+/// writes still surface the error.
 ///
 /// Uses `current_dir(repo_path)` instead of bd's `-C` flag because bd
 /// reads `git config beads.role` from the process cwd. Setting cwd
 /// ensures the role check lands against the correct repo and writes
 /// actually persist.
-async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+async fn run_bd_classified(repo_path: &str, args: &[&str]) -> Result<BdOutcome, String> {
     // Phase 2.5: launchd-launched GUIs inherit an empty PATH, so
     // `Command::new("bd")` resolves to nothing. Always go through
     // binresolve::resolve_bin to find the canonical absolute path.
@@ -73,13 +93,25 @@ async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "bd exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ));
+        // Classify the missing-db case so reads can degrade to empty while
+        // writes still error. Pinned to bd 1.0.4 wording; see the unit test.
+        if is_no_database(&stderr) {
+            return Ok(BdOutcome::NoDatabase);
+        }
+        return Err(format!("bd exited with {}: {}", output.status, stderr.trim()));
     }
-    Ok(output.stdout)
+    Ok(BdOutcome::Ok(output.stdout))
+}
+
+/// Run `bd` with the given args under `repo_path` and return stdout bytes.
+/// Delegates to `run_bd_classified`, collapsing `NoDatabase` back into an
+/// `Err` so writes (via `run_bd_write`) still error honestly on a repo
+/// with no `.beads/` dir.
+async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    match run_bd_classified(repo_path, args).await? {
+        BdOutcome::Ok(bytes) => Ok(bytes),
+        BdOutcome::NoDatabase => Err("no beads database found".to_string()),
+    }
 }
 
 /// Run a bd write subcommand and discard stdout. Returns trimmed
@@ -114,13 +146,11 @@ fn validate_status(status: &str) -> Result<(), String> {
 /// `bd ready --json` — issues that have no open blockers.
 #[tauri::command]
 pub async fn bd_ready(repo_path: String) -> Result<Vec<Issue>, String> {
-    let stdout = run_bd(
-        &repo_path,
-        &["ready", "--json", "--actor", ACTOR],
-    )
-    .await?;
-    serde_json::from_slice::<Vec<Issue>>(&stdout)
-        .map_err(|e| format!("failed to parse bd ready JSON: {e}"))
+    match run_bd_classified(&repo_path, &["ready", "--json", "--actor", ACTOR]).await? {
+        BdOutcome::NoDatabase => Ok(vec![]),
+        BdOutcome::Ok(stdout) => serde_json::from_slice::<Vec<Issue>>(&stdout)
+            .map_err(|e| format!("failed to parse bd ready JSON: {e}")),
+    }
 }
 
 /// `bd show <id> --json --long` — full issue detail.
@@ -142,9 +172,11 @@ pub async fn bd_list(
         args.push("--status");
         args.push(s.as_str());
     }
-    let stdout = run_bd(&repo_path, &args).await?;
-    serde_json::from_slice::<Vec<Issue>>(&stdout)
-        .map_err(|e| format!("failed to parse bd list JSON: {e}"))
+    match run_bd_classified(&repo_path, &args).await? {
+        BdOutcome::NoDatabase => Ok(vec![]),
+        BdOutcome::Ok(stdout) => serde_json::from_slice::<Vec<Issue>>(&stdout)
+            .map_err(|e| format!("failed to parse bd list JSON: {e}")),
+    }
 }
 
 // ---------- writes (Phase 3) ----------
@@ -263,7 +295,8 @@ pub async fn bd_note(
 pub async fn bd_git_branch(repo_path: String) -> Result<String, String> {
     // Use std::process not tokio — tiny one-shot, doesn't need async I/O
     // but we keep the signature async for tauri compat. Use tokio::process.
-    let output = tokio::process::Command::new("git")
+    let git_path = crate::binresolve::resolve_bin("git")?;
+    let output = tokio::process::Command::new(&git_path)
         .arg("-C").arg(&repo_path)
         .arg("rev-parse").arg("--abbrev-ref").arg("HEAD")
         .output()
@@ -345,4 +378,20 @@ pub async fn bd_prime(repo_path: String) -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_missing_db() {
+        assert!(is_no_database("Error: no beads database found. Hint: run 'bd where'"));
+    }
+
+    #[test]
+    fn other_errors_are_not_missing_db() {
+        assert!(!is_no_database("Error: some other failure"));
+        assert!(!is_no_database(""));
+    }
 }

@@ -13,8 +13,37 @@ mod pty;
 mod telemetry;
 mod watcher;
 
+/// macOS GUI apps launched via launchd/Finder inherit the default soft
+/// RLIMIT_NOFILE of 256 (a login shell gets 1048576). Against 256 the
+/// startup subprocess burst (bd_counts' try_join, Board's Promise.all,
+/// claude pipes, PTY, FSEvents) overflows and bd spawns start returning
+/// EMFILE ("Too many open files"). Raise the soft limit toward the hard
+/// limit at process start, clamped to 8192 to stay under the kernel
+/// per-proc cap (kern.maxfilesperproc = 61440 on this machine). Best-effort:
+/// raising the soft limit up to the hard limit needs no privilege on macOS.
+#[cfg(unix)]
+fn raise_fd_limit() {
+    unsafe {
+        let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
+            let target = std::cmp::min(lim.rlim_max, 8192);
+            if lim.rlim_cur < target {
+                lim.rlim_cur = target;
+                let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+            }
+        }
+        let mut after = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        libc::getrlimit(libc::RLIMIT_NOFILE, &mut after);
+        eprintln!("[fd] RLIMIT_NOFILE soft={} hard={}", after.rlim_cur, after.rlim_max);
+    }
+}
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    raise_fd_limit();
+
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

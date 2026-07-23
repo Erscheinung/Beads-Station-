@@ -206,6 +206,12 @@ export function Board({ repoPath, projectId }: BoardProps) {
     [state],
   )
 
+  // When bd returns zero issues AND there was no error, the repo most likely
+  // has no `.beads/` dir (the backend now degrades a missing db to an empty
+  // read rather than throwing). Surface that explicitly so a blank board reads
+  // as intentional, not broken.
+  const noBeadsDb = totalCount === 0 && !error
+
   return (
     <div
       style={{
@@ -230,7 +236,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
         }}
       >
         <span>BOARD · {projectId}</span>
-        <span style={{ opacity: 0.5 }}>· {totalCount} issues</span>
+        <span style={{ opacity: 0.5 }}>· {noBeadsDb ? 'no beads db · 0 issues' : `${totalCount} issues`}</span>
         {error && (
           <span style={{ marginLeft: 'auto', color: 'var(--bs-red)' }}>{error}</span>
         )}

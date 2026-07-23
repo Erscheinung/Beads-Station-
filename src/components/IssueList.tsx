@@ -127,7 +127,7 @@ export function IssueList({ repoPath }: { repoPath: string }) {
   return (
     <div className="bs-issuelist" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <div className="bs-issuelist-header">
-        BEADS · {headerLabel} ({issues.length})
+        BEADS · {issues.length === 0 ? 'no beads db · 0' : `${headerLabel} (${issues.length})`}
       </div>
       <div className="bs-issuelist-scroll" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
         <IssueTree

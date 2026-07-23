@@ -33,3 +33,6 @@ notify = { version = "8.2.0", default-features = false, features = ["macos_fseve
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

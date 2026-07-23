@@ -1,9 +1,11 @@
 // Beads Station — Phase 2 multi-session claude stream-json bridge.
 //
-// Maintains a per-project map of persistent `claude --print
+// Maintains a per-project map of persistent `claude --print --verbose
 // --input-format=stream-json --output-format=stream-json` subprocesses,
-// keyed by project id. Each session's stdout is parsed line-by-line as
-// stream-json frames and emitted to the UI via the namespaced Tauri event
+// keyed by project id. (`--verbose` is mandatory: the Claude CLI requires
+// it whenever `--print` is combined with `--output-format=stream-json`.)
+// Each session's stdout is parsed line-by-line as stream-json frames and
+// emitted to the UI via the namespaced Tauri event
 // `claude_event:{project_id}`. Stderr is forwarded as
 // `claude_stderr:{project_id}` and unparseable stdout lines as
 // `claude_event_raw:{project_id}`.
@@ -130,6 +132,7 @@ pub async fn claude_start(
 
     let mut cmd = Command::new(&claude_path);
     cmd.arg("--print")
+        .arg("--verbose")
         .arg("--input-format=stream-json")
         .arg("--output-format=stream-json")
         .arg("--include-partial-messages")

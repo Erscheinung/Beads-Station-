@@ -61,19 +61,14 @@ export default function App() {
 
   const terminalHeight = terminalCollapsed ? 24 : 280
 
-  // Phase 6 — show MorningConfirm when this project hasn't been confirmed
-  // today AND we haven't already confirmed it this session. The session-
-  // tracked Set lets a project re-confirm if the user toggles back to it
-  // intentionally without re-prompting.
+  // Show MorningConfirm at most once per app launch: the first unconfirmed
+  // project prompts, and confirming it seeds confirmedFor with every project
+  // id (see handleResume/handleNew) so subsequent switches stay silent.
   const needsConfirm = !confirmedFor.has(active.id) && shouldConfirm(active.id)
 
   const handleResume = () => {
     recordConfirmation(active.id)
-    setConfirmedFor(s => {
-      const next = new Set(s)
-      next.add(active.id)
-      return next
-    })
+    setConfirmedFor(() => new Set(projects.map(p => p.id)))
   }
 
   const handleNew = async () => {
@@ -87,11 +82,7 @@ export default function App() {
       console.error('[App] projects_set_claude_session failed', e)
     }
     recordConfirmation(active.id)
-    setConfirmedFor(s => {
-      const next = new Set(s)
-      next.add(active.id)
-      return next
-    })
+    setConfirmedFor(() => new Set(projects.map(p => p.id)))
   }
 
   return (

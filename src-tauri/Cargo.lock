@@ -230,6 +230,7 @@ name = "beads-station"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "libc",
  "notify",
  "once_cell",
  "portable-pty",
