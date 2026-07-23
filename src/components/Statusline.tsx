@@ -78,7 +78,13 @@ export function Statusline({ repoPath, projectPath }: Props) {
     }
     refresh()
     const id = window.setInterval(refresh, 5000)
-    const onFocus = () => refresh()
+    // Only refresh on a genuine window-level focus regain — not on focus
+    // events bubbling up from descendant elements (e.g. a modal autofocusing
+    // a button). Without this guard, an autofocus storm drives bd_counts in a
+    // render loop (R3.5 regression). window's own focus event has target===window.
+    const onFocus = (ev: FocusEvent) => {
+      if (ev.target === window) refresh()
+    }
     window.addEventListener('focus', onFocus)
     return () => {
       cancelled = true

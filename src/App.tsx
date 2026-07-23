@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { Terminal } from './components/Terminal'
@@ -49,6 +49,37 @@ export default function App() {
     return () => window.removeEventListener('project:cycle', onCycle)
   }, [projects, activeId, setActive])
 
+  // Memoized so their identity is stable across renders. Declared BEFORE the
+  // early returns below (Rules of Hooks — a useCallback after a conditional
+  // return throws "Rendered more hooks than during the previous render"). They
+  // null-guard `active` internally since it can be null on early-return paths.
+  //
+  // Stable identity is also what fixed the R3.5 render-loop regression: a fresh
+  // handleResume each render re-ran MorningConfirm's [onResume] effect, which
+  // re-asserted button focus, which bubbled to Statusline's window 'focus'
+  // listener → bd_counts → setState → re-render → new handleResume → … Maximum
+  // update depth.
+  const handleResume = useCallback(() => {
+    if (!active) return
+    recordConfirmation(active.id)
+    setConfirmedFor(() => new Set(projects.map(p => p.id)))
+  }, [active, projects])
+
+  const handleNew = useCallback(async () => {
+    if (!active) return
+    try {
+      await invoke('projects_set_claude_session', {
+        id: active.id,
+        sessionId: crypto.randomUUID(),
+      })
+      await refresh()
+    } catch (e) {
+      console.error('[App] projects_set_claude_session failed', e)
+    }
+    recordConfirmation(active.id)
+    setConfirmedFor(() => new Set(projects.map(p => p.id)))
+  }, [active, projects, refresh])
+
   if (loaded && projects.length === 0) {
     return <Dashboard />
   }
@@ -65,25 +96,6 @@ export default function App() {
   // project prompts, and confirming it seeds confirmedFor with every project
   // id (see handleResume/handleNew) so subsequent switches stay silent.
   const needsConfirm = !confirmedFor.has(active.id) && shouldConfirm(active.id)
-
-  const handleResume = () => {
-    recordConfirmation(active.id)
-    setConfirmedFor(() => new Set(projects.map(p => p.id)))
-  }
-
-  const handleNew = async () => {
-    try {
-      await invoke('projects_set_claude_session', {
-        id: active.id,
-        sessionId: crypto.randomUUID(),
-      })
-      await refresh()
-    } catch (e) {
-      console.error('[App] projects_set_claude_session failed', e)
-    }
-    recordConfirmation(active.id)
-    setConfirmedFor(() => new Set(projects.map(p => p.id)))
-  }
 
   return (
     <BdLiveProvider>
