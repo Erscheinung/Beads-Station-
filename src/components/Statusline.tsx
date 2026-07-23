@@ -78,12 +78,18 @@ export function Statusline({ repoPath, projectPath }: Props) {
     }
     refresh()
     const id = window.setInterval(refresh, 5000)
-    // Only refresh on a genuine window-level focus regain — not on focus
-    // events bubbling up from descendant elements (e.g. a modal autofocusing
-    // a button). Without this guard, an autofocus storm drives bd_counts in a
-    // render loop (R3.5 regression). window's own focus event has target===window.
+    // Only refresh on a genuine window-level focus regain (target===window),
+    // and coalesce rapid focus events: during a render churn, window
+    // focus/blur can fire in a storm and each carries target===window, which
+    // would otherwise drive bd_counts unthrottled and amplify a loop. Cap to
+    // once/second — imperceptible to a human regaining the window.
+    let lastFocusRefresh = 0
     const onFocus = (ev: FocusEvent) => {
-      if (ev.target === window) refresh()
+      if (ev.target !== window) return
+      const now = Date.now()
+      if (now - lastFocusRefresh < 1000) return
+      lastFocusRefresh = now
+      refresh()
     }
     window.addEventListener('focus', onFocus)
     return () => {

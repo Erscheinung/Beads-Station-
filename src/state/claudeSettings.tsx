@@ -16,7 +16,7 @@
 // wiring can mount one render-time portal into the ClaudeChat header
 // slot without juggling more imports.
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { invoke } from '@tauri-apps/api/core'
 import { Store } from '@tauri-apps/plugin-store'
@@ -87,16 +87,19 @@ export function usePermissionMode(projectId: string): PermissionModeApi {
     return () => { cancelled = true }
   }, [projectId])
 
-  const setMode = (m: PermissionMode) => {
+  // Memoized so the hook does not hand a fresh setMode identity (or a fresh
+  // return object) to consumers on every render — defense so no downstream
+  // effect keyed on the returned API re-fires in a churn.
+  const setMode = useCallback((m: PermissionMode) => {
     if (!VALID.has(m)) return
     setModeState(m)
     void writePersisted(projectId, m)
     invoke('claude_set_permission_mode', { projectId, mode: m }).catch(e =>
       console.warn('[claudeSettings] claude_set_permission_mode rpc failed', e),
     )
-  }
+  }, [projectId])
 
-  return { mode, setMode, hydrated }
+  return useMemo(() => ({ mode, setMode, hydrated }), [mode, setMode, hydrated])
 }
 
 // ---------- PermissionModePicker ----------
@@ -119,18 +122,32 @@ export function PermissionModePicker({ projectId }: PickerProps) {
   // and any future App-layout reshuffle.
   useEffect(() => {
     let cancelled = false
+    let timer: number | undefined
+    let attempts = 0
     const find = () => {
       if (cancelled) return
       const el = document.getElementById('bs-claude-header-right')
       if (el) {
-        setHost(el)
-      } else {
-        // 16ms ≈ one frame. Three retries is more than enough.
-        window.setTimeout(find, 16)
+        // Guard on identity: only setState when the host node actually
+        // changes. A ClaudeChat re-render that re-emits an equivalent slot
+        // node must NOT churn setHost → re-render → setHost. This is the
+        // structural root of the R3.5 render-loop (PermissionModePicker
+        // churning against ClaudeChat's mount-time re-render burst on a
+        // dbless project).
+        setHost(prev => (prev === el ? prev : el))
+        return // found — stop the retry chain permanently
       }
+      // Bounded retry (~10 frames / 160ms) with a cleared timer. An
+      // unbounded setTimeout(find,16) chain left orphaned by StrictMode's
+      // double-mount is exactly what fed the loop.
+      if (attempts++ >= 10) return
+      timer = window.setTimeout(find, 16)
     }
     find()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [projectId])
 
   if (!host) return null

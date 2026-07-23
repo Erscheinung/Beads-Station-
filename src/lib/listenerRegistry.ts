@@ -16,12 +16,21 @@ type CountMap = Record<string, number>
 const counts: CountMap = Object.create(null)
 const listeners = new Set<() => void>()
 
+// Cached immutable snapshot for useSyncExternalStore. getSnapshot MUST return
+// a stable reference between changes — returning a fresh `{ ...counts }` each
+// call makes React see every render as a store change and loops forever
+// ("The result of getSnapshot should be cached to avoid an infinite loop").
+// We rebuild this snapshot only inside notify(), i.e. only when counts change.
+let snapshot: CountMap = Object.create(null)
+
 function bucketOf(channel: string): string {
   const i = channel.indexOf(':')
   return i === -1 ? channel : channel.slice(0, i)
 }
 
 function notify(): void {
+  // Rebuild the immutable snapshot once per real mutation, then fan out.
+  snapshot = { ...counts }
   for (const cb of listeners) cb()
 }
 
@@ -49,8 +58,10 @@ export async function safeListen<T>(
 }
 
 export function getListenerCounts(): CountMap {
-  // shallow copy — callers must not mutate the registry directly
-  return { ...counts }
+  // Return the cached immutable snapshot (stable reference between changes).
+  // Rebuilt only in notify() when counts actually mutate. Callers must not
+  // mutate it.
+  return snapshot
 }
 
 export function subscribeListenerCounts(cb: () => void): () => void {
