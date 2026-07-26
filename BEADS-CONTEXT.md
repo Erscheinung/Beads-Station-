@@ -415,6 +415,47 @@ Design was **workflow-judged** (3 independent architects → judge picked MINIMA
 
 ---
 
+## RV2-fix + RV3 — file-nav + rich agent rendering · 2026-07-26 · Code-51e/d3p/8ro/ia4
+
+Third value-track phase (absorbs reboot R8/R9). Closes the nvim gap for a *navigate-not-edit* user: a file-nav pane + rich rendering of Claude's edits, both inside the RV1 pane model / RV2 agent leaf. Split A/B/C, gated on an RV2-fix.
+
+### RV2-fix (Code-51e) — the "issues gone on project switch" root cause
+
+**CONFIRMED (not environmental-only): a real backend leak RV2 amplified.** The legacy grid `ClaudeChat` is mounted `key={active.id}` (App.tsx), so it unmounts on *every* project switch — but its old unmount cleanup deliberately did NOT `claude_kill` ("Phase 6 manages lifecycles"). So the backend `SESSIONS` map leaked one persistent `claude --print` child per visited project, unbounded, never reaped. N projects = N live claude children (each forking git/dolt of its own) → fork exhaustion (`fork failed: resource temporarily unavailable`) → IssueList/Board `bd` reads fail → issues appear to vanish. IssueList/Board/useProjects/BdLiveProvider are genuinely untouched by RV2 — they're the *victim*, not the bug. Backend had ZERO teardown (no Drop, no CloseRequested, no `kill_on_drop`; tokio Command orphans on drop).
+
+**Fix (commit after b4bfb2a):**
+- `claude.rs`: `cmd.kill_on_drop(true)` (a dropped ClaudeSession can no longer orphan); `kill_all_sessions()` drain + `claude_kill_all` command.
+- `lib.rs`: `.on_window_event` `CloseRequested` → `block_on(kill_all_sessions())` so quitting reaps everything.
+- `ClaudeChat.tsx`: the LEGACY grid chat (`bridgeId==null`) now `claude_kill`s its bridge on unmount. **Agent panes (bridgeId set) intentionally stay persistent** — they survive project switch by design and are reaped by explicit `<leader>x` or the app-exit handler.
+- kill isolation was already correct (SESSIONS keyed by bridge; `<leader>x` kills only that pane's child). Residual: `claude_kill` is fire-and-forget with no retry (sad-path under-kill if it rejects mid-start) — low, kill_on_drop + CloseRequested backstop it.
+- +test `kill_all_on_empty_is_zero_and_idempotent` (claude 4/4).
+
+### RV3-A (Code-d3p) — rich agent rendering
+
+`ClaudeChat`'s flat per-frame `<pre>{renderFrame(f)}</pre>` is replaced by a rich render-item tree. **`src/lib/renderItems.ts`** — pure `buildRenderItems(frames, isApprovalPending)`: indexes `tool_result` by `tool_use_id`, pairs tool_use↔tool_result into one collapsible unit, groups Task subagent frames (by `parent_tool_use_id`, recursively — scope model keyed on ROOT|taskId, cycle-guarded) into nested chains, maps Edit/Write/MultiEdit/NotebookEdit to diff items. Handles eviction-split orphans (tool_use gone / result left) + approval gating. 12 unit tests. **`src/components/RenderItems.tsx`** — MarkdownText (`react-markdown`, no raw HTML = safe, + `rehype-highlight`), ToolPair, DiffPair (`diffLines` unified view, default-open), TaskChain (recursive, default-collapsed). Per-item collapse = component-local `useState` (NOT the drawer's single sessionStorage key). **ClaudeChat.tsx**: `frames.map` → `renderItems.map` + pending-only ApprovalCards. A tool flips ApprovalCard→resolved pair once its `tool_result` arrives (`resolvedToolIds` memo). `renderFrame()` deleted. Everything derived `useMemo` over `frames` → R2 bounded-500 append stays the only writer, getSnapshot cached. New deps: `react-markdown`, `rehype-highlight`, `diff`. `index.css` `.bs-md`/`.bs-tool`/`.bs-diff`/`.bs-task` + hljs theme on the bs palette, ASCII-only.
+
+### RV3-B (Code-8ro) — file-nav pane
+
+New RV1 leaf type, read-only (nav not edit; Claude does edits). **BE `src-tauri/src/fs.rs`** (+`ignore` crate = ripgrep engine): `list_dir(path)` gitignore-aware, one level, dirs-first, `MAX_ENTRIES=2000`, pure `std::fs`+`ignore::WalkBuilder` (NO subprocess — R3.5 PATH/fd discipline; lazy per-expand, never walks a whole repo); `read_file(path,maxBytes)` bounded UTF-8 prefix (256KiB default, 4MiB hard cap), flags truncated+binary. +3 rust tests, registered in lib.rs. **FE**: `lib/fsBridge.ts` (invoke wrappers), `lib/fileTree.ts` (`buildFileTree` materializes shared `TreeNode[]` from a lazy dir cache — `TreeNodeKind` widened with `'dir'|'file'`), `components/FileTree.tsx` (virtualized `@tanstack/react-virtual`, same 28px rows; vim j/k/h/l/Enter/g/G; lazy dir load on expand; inline read-only preview). `termPanes.ts`: additive `fileNav?` leaf field + `isFileNavLeaf`/`newFileNavLeaf`/`spawnFileNav` mirroring the `agent?` precedent; `activeIsFileNav` mirror bit — **7 tree helpers untouched**. `TerminalPanes.tsx` `FileNavPaneLeaf`. `useVimNav.ts`: `<leader>e` spawns file-nav; pane-op mode lets a focused file-nav pane own its nav keys (they bubble to the tree's own keydown). `App.tsx` `filenav:spawn`→`spawnFileNav(active.path)`.
+
+### RV3-C (Code-ia4) — nav→agent glue
+
+`termPanes.resolveTargetAgentBridge()` (focused agent, else sole agent, else null=ambiguous). FileTree `s` = send cursor path to the resolved agent via `claude_send`; `y` = yank path to clipboard. Transient hint (auto-clears 3s) + footer advertising l/Enter/s/y. `filenav:open` event also dispatched on preview (extra seam). The one-window loop: navigate → `s` → watch the diff render as Claude edits.
+
+**Verification:** `cargo check`+`build` clean, `cargo test` **14/14** (4 claude, 3 fs, +7 existing), `tsc` clean, `npm run build` clean (audit-emoji **0/48**), `vitest` **25/25** (+12 renderItems). Built binary boots clean (fd limit raised, no panic).
+
+**STILL OWED — the combined live Tauri-window pass** (headless can't drive the WKWebview; same limitation as every prior phase). Must verify by hand:
+- RV2-fix: switch projects several times with agent panes open → issues do NOT vanish; quit → `ps aux | grep 'claude --print'` shows zero survivors (CloseRequested reap); `<leader>x` kills only that pane's child.
+- RV3-A: a real Claude turn renders paired tool_use+result collapsibles, markdown + highlighted fences, an Edit as a readable diff, a Task as a nested chain; frames stay bounded (F12 overlay, no getSnapshot warning).
+- RV3-B: `<leader>e` opens a file tree (gitignore respected), j/k/h/l/Enter navigate + preview; coexists with shell+agent panes (split/tab/focus/zoom/close).
+- RV3-C: `s` on a file sends it to an agent pane which then acts on it.
+
+**Candid re-assessment (does the app now replace cmux+nvim for the user's loop?):** With RV1 shells + RV2 agents + RV3 nav+rich-rendering, the three value phases cover the "one-window everything" thesis *in code*. Remaining gaps to full parity: (1) no cross-restart layout persistence (RV1.1); (2) file-nav is read-only — any hand-edit still needs an external editor (by design, possibly forever); (3) no LSP/language intelligence; (4) reboot chrome (whichkey/palette/themes = R5/R6/R11) still absent — optional polish; (5) **none of it is live-verified** — the whole thesis rests on a manual window pass that keeps being deferred. That verification is now the single highest-value next action, ahead of any new feature.
+
+**Next:** run the live pass → close Code-51e/d3p/8ro/ia4 (currently blocked-open pending it) → then R4 soak (owns the live-measurement harness) or stop and polish.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
