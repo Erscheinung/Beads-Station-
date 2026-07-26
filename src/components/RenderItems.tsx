@@ -1,0 +1,234 @@
+// RV3-A (Code-d3p) — React renderers for the RenderItem tree produced by
+// buildRenderItems. Everything here is presentational; the pairing/nesting
+// logic lives in ../lib/renderItems.ts (pure + unit-tested).
+//
+// - MarkdownText : sanitized markdown (react-markdown renders NO raw HTML by
+//                  default = safe) + syntax-highlighted fences (rehype-highlight).
+// - ToolPair     : collapsible tool_use ↔ tool_result unit.
+// - DiffPair     : Edit/Write/MultiEdit rendered as a unified line diff.
+// - TaskChain    : recursive, collapsible subagent chain.
+//
+// Collapse state is component-local useState (recon warning: do NOT reuse
+// ToolDrawer's single sessionStorage key — the keyspace would explode).
+// Glyphs are @vscode/codicons (already a dep) so the emoji-audit gate stays
+// green — no unicode emoji anywhere.
+
+import { useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
+import { diffLines } from 'diff';
+
+import type { RenderItem, ToolResultBlock, ToolUseBlock } from '../lib/renderItems';
+import { resultToText } from '../lib/renderItems';
+
+const REHYPE_PLUGINS = [rehypeHighlight];
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <span
+      className={`codicon codicon-chevron-${open ? 'down' : 'right'}`}
+      style={{ fontSize: 12, opacity: 0.7, flexShrink: 0 }}
+      aria-hidden
+    />
+  );
+}
+
+function inputSummary(input: unknown): string {
+  if (input == null) return '';
+  if (typeof input === 'string') return input;
+  if (typeof input === 'object') {
+    const o = input as Record<string, unknown>;
+    // Prefer the human-meaningful field per common tool.
+    const pick =
+      o.command ?? o.file_path ?? o.path ?? o.pattern ?? o.description ?? o.prompt ?? o.url;
+    if (typeof pick === 'string') return pick.length > 120 ? pick.slice(0, 120) + '…' : pick;
+  }
+  try {
+    const s = JSON.stringify(input);
+    return s.length > 120 ? s.slice(0, 120) + '…' : s;
+  } catch {
+    return '';
+  }
+}
+
+export function MarkdownText({ text }: { text: string }) {
+  return (
+    <div className="bs-md">
+      <ReactMarkdown rehypePlugins={REHYPE_PLUGINS}>{text}</ReactMarkdown>
+    </div>
+  );
+}
+
+function ToolHeader({
+  tool,
+  result,
+  open,
+  onToggle,
+  label,
+}: {
+  tool: ToolUseBlock;
+  result: ToolResultBlock | null;
+  open: boolean;
+  onToggle: () => void;
+  label?: string;
+}) {
+  const errored = result?.is_error === true;
+  const dot = result == null ? 'var(--bs-yellow)' : errored ? 'var(--bs-red)' : 'var(--bs-green)';
+  return (
+    <button type="button" className="bs-tool-head" onClick={onToggle} aria-expanded={open}>
+      <Chevron open={open} />
+      <span
+        style={{ width: 7, height: 7, borderRadius: '50%', background: dot, flexShrink: 0 }}
+        aria-hidden
+      />
+      <span className="bs-tool-name">{label ?? tool.name}</span>
+      <span className="bs-tool-arg">{inputSummary(tool.input)}</span>
+      {result == null && <span className="bs-tool-pending">running…</span>}
+    </button>
+  );
+}
+
+export function ToolPair({ tool, result }: { tool: ToolUseBlock; result: ToolResultBlock | null }) {
+  const [open, setOpen] = useState(false);
+  const resultText = resultToText(result);
+  return (
+    <div className="bs-tool">
+      <ToolHeader tool={tool} result={result} open={open} onToggle={() => setOpen((o) => !o)} />
+      {open && (
+        <div className="bs-tool-body">
+          {tool.input != null && (
+            <pre className="bs-tool-input">{JSON.stringify(tool.input, null, 2)}</pre>
+          )}
+          {result != null && (
+            <pre className={`bs-tool-result${result.is_error ? ' bs-tool-result-err' : ''}`}>
+              {resultText || '(no output)'}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function DiffPair({
+  tool,
+  result,
+  filePath,
+  before,
+  after,
+}: {
+  tool: ToolUseBlock;
+  result: ToolResultBlock | null;
+  filePath: string;
+  before: string;
+  after: string;
+}) {
+  const [open, setOpen] = useState(true); // diffs are the payoff — default open
+  const parts = useMemo(() => diffLines(before, after), [before, after]);
+  const label = `${tool.name} · ${filePath.split('/').pop() || filePath}`;
+  return (
+    <div className="bs-tool bs-diff">
+      <ToolHeader tool={tool} result={result} open={open} onToggle={() => setOpen((o) => !o)} label={label} />
+      {open && (
+        <div className="bs-diff-body">
+          {parts.map((p, i) => {
+            const cls = p.added ? 'bs-diff-add' : p.removed ? 'bs-diff-del' : 'bs-diff-ctx';
+            const mark = p.added ? '+' : p.removed ? '-' : ' ';
+            // Split into lines so each gets its own gutter mark.
+            const lines = p.value.replace(/\n$/, '').split('\n');
+            return lines.map((ln, j) => (
+              <div key={`${i}-${j}`} className={`bs-diff-line ${cls}`}>
+                <span className="bs-diff-gutter" aria-hidden>{mark}</span>
+                <span className="bs-diff-text">{ln}</span>
+              </div>
+            ));
+          })}
+          {result?.is_error && (
+            <pre className="bs-tool-result bs-tool-result-err">{resultToText(result)}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function TaskChain({
+  tool,
+  result,
+  items,
+}: {
+  tool: ToolUseBlock;
+  result: ToolResultBlock | null;
+  items: RenderItem[];
+}) {
+  const [open, setOpen] = useState(false); // subagent chains collapse by default
+  const label = `Task · ${inputSummary(tool.input) || 'subagent'}`;
+  return (
+    <div className="bs-tool bs-task">
+      <ToolHeader tool={tool} result={result} open={open} onToggle={() => setOpen((o) => !o)} label={label} />
+      {open && (
+        <div className="bs-task-body">
+          {items.length === 0 ? (
+            <div className="bs-task-empty">(no subagent output yet)</div>
+          ) : (
+            <RenderItemList items={items} />
+          )}
+          {result != null && (
+            <pre className={`bs-tool-result${result.is_error ? ' bs-tool-result-err' : ''}`}>
+              {resultToText(result) || '(subagent returned no text)'}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Dispatch one item to its renderer. Recursive via TaskChain -> RenderItemList.
+export function RenderItemView({ item }: { item: RenderItem }) {
+  switch (item.kind) {
+    case 'markdown':
+      return <MarkdownText text={item.text} />;
+    case 'toolpair':
+      return <ToolPair tool={item.tool} result={item.result} />;
+    case 'diffpair':
+      return (
+        <DiffPair
+          tool={item.tool}
+          result={item.result}
+          filePath={item.filePath}
+          before={item.before}
+          after={item.after}
+        />
+      );
+    case 'taskchain':
+      return <TaskChain tool={item.tool} result={item.result} items={item.children} />;
+    case 'localuser':
+      return <div className="bs-chat-you">&gt; {item.text}</div>;
+    case 'reminder':
+      return <div className="bs-system-reminder">{item.text}</div>;
+    case 'stderr':
+      return <pre className="bs-chat-line bs-chat-stderr">[stderr] {item.text}</pre>;
+    case 'raw':
+      return <pre className="bs-chat-line bs-chat-raw">[raw] {item.text}</pre>;
+    case 'system':
+      return <pre className="bs-chat-line bs-chat-dim">[system] {item.text}</pre>;
+    case 'result':
+      return <pre className="bs-chat-line bs-chat-dim">[result] {item.text}</pre>;
+    case 'text':
+      return <pre className="bs-chat-line">{item.text}</pre>;
+    case 'unknown':
+    default:
+      return <pre className="bs-chat-line bs-chat-dim">{item.text}</pre>;
+  }
+}
+
+export function RenderItemList({ items }: { items: RenderItem[] }) {
+  return (
+    <>
+      {items.map((item) => (
+        <RenderItemView key={item.key} item={item} />
+      ))}
+    </>
+  );
+}

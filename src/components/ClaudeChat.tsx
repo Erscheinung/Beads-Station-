@@ -30,6 +30,8 @@ import { accumulate as accumulateUsage } from '../state/claudeUsage'
 import { useVim } from '../state/vim'
 import { PermissionModePicker } from '../state/claudeSettings'
 import { setInsert as setTermInsert } from '../state/termPanes'
+import { buildRenderItems } from '../lib/renderItems'
+import { RenderItemView } from './RenderItems'
 
 type Frame = any
 
@@ -297,6 +299,40 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
     return null
   }, [frames, approvalStates])
 
+  // RV3-A — the set of tool_use ids that have already COMPLETED (a matching
+  // tool_result frame arrived). A completed tool is never a pending approval:
+  // it renders as a rich collapsible pair, not an ApprovalCard. This is what
+  // lets a tool_use flip from ApprovalCard (while genuinely awaiting the user)
+  // to a resolved pair (once it ran). Derived useMemo over frames — no new
+  // unbounded array, getSnapshot stays cached (R2 discipline).
+  const resolvedToolIds = useMemo<Set<string>>(() => {
+    const s = new Set<string>()
+    for (const f of frames) {
+      if (f?.type === 'user' && Array.isArray(f?.message?.content)) {
+        for (const p of f.message.content) {
+          if (p?.type === 'tool_result' && typeof p?.tool_use_id === 'string') s.add(p.tool_use_id)
+        }
+      }
+    }
+    return s
+  }, [frames])
+
+  // A tool_use still "owns" an ApprovalCard only while it is genuinely
+  // pending: no explicit approve/deny recorded AND no tool_result yet.
+  const isApprovalPending = useMemo(
+    () => (toolUseId: string) =>
+      !resolvedToolIds.has(toolUseId) && (approvalStates[toolUseId] ?? 'pending') === 'pending',
+    [resolvedToolIds, approvalStates],
+  )
+
+  // RV3-A — the rich render-item tree (paired tool_use↔tool_result, markdown,
+  // diffs, recursive subagent chains). Pure pass, memoized over frames so the
+  // bounded 500-cap append path stays the only writer.
+  const renderItems = useMemo(
+    () => buildRenderItems(frames, isApprovalPending),
+    [frames, isApprovalPending],
+  )
+
   // Keyboard shortcut: a / d when chat is focused and a pending approval
   // exists. Bypass when an editable element (the input field) has focus.
   useEffect(() => {
@@ -378,34 +414,31 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
         {evictedCount > 0 && (
           <div style={{ color: 'var(--bs-fg-muted)', fontSize: 11, padding: '2px 0 8px', opacity: 0.7 }}>— {evictedCount} earlier frames evicted —</div>
         )}
+        {/* RV3-A — rich render-item tree: markdown, paired tool_use↔tool_result,
+            unified diffs, recursive subagent chains. Pending tool approvals are
+            excluded here (isApprovalPending) and rendered as ApprovalCards below,
+            so a tool flips ApprovalCard → resolved pair once it runs. */}
+        {renderItems.map(item => (
+          <RenderItemView key={item.key} item={item} />
+        ))}
+        {/* Pending approvals — the only frames NOT in renderItems. Chronologically
+            the newest (awaiting the user), so they sit at the tail. */}
         {frames.map((f, i) => {
-          if (f?._kind === 'system-reminder') {
-            return (
-              <div key={i} className="bs-system-reminder">
-                {String(f.text ?? '')}
-              </div>
-            )
-          }
-          // Approval card — render in place if this frame yields one.
           const a = extractApproval(f)
-          if (a) {
-            const state = approvalStates[a.requestId] ?? 'pending'
-            return (
-              <ApprovalCard
-                key={`approval-${i}-${a.requestId}`}
-                projectId={bridge}
-                requestId={a.requestId}
-                toolName={a.toolName}
-                input={a.input}
-                status={state}
-                onResolve={next => onResolveApproval(a.requestId, next)}
-              />
-            )
-          }
-          const style: React.CSSProperties = { margin: '0 0 8px 0', whiteSpace: 'pre-wrap' }
-          if (f?._kind === 'stderr') { style.color = 'var(--bs-red)'; style.opacity = 0.8 }
-          else if (f?._kind === 'raw') { style.color = 'var(--bs-yellow)'; style.opacity = 0.8 }
-          return <pre key={i} style={style}>{renderFrame(f)}</pre>
+          if (!a) return null
+          const state = approvalStates[a.requestId] ?? 'pending'
+          if (!isApprovalPending(a.requestId)) return null
+          return (
+            <ApprovalCard
+              key={`approval-${i}-${a.requestId}`}
+              projectId={bridge}
+              requestId={a.requestId}
+              toolName={a.toolName}
+              input={a.input}
+              status={state}
+              onResolve={next => onResolveApproval(a.requestId, next)}
+            />
+          )
         })}
       </div>
 
@@ -441,17 +474,4 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       </form>
     </div>
   )
-}
-
-function renderFrame(f: any): string {
-  if (f?._local) return `> ${f.text}`
-  if (f?._kind === 'stderr') return `[stderr] ${f.line}`
-  if (f?._kind === 'raw') return `[raw] ${f.line}`
-  if (f?.type === 'assistant' && f?.message?.content) {
-    const parts = Array.isArray(f.message.content) ? f.message.content : []
-    return parts.map((p: any) => p?.type === 'text' ? p.text : JSON.stringify(p)).join('\n')
-  }
-  if (f?.type === 'system') return `[system] ${f?.subtype ?? ''}`
-  if (f?.type === 'result') return `[result] ${f?.subtype ?? ''}`
-  return JSON.stringify(f).slice(0, 400)
 }

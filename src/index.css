@@ -445,3 +445,72 @@ body {
   font-size: 11px;
   color: var(--bs-fg-muted);
 }
+
+/* ── RV3-A (Code-d3p) — rich agent rendering ────────────────────────────── */
+/* Markdown (react-markdown output). Tight vertical rhythm to match the chat. */
+.bs-md { white-space: normal; }
+.bs-md > :first-child { margin-top: 0; }
+.bs-md > :last-child { margin-bottom: 0; }
+.bs-md p { margin: 0 0 8px 0; }
+.bs-md ul, .bs-md ol { margin: 0 0 8px 0; padding-left: 20px; }
+.bs-md li { margin: 2px 0; }
+.bs-md h1, .bs-md h2, .bs-md h3, .bs-md h4 { margin: 10px 0 6px; font-weight: 600; line-height: 1.3; }
+.bs-md h1 { font-size: 15px; } .bs-md h2 { font-size: 14px; } .bs-md h3 { font-size: 13px; }
+.bs-md a { color: var(--bs-blue); }
+.bs-md blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 2px solid var(--bs-border); color: var(--bs-fg-muted); }
+.bs-md code { background: var(--bs-bg-dark); border: 1px solid var(--bs-border-faint); border-radius: 3px; padding: 0 3px; font-size: 11px; }
+.bs-md pre { background: var(--bs-bg-dark); border: 1px solid var(--bs-border); border-radius: 4px; padding: 8px 10px; margin: 0 0 8px; overflow-x: auto; }
+.bs-md pre code { background: none; border: none; padding: 0; font-size: 11px; }
+.bs-md table { border-collapse: collapse; margin: 0 0 8px; }
+.bs-md th, .bs-md td { border: 1px solid var(--bs-border); padding: 2px 6px; }
+
+/* Plain chat lines (synthetic frames). */
+.bs-chat-line { margin: 0 0 8px 0; white-space: pre-wrap; }
+.bs-chat-you { margin: 0 0 8px 0; white-space: pre-wrap; color: var(--bs-cyan); }
+.bs-chat-stderr { color: var(--bs-red); opacity: 0.85; }
+.bs-chat-raw { color: var(--bs-yellow); opacity: 0.85; }
+.bs-chat-dim { color: var(--bs-fg-muted); opacity: 0.8; }
+
+/* Collapsible tool unit (tool_use ↔ tool_result). */
+.bs-tool { margin: 0 0 8px 0; border: 1px solid var(--bs-border); border-radius: 4px; background: var(--bs-bg-elev); overflow: hidden; }
+.bs-tool-head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 5px 8px; background: none; border: none; color: var(--bs-fg); font-family: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.bs-tool-head:hover { background: var(--bs-bg-float); }
+.bs-tool-name { font-weight: 600; flex-shrink: 0; }
+.bs-tool-arg { color: var(--bs-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.bs-tool-pending { color: var(--bs-yellow); flex-shrink: 0; font-size: 11px; }
+.bs-tool-body { border-top: 1px solid var(--bs-border-faint); padding: 8px; }
+.bs-tool-input { color: var(--bs-fg-muted); font-size: 11px; margin: 0 0 6px; white-space: pre-wrap; overflow-x: auto; }
+.bs-tool-result { color: var(--bs-fg); font-size: 11px; margin: 0; white-space: pre-wrap; overflow-x: auto; max-height: 320px; overflow-y: auto; }
+.bs-tool-result-err { color: var(--bs-red); }
+
+/* Unified diff (Edit/Write/MultiEdit). */
+.bs-diff-body { border-top: 1px solid var(--bs-border-faint); padding: 4px 0; font-size: 11px; }
+.bs-diff-line { display: flex; padding: 0 8px; white-space: pre-wrap; word-break: break-word; }
+.bs-diff-gutter { width: 12px; flex-shrink: 0; opacity: 0.6; user-select: none; }
+.bs-diff-text { flex: 1; min-width: 0; }
+.bs-diff-add { background: color-mix(in srgb, var(--bs-green) 14%, transparent); }
+.bs-diff-add .bs-diff-gutter { color: var(--bs-green); }
+.bs-diff-del { background: color-mix(in srgb, var(--bs-red) 14%, transparent); }
+.bs-diff-del .bs-diff-gutter { color: var(--bs-red); }
+.bs-diff-ctx { color: var(--bs-fg-muted); }
+
+/* Recursive subagent chain. Nested indent so depth reads visually. */
+.bs-task-body { border-top: 1px solid var(--bs-border-faint); padding: 8px; }
+.bs-task .bs-task .bs-task-body,
+.bs-task-body .bs-tool { margin-left: 2px; }
+.bs-task-body { border-left: 2px solid var(--bs-purple); }
+.bs-task-empty { color: var(--bs-fg-muted); font-size: 11px; opacity: 0.7; }
+
+/* highlight.js token colors (rehype-highlight emits .hljs-* classes). Mapped
+   onto the bs palette so light/dark themes both work. No emoji, ASCII-only. */
+.bs-md .hljs { color: var(--bs-fg); background: none; }
+.bs-md .hljs-comment, .bs-md .hljs-quote { color: var(--bs-fg-muted); font-style: italic; }
+.bs-md .hljs-keyword, .bs-md .hljs-selector-tag, .bs-md .hljs-literal, .bs-md .hljs-type { color: var(--bs-magenta); }
+.bs-md .hljs-string, .bs-md .hljs-attr, .bs-md .hljs-regexp, .bs-md .hljs-addition { color: var(--bs-green); }
+.bs-md .hljs-number, .bs-md .hljs-symbol, .bs-md .hljs-bullet { color: var(--bs-orange); }
+.bs-md .hljs-function, .bs-md .hljs-title, .bs-md .hljs-section { color: var(--bs-blue); }
+.bs-md .hljs-variable, .bs-md .hljs-name, .bs-md .hljs-tag { color: var(--bs-cyan); }
+.bs-md .hljs-built_in, .bs-md .hljs-class .hljs-title { color: var(--bs-yellow); }
+.bs-md .hljs-meta, .bs-md .hljs-deletion { color: var(--bs-red); }
+.bs-md .hljs-emphasis { font-style: italic; }
+.bs-md .hljs-strong { font-weight: 600; }
