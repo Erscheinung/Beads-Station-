@@ -7,9 +7,11 @@
 // NON-GOAL (RV3): editing. This pane reads and jumps only — Claude does edits.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { flattenVisible, type FlatRow } from '../state/tree';
+import { resolveTargetAgentBridge } from '../state/termPanes';
 import { buildFileTree, isLoadingPlaceholder, type DirCache } from '../lib/fileTree';
 import { listDir, readFile, type FsFilePreview } from '../lib/fsBridge';
 
@@ -25,6 +27,7 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
   const [cursor, setCursor] = useState(0);
   const [preview, setPreview] = useState<FsFilePreview | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
   const parentRef = useRef<HTMLDivElement>(null);
 
   // Reset when the pane is re-rooted at a different project.
@@ -34,7 +37,15 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
     setCursor(0);
     setPreview(null);
     setErr(null);
+    setHint(null);
   }, [rootPath]);
+
+  // Auto-clear the transient hint.
+  useEffect(() => {
+    if (hint == null) return;
+    const id = window.setTimeout(() => setHint(null), 3000);
+    return () => window.clearTimeout(id);
+  }, [hint]);
 
   // Lazily list a directory: fetch once, memoize in cache.
   const loadDir = useCallback(
@@ -115,6 +126,23 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
       .catch((e) => setErr(String(e)));
   }, []);
 
+  // RV3-C — send the cursor's path to an agent pane. Resolves the target
+  // (focused agent, else the sole agent) and injects a user message asking
+  // Claude to look at the file. A transient hint reports the outcome.
+  const sendToAgent = useCallback(
+    (path: string) => {
+      const bridge = resolveTargetAgentBridge();
+      if (!bridge) {
+        setHint('no agent pane to send to (spawn one with <leader>a, or focus it)');
+        return;
+      }
+      invoke('claude_send', { projectId: bridge, text: `Please look at this file: ${path}` })
+        .then(() => setHint(`sent ${path.split('/').pop()} to agent`))
+        .catch((e) => setHint(`send failed: ${String(e)}`));
+    },
+    [],
+  );
+
   // Activate the cursor row: dirs toggle, files preview.
   const activateCursor = useCallback(() => {
     const row = rows[cursor];
@@ -164,12 +192,30 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
           e.preventDefault();
           setCursor(rows.length - 1);
           break;
+        case 's': {
+          // RV3-C — send the cursor path to an agent pane.
+          e.preventDefault();
+          if (row && !isLoadingPlaceholder(row.node)) sendToAgent(row.node.id);
+          break;
+        }
+        case 'y': {
+          // RV3-C — yank the cursor path to the clipboard.
+          e.preventDefault();
+          if (row && !isLoadingPlaceholder(row.node)) {
+            const p = row.node.id;
+            navigator.clipboard?.writeText(p).then(
+              () => setHint(`yanked ${p}`),
+              () => setHint('clipboard unavailable'),
+            );
+          }
+          break;
+        }
       }
     };
     const el = parentRef.current;
     el?.addEventListener('keydown', onKey);
     return () => el?.removeEventListener('keydown', onKey);
-  }, [active, rows, cursor, expanded, activateCursor, toggleDir]);
+  }, [active, rows, cursor, expanded, activateCursor, toggleDir, sendToAgent]);
 
   return (
     <div className="bs-filetree-wrap" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -248,6 +294,10 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
           <pre className="bs-filepreview-body">{preview.content}</pre>
         </div>
       )}
+      {/* RV3-C — transient action hint + a discoverability footer for s/y. */}
+      <div className="bs-filetree-foot">
+        {hint ?? 'l/Enter open · s send to agent · y yank path'}
+      </div>
     </div>
   );
 }

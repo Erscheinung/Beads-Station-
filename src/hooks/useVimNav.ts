@@ -200,7 +200,7 @@ export function useVimNav(): void {
         if (termMirror?.activeIsFileNav && !ctrl) {
           const leaderArmed = !!(window as unknown as { __bsVim?: { leaderActive: boolean } })
             .__bsVim?.leaderActive
-          const navKeys = ['j', 'k', 'h', 'l', 'g', 'G', 'Enter']
+          const navKeys = ['j', 'k', 'h', 'l', 'g', 'G', 'Enter', 's', 'y']
           if (!leaderArmed && k !== ' ' && k !== 'Escape' && navKeys.includes(k)) {
             return // do not preventDefault — the FileTree's handler consumes it
           }

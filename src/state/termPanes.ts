@@ -224,6 +224,23 @@ export function leavesOf(node: Node): Leaf[] {
   return [...leavesOf(node.a), ...leavesOf(node.b)]
 }
 
+/**
+ * RV3-C — resolve the agent pane to send a file path to. Preference:
+ *   1. the currently-active pane, if it's an agent (user's focus intent)
+ *   2. otherwise the sole agent pane, if exactly one exists
+ *   3. otherwise null (ambiguous with 2+ agents and none focused, or none).
+ * Returns the target bridgeId. Scoped to the active tab.
+ */
+export function resolveTargetAgentBridge(): string | null {
+  const tab = activeTab(state)
+  const agents = leavesOf(tab.root).filter(l => l.agent != null)
+  if (agents.length === 0) return null
+  const active = findLeaf(tab.root, tab.activePaneId)
+  if (active?.agent != null) return active.agent.bridgeId
+  if (agents.length === 1) return agents[0].agent!.bridgeId
+  return null // ambiguous — caller should hint the user to focus an agent
+}
+
 function findLeaf(node: Node, paneId: string): Leaf | null {
   if (node.kind === 'leaf') return node.paneId === paneId ? node : null
   return findLeaf(node.a, paneId) ?? findLeaf(node.b, paneId)
