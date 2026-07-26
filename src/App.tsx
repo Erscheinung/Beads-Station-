@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setDefaultCwd, spawnAgent, setInsert } from './state/termPanes'
+import { setDefaultCwd, spawnAgent } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -67,7 +67,10 @@ export default function App() {
       if (!active) return
       spawnAgent(active.id, active.path, crypto.randomUUID(), permissionApi.mode)
       setFocused('terminal')
-      setInsert(true)
+      // Do NOT setInsert(true) here — the pane's input doesn't exist in the DOM
+      // yet, so a synchronous focus lands nowhere (the "stuck typing" bug). The
+      // ClaudeChat mount autofocuses its input via rAF, which fires onFocus ->
+      // setInsert(true), tying insert mode to real focus.
     }
     window.addEventListener('agent:spawn', onSpawn)
     return () => window.removeEventListener('agent:spawn', onSpawn)

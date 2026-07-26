@@ -105,9 +105,13 @@ function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
   return (
     <div
       onMouseDown={() => {
+        // RV2 — focus the pane, but DON'T force insert here. If the click lands
+        // on the input, its onFocus sets insert=true (real focus == insert). If
+        // it lands on the header/body, we stay in pane-op mode so leader/C-w
+        // work — forcing insert with no focused input is the desync that traps
+        // the user.
         focusPane(leaf.paneId)
         setFocused('terminal')
-        setInsert(true)
       }}
       style={{
         width: '100%',

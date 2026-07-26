@@ -22,7 +22,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { safeInvoke } from '../lib/invokeErrorBoundary'
 import { safeListen } from '../lib/safeListen'
 import { ToolDrawer, frameToHookEvent, type HookEvent } from './ToolDrawer'
 import { ApprovalCard, type ApprovalStatus } from './ApprovalCard'
@@ -30,6 +29,7 @@ import { CostMeter } from './CostMeter'
 import { accumulate as accumulateUsage } from '../state/claudeUsage'
 import { useVim } from '../state/vim'
 import { PermissionModePicker } from '../state/claudeSettings'
+import { setInsert as setTermInsert } from '../state/termPanes'
 
 type Frame = any
 
@@ -211,8 +211,13 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
 
       // Phase 6 — fetch bd prime and inject as a system-reminder. Non-fatal
       // on error so a missing/broken bd doesn't keep the chat from working.
+      // Use plain invoke (not safeInvoke): the local catch already handles
+      // failure as non-fatal, and safeInvoke would ALSO push a user-facing
+      // toast on every failure — which spams once per agent pane / per project
+      // switch when bd is slow or queued behind the bd-spawn guard (RV2 made
+      // this visible: N panes = N ClaudeChat mounts = N bd_prime calls).
       try {
-        const bdPrimeOut = await safeInvoke<string>('bd_prime', { repoPath: cwd }, { rethrow: true })
+        const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
         if (!signal.aborted && bdPrimeOut && bdPrimeOut.trim()) {
           const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
           appendFrame({ _kind: 'system-reminder', text: bdPrimeOut })
@@ -255,6 +260,19 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       // Phase 6 manages claude lifecycles — do NOT auto-kill on unmount.
     }
   }, [projectId, bridge, cwd, sessionId, permissionMode])
+
+  // RV2 — agent panes autofocus their input once mounted. App.tsx's spawn
+  // handler used to call setInsert(true) synchronously, before this input
+  // existed in the DOM, so the focus landed nowhere and the user was "stuck"
+  // typing into the void. Focusing here (post-mount) fires onFocus ->
+  // setTermInsert(true), tying the insert mirror to real focus. Only for agent
+  // panes (bridgeId set); the legacy grid chat must not steal focus on boot.
+  useEffect(() => {
+    if (bridgeId == null) return
+    // rAF: run after the browser has committed layout so .focus() sticks.
+    const id = requestAnimationFrame(() => inputRef.current?.focus())
+    return () => cancelAnimationFrame(id)
+  }, [bridgeId])
 
   // Compute the topmost-pending approval for the keyboard shortcut. Walk
   // frames in order; the first frame that yields an extractable approval
@@ -389,6 +407,22 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
           data-bs-agent-input
           value={input}
           onChange={e => setInput(e.target.value)}
+          // RV2 — for agent panes (bridgeId set), the input's REAL focus is the
+          // source of truth for insert mode. Binding onFocus/onBlur keeps the
+          // termPanes `insert` mirror in sync no matter how focus was acquired
+          // (click, spawn autofocus, tab), so useVimNav's Esc/leader routing
+          // doesn't desync. Esc blurs locally (belt-and-suspenders with the
+          // window handler) so the user is never trapped typing.
+          onFocus={bridgeId != null ? () => setTermInsert(true) : undefined}
+          onBlur={bridgeId != null ? () => setTermInsert(false) : undefined}
+          onKeyDown={bridgeId != null ? e => {
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              e.stopPropagation()
+              setTermInsert(false)
+              ;(e.currentTarget as HTMLInputElement).blur()
+            }
+          } : undefined}
           placeholder={topmostPending ? `pending: approve(a)/deny(d) ${topmostPending.toolName}` : 'ask claude'}
           disabled={busy}
           style={{ flex: 1, background: 'var(--bs-bg-elev)', color: 'var(--bs-fg)', border: '1px solid var(--bs-border)', padding: '6px 8px', fontFamily: 'inherit' }}
