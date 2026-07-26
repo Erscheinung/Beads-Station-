@@ -366,6 +366,24 @@ The bar per §10 is "measurably better and documented," not "perfect": the DFS-p
 
 ---
 
+## RV1 — Multiplexed shells (cmux parity) · 2026-07-26 · Code-pqr (closed)
+
+First phase of the **value-first track** that supersedes the reboot roadmap's chrome phases (R4–R11). Thesis: the single biggest concrete reason the user still opens cmux is multiplexed shells; this closes it.
+
+The single collapsible Terminal is now a **terminal pane manager**: tabs-of-split-trees, persistent shells, vim splits/tabs/focus/zoom/close.
+
+- **Model:** `src/state/termPanes.ts` — external store (useSyncExternalStore, no zustand), cached getSnapshot (stored `state` ref, replaced by spread on every mutation — deliberately NOT the R3.5 uncached-snapshot loop). Tabs, each a binary split tree of shell leaves.
+- **PTY lifecycle LIFTED** out of Terminal into the store. `Terminal.tsx` is now controlled (`paneId` + `onSpawn`), spawns its pty, reports the id, and does NOT kill on unmount — reflow preserves the shell. Store's `closeActivePane()` owns the kill.
+- **Layout:** `src/components/TerminalPanes.tsx` — recursive flex splits, 1px `--bs-border` seams, inset-blue focus ring, tab strip (>1 tab only), zoom via absolute-cover (panes stay mounted).
+- **Keymap** (in `useVimNav` terminal-focus block): `<leader>s`/`v` split · `<leader>t` new tab · `C-w h/j/k/l` (+`C-w w`) focus · `<leader>z` zoom · `<leader>x`/`C-w q` close · `<leader>1..9` + `gt/gT` tabs. Insert vs pane-op submode via termPanes `insert` + `window.__bsTerm` mirror.
+- **BE `pty.rs`: unchanged** (already multi-PTY, zsh-only). RV2 agent panes will need a generic spawn-command seam there.
+
+**Verification:** build (tsc+vite+emoji) clean · `cargo check` clean · vitest 12/12 · live `tauri dev` boots clean, shell spawns, no render loop. **Deferred:** manual in-window split/tab pass; persistence path (a) per-project layouts → RV1.1. Full handoff block in `Daily/2026-07-26.md` under `<!-- RV1-HANDOFF -->`.
+
+**Next value phase:** RV2 (multi-agent panes).
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.

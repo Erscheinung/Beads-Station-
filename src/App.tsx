@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
-import { Terminal } from './components/Terminal'
+import { TerminalPanes } from './components/TerminalPanes'
+import { setDefaultCwd } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -34,6 +35,14 @@ export default function App() {
   // it into ClaudeChat. The hook is called unconditionally with a stable
   // string; when there's no active project we pass a stub id and ignore.
   const permissionApi = usePermissionMode(active?.id ?? '__none__')
+
+  // RV1 — seed the terminal surface's default cwd from the active project.
+  // The pane surface is NOT keyed by active.id (persistence: shells survive
+  // project switch); setDefaultCwd only affects newly-spawned shells and the
+  // very first boot leaf.
+  useEffect(() => {
+    if (active) setDefaultCwd(active.path)
+  }, [active])
 
   // <leader>p — cycle to the next project. Wraps at end. The custom
   // event is dispatched by the global vim keymap; this keeps
@@ -146,7 +155,7 @@ export default function App() {
             </button>
             {!terminalCollapsed && (
               <div style={{ flex: 1, minHeight: 0 }}>
-                <Terminal key={active.id} cwd={active.path} />
+                <TerminalPanes termFocused={vim.focused === 'terminal'} />
               </div>
             )}
           </div>

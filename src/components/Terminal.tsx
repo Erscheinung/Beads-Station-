@@ -6,9 +6,34 @@ import { invoke } from '@tauri-apps/api/core'
 import { safeListen } from '../lib/safeListen'
 import 'xterm/css/xterm.css'
 
-export function Terminal({ cwd }: { cwd: string }) {
+// RV1 — Terminal is now a CONTROLLED leaf owned by the termPanes store.
+//
+// The pty lifecycle is LIFTED: this component still spawns its pty on mount
+// (a fresh leaf has none yet) and reports the id back via onSpawn, but it
+// deliberately does NOT kill the pty on unmount — the store's closePane()
+// owns the kill. That's what lets a split/tab reflow re-parent the same
+// paneId subtree without respawning the shell (persistence is the point).
+//
+// Keyed by paneId (NOT active project id) in the parent so React preserves
+// the DOM + xterm instance across layout changes.
+
+export function Terminal({
+  paneId,
+  cwd,
+  onSpawn,
+  focused,
+  insert,
+}: {
+  paneId: string
+  cwd: string
+  onSpawn: (paneId: string, ptyId: number) => void
+  focused: boolean
+  insert: boolean
+}) {
   const hostRef = useRef<HTMLDivElement>(null)
   const ptyIdRef = useRef<number | null>(null)
+  const xtermRef = useRef<XTerm | null>(null)
+
   useEffect(() => {
     const xterm = new XTerm({
       fontFamily: "'JetBrains Mono', monospace",
@@ -18,6 +43,7 @@ export function Terminal({ cwd }: { cwd: string }) {
       convertEol: true,
       cursorBlink: true,
     })
+    xtermRef.current = xterm
     const fit = new FitAddon()
     xterm.loadAddon(fit)
     xterm.loadAddon(new WebLinksAddon())
@@ -32,10 +58,13 @@ export function Terminal({ cwd }: { cwd: string }) {
       const id = await invoke<number>('pty_spawn', { cwd })
       ptyIdRef.current = id
       if (signal.aborted) {
+        // Aborted before we armed listeners — DO kill here, since the store
+        // never learned this ptyId (onSpawn hasn't fired). Prevents an orphan.
         invoke('pty_kill', { id }).catch(() => {})
         ptyIdRef.current = null
         return
       }
+      onSpawn(paneId, id)
       await safeListen<{ id: number; data: string }>(
         `pty_data:${id}`,
         (e) => xterm.write(e.payload.data),
@@ -60,11 +89,20 @@ export function Terminal({ cwd }: { cwd: string }) {
       ac.abort()
       ro?.disconnect()
       xterm.dispose()
-      if (ptyIdRef.current !== null) {
-        invoke('pty_kill', { id: ptyIdRef.current }).catch(() => {})
-        ptyIdRef.current = null
-      }
+      xtermRef.current = null
+      // NOTE: no pty_kill here. The store owns the kill in closePane(). A
+      // reflow unmount must not tear the shell down — that's persistence.
     }
-  }, [cwd])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Route keyboard to this xterm only when focused AND in insert mode.
+  useEffect(() => {
+    if (focused && insert && hostRef.current) {
+      const ta = hostRef.current.querySelector('.xterm textarea') as HTMLTextAreaElement | null
+      ta?.focus()
+    }
+  }, [focused, insert])
+
   return <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
 }

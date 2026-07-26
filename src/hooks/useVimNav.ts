@@ -32,6 +32,18 @@
 
 import { useEffect } from 'react'
 import { setFocused, setLeaderActive } from '../state/vim'
+import {
+  splitActive,
+  closeActivePane,
+  newTab,
+  switchTab,
+  cycleTab,
+  moveFocus,
+  cyclePane,
+  toggleZoom,
+  setInsert,
+} from '../state/termPanes'
+import { killPty } from '../components/TerminalPanes'
 
 const LEADER_TIMEOUT_MS = 1000
 const GQ_COMBO_TIMEOUT_MS = 700
@@ -91,8 +103,176 @@ export function useVimNav(): void {
     // second key. 'z' is the leader for zR / zM (expand/collapse all).
     let pendingKey: 'g' | 'z' | null = null
     let pendingAt = 0
+    // RV1 — C-w window-command prefix (terminal pane focus moves/close).
+    let pendingCw = false
+    let pendingCwAt = 0
+    const CW_TIMEOUT_MS = 900
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // ----- RV1: terminal pane management (runs BEFORE the editable-target
+      // bypass, so Esc can leave insert mode even while xterm has focus). -----
+      const termMirror = (window as unknown as {
+        __bsTerm?: { insert: boolean; paneCount: number }
+      }).__bsTerm
+      const vimMirror = (window as unknown as { __bsVim?: { focused: string } }).__bsVim
+      const termFocused = (vimMirror?.focused ?? 'board') === 'terminal'
+
+      if (termFocused) {
+        const insert = !!termMirror?.insert
+        // Insert mode: keystrokes belong to the shell. Only Esc is ours.
+        if (insert) {
+          if (event.key === 'Escape') {
+            setInsert(false)
+            // Blur the xterm textarea so subsequent keys reach the window
+            // handler (pane-op mode) rather than the shell.
+            const ta = document.activeElement as HTMLElement | null
+            ta?.blur?.()
+            event.preventDefault()
+            return
+          }
+          return // let xterm have everything else
+        }
+
+        // ----- Terminal pane-op (normal) mode -----
+        const k = event.key
+        const ctrl = event.ctrlKey || event.metaKey
+
+        // C-w prefix: arm, then resolve h/j/k/l/w/q on the next key.
+        if (pendingCw) {
+          if (Date.now() - pendingCwAt <= CW_TIMEOUT_MS) {
+            if (k === 'h' || k === 'j' || k === 'k' || k === 'l') {
+              moveFocus(k)
+              pendingCw = false
+              event.preventDefault()
+              return
+            }
+            if (k === 'w') {
+              cyclePane()
+              pendingCw = false
+              event.preventDefault()
+              return
+            }
+            if (k === 'q') {
+              const { killPtyId } = closeActivePane()
+              if (killPtyId !== null) killPty(killPtyId)
+              pendingCw = false
+              event.preventDefault()
+              return
+            }
+          }
+          pendingCw = false // expired / unmatched; fall through
+        }
+        if (ctrl && (k === 'w' || k === 'W')) {
+          pendingCw = true
+          pendingCwAt = Date.now()
+          event.preventDefault()
+          return
+        }
+
+        // i / Enter -> insert mode (hand keys to the shell)
+        if ((k === 'i' || k === 'Enter') && !ctrl) {
+          setInsert(true)
+          event.preventDefault()
+          return
+        }
+
+        // Leader (Space) opens the pane-op leader menu below via the shared
+        // leader machinery — but in terminal focus the bindings differ, so
+        // handle the leader-second-key here when leaderActive is set.
+        const leaderNow = !!(window as unknown as { __bsVim?: { leaderActive: boolean } })
+          .__bsVim?.leaderActive
+        if (leaderNow && !ctrl) {
+          setLeaderActive(false)
+          if (leaderTimer !== null) {
+            window.clearTimeout(leaderTimer)
+            leaderTimer = null
+          }
+          switch (k) {
+            case 's':
+              splitActive('h')
+              event.preventDefault()
+              return
+            case 'v':
+              splitActive('v')
+              event.preventDefault()
+              return
+            case 't':
+              newTab()
+              event.preventDefault()
+              return
+            case 'z':
+              toggleZoom()
+              event.preventDefault()
+              return
+            case 'x': {
+              const { killPtyId } = closeActivePane()
+              if (killPtyId !== null) killPty(killPtyId)
+              event.preventDefault()
+              return
+            }
+            // Focus-out to other panes (keep global leader semantics so the
+            // user isn't trapped in the terminal region).
+            case 'b':
+              setFocused('board')
+              event.preventDefault()
+              return
+            case 'c':
+              setFocused('chat')
+              event.preventDefault()
+              return
+            case 'p':
+              window.dispatchEvent(new CustomEvent('project:cycle'))
+              event.preventDefault()
+              return
+            default:
+              if (k >= '1' && k <= '9') {
+                switchTab(Number(k) - 1)
+                event.preventDefault()
+                return
+              }
+              // Unknown terminal leader key — swallow.
+              event.preventDefault()
+              return
+          }
+        }
+        if (k === ' ' && !ctrl) {
+          setLeaderActive(true)
+          if (leaderTimer !== null) window.clearTimeout(leaderTimer)
+          leaderTimer = window.setTimeout(() => {
+            setLeaderActive(false)
+            leaderTimer = null
+          }, LEADER_TIMEOUT_MS)
+          event.preventDefault()
+          return
+        }
+        // gt / gT tab cycle
+        if (k === 't' && event.shiftKey === false && !ctrl && pendingKey === 'g') {
+          pendingKey = null
+          cycleTab(1)
+          event.preventDefault()
+          return
+        }
+        if (k === 'T' && !ctrl && pendingKey === 'g') {
+          pendingKey = null
+          cycleTab(-1)
+          event.preventDefault()
+          return
+        }
+        if (k === 'g' && !ctrl) {
+          pendingKey = 'g'
+          pendingAt = Date.now()
+          event.preventDefault()
+          return
+        }
+        // Any other bare key in terminal-normal: swallow so it doesn't leak
+        // to the board keymap or the shell.
+        if (!ctrl && k.length === 1) {
+          event.preventDefault()
+          return
+        }
+        // Ctrl/meta combos and non-printing keys fall through to global.
+      }
+
       // Bypass — typing into an editable surface; we have no business
       // here, the OS / xterm / input element owns the keystroke.
       if (isEditableTarget(event.target)) return
@@ -299,9 +479,10 @@ export function useVimNav(): void {
         return
       }
 
-      // ----- / -> focus terminal -----
+      // ----- / -> focus terminal (enters insert so typing works at once) -----
       if (key === '/') {
         setFocused('terminal')
+        setInsert(true)
         focusXterm()
         event.preventDefault()
         return
