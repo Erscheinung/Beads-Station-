@@ -31,6 +31,7 @@
 // scrolling on Space, Tab focus-traversal, etc.
 
 import { useEffect } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { setFocused, setLeaderActive } from '../state/vim'
 import {
   splitActive,
@@ -90,6 +91,19 @@ function focusXterm(): void {
   if (ta) ta.focus()
 }
 
+// RV2 — focus the active agent pane's input on entering insert mode. Unlike
+// xterm (which the shell path relies on being auto-focused), the agent <input>
+// must be focused explicitly or the first keystroke after `i`/Enter is dropped
+// (G2). Scope to the active pane's wrapper via bridgeId; fall back to the first
+// agent input if the active bridge isn't resolvable from here.
+function focusAgentInput(bridgeId: string | null): void {
+  const sel = bridgeId
+    ? `[data-bs-agent-pane="${CSS.escape(bridgeId)}"] [data-bs-agent-input]`
+    : '[data-bs-agent-pane] [data-bs-agent-input]'
+  const el = document.querySelector(sel) as HTMLInputElement | null
+  el?.focus()
+}
+
 function dispatchSidebarCmd(cmd: string): void {
   window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd } }))
 }
@@ -112,7 +126,12 @@ export function useVimNav(): void {
       // ----- RV1: terminal pane management (runs BEFORE the editable-target
       // bypass, so Esc can leave insert mode even while xterm has focus). -----
       const termMirror = (window as unknown as {
-        __bsTerm?: { insert: boolean; paneCount: number }
+        __bsTerm?: {
+          insert: boolean
+          paneCount: number
+          activeIsAgent: boolean
+          activeAgentBridgeId: string | null
+        }
       }).__bsTerm
       const vimMirror = (window as unknown as { __bsVim?: { focused: string } }).__bsVim
       const termFocused = (vimMirror?.focused ?? 'board') === 'terminal'
@@ -153,8 +172,9 @@ export function useVimNav(): void {
               return
             }
             if (k === 'q') {
-              const { killPtyId } = closeActivePane()
+              const { killPtyId, killBridgeId } = closeActivePane()
               if (killPtyId !== null) killPty(killPtyId)
+              if (killBridgeId) invoke('claude_kill', { projectId: killBridgeId }).catch(() => {})
               pendingCw = false
               event.preventDefault()
               return
@@ -169,9 +189,14 @@ export function useVimNav(): void {
           return
         }
 
-        // i / Enter -> insert mode (hand keys to the shell)
+        // i / Enter -> insert mode (hand keys to the shell, or the agent input)
         if ((k === 'i' || k === 'Enter') && !ctrl) {
           setInsert(true)
+          // RV2 — an agent pane's <input> does not auto-focus like xterm; focus
+          // it explicitly or the first keystroke is dropped (G2).
+          if (termMirror?.activeIsAgent) {
+            focusAgentInput(termMirror.activeAgentBridgeId)
+          }
           event.preventDefault()
           return
         }
@@ -204,9 +229,16 @@ export function useVimNav(): void {
               toggleZoom()
               event.preventDefault()
               return
+            case 'a':
+              // RV2 — spawn a new agent pane on the active project (App.tsx
+              // handles the event; keeps useVimNav decoupled from project state).
+              window.dispatchEvent(new CustomEvent('agent:spawn'))
+              event.preventDefault()
+              return
             case 'x': {
-              const { killPtyId } = closeActivePane()
+              const { killPtyId, killBridgeId } = closeActivePane()
               if (killPtyId !== null) killPty(killPtyId)
+              if (killBridgeId) invoke('claude_kill', { projectId: killBridgeId }).catch(() => {})
               event.preventDefault()
               return
             }
@@ -312,6 +344,11 @@ export function useVimNav(): void {
             return
           case 's':
             setFocused('sidebar')
+            event.preventDefault()
+            return
+          case 'a':
+            // RV2 — spawn a new agent pane (works from any focus).
+            window.dispatchEvent(new CustomEvent('agent:spawn'))
             event.preventDefault()
             return
           case 'q':

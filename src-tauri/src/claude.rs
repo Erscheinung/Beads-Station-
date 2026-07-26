@@ -1,14 +1,22 @@
 // Beads Station — Phase 2 multi-session claude stream-json bridge.
 //
-// Maintains a per-project map of persistent `claude --print --verbose
-// --input-format=stream-json --output-format=stream-json` subprocesses,
-// keyed by project id. (`--verbose` is mandatory: the Claude CLI requires
-// it whenever `--print` is combined with `--output-format=stream-json`.)
-// Each session's stdout is parsed line-by-line as stream-json frames and
-// emitted to the UI via the namespaced Tauri event
-// `claude_event:{project_id}`. Stderr is forwarded as
+// Maintains a map of persistent `claude --print --verbose
+// --input-format=stream-json --output-format=stream-json` subprocesses.
+// (`--verbose` is mandatory: the Claude CLI requires it whenever `--print`
+// is combined with `--output-format=stream-json`.) Each session's stdout is
+// parsed line-by-line as stream-json frames and emitted to the UI via the
+// namespaced Tauri event `claude_event:{project_id}`. Stderr is forwarded as
 // `claude_stderr:{project_id}` and unparseable stdout lines as
 // `claude_event_raw:{project_id}`.
+//
+// RV2 (multi-agent panes): the map key and event-namespace suffix named
+// `project_id` throughout this file is now a BRIDGE ID — a pane-scoped
+// identity. For the legacy single chat it equals the project id (byte-for-
+// byte back-compat); each agent pane passes a distinct opaque string, so two
+// panes targeting the SAME project get separate SESSIONS entries, separate
+// child processes, and separate event streams. The Rust param name is kept
+// as `project_id` deliberately (zero ABI change — the FE keeps passing the
+// value in the existing `projectId` arg slot); only its meaning widened.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -52,17 +60,22 @@ struct ClaudeSession {
     session_id: String,
 }
 
-/// Per-project session map. Outer Mutex is tokio so we can hold it across
-/// .await points (spawning the child, taking pipes); the inner HashMap is
-/// std because all map mutation happens while the lock is held.
+/// Per-bridge session map. Keyed by the bridge id (see the module doc —
+/// == project id for the legacy chat, distinct per agent pane in RV2).
+/// The lock is only held for the two O(1) map touches (idempotency check
+/// and insert); it is deliberately NOT held across the child `.spawn()`
+/// (see `claude_start` — the Code-urn fix), so concurrent starts of
+/// distinct bridges proceed in parallel.
 static SESSIONS: Lazy<Mutex<HashMap<String, ClaudeSession>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Per-project transient cache of the desired permission_mode. Read by
+/// Per-bridge transient cache of the desired permission_mode. Read by
 /// `claude_start` when (re)spawning a session; the FE persists the value
 /// itself via tauri-plugin-store. This map is just so the FE can call
 /// `claude_set_permission_mode` mid-session without forcing a session
-/// restart — the next start picks the latest value up.
+/// restart — the next start picks the latest value up. (Keyed by bridge id
+/// like SESSIONS. Agent panes typically pass an explicit permission_mode to
+/// `claude_start` and bypass this map entirely.)
 static MODES: Lazy<Mutex<HashMap<String, String>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -85,11 +98,15 @@ pub async fn claude_start(
     session_id: String,
     permission_mode: Option<String>,
 ) -> Result<String, String> {
-    let mut guard = SESSIONS.lock().await;
-
-    // Idempotent: if a session for this project already exists, return its id.
-    if let Some(existing) = guard.get(&project_id) {
-        return Ok(existing.session_id.clone());
+    // Code-urn fix: hold SESSIONS only for the O(1) idempotency check, then
+    // DROP it before the child `.spawn()`. Holding the lock across the fork
+    // serialized concurrent starts (two `<leader>a` spawns would block on one
+    // mutex through a process fork). Scope the guard so it releases here.
+    {
+        let guard = SESSIONS.lock().await;
+        if let Some(existing) = guard.get(&project_id) {
+            return Ok(existing.session_id.clone());
+        }
     }
 
     // Resolve permission_mode in priority order:
@@ -267,6 +284,20 @@ pub async fn claude_start(
         });
     }
 
+    // Re-acquire SESSIONS to insert. Between the drop above and here, a
+    // concurrent start for the SAME bridge id could have won the race (e.g. a
+    // StrictMode double-mount or MorningConfirm remount reusing one bridge).
+    // Re-check under the lock; if we lost, kill our now-redundant child and
+    // return the winner's session id. Distinct bridges never collide here, so
+    // this path is near-dead in RV2 — but it's mandatory to avoid leaking an
+    // orphan claude subprocess on the same-bridge race.
+    let mut guard = SESSIONS.lock().await;
+    if let Some(existing) = guard.get(&project_id) {
+        let sid = existing.session_id.clone();
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        return Ok(sid);
+    }
     guard.insert(
         project_id.clone(),
         ClaudeSession {
@@ -412,4 +443,50 @@ pub async fn claude_approve(project_id: String, request_id: String) -> Result<()
 #[tauri::command]
 pub async fn claude_deny(project_id: String, request_id: String) -> Result<(), String> {
     write_permission_response(&project_id, &request_id, "denied").await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_mode_whitelist() {
+        assert!(validate_permission_mode("plan").is_ok());
+        assert!(validate_permission_mode("acceptEdits").is_ok());
+        assert!(validate_permission_mode("default").is_ok());
+        // bypassPermissions is a valid CLI flag but intentionally NOT allowed
+        // through this boundary.
+        assert!(validate_permission_mode("bypassPermissions").is_err());
+        assert!(validate_permission_mode("garbage").is_err());
+    }
+
+    // RV2 compound-key contract: MODES is keyed by BRIDGE id, not project id.
+    // Two bridges that happen to share a project prefix must occupy separate
+    // entries — this proves two agent panes on the SAME project don't collide.
+    // (SESSIONS holds real child procs so it isn't unit-testable without a
+    // fake binary; MODES is the honest deterministic proxy for the keying.)
+    #[tokio::test]
+    async fn distinct_bridge_ids_do_not_collide() {
+        claude_set_permission_mode("proj#a".into(), "plan".into())
+            .await
+            .unwrap();
+        claude_set_permission_mode("proj#b".into(), "acceptEdits".into())
+            .await
+            .unwrap();
+        let m = MODES.lock().await;
+        assert_eq!(m.get("proj#a").map(String::as_str), Some("plan"));
+        assert_eq!(m.get("proj#b").map(String::as_str), Some("acceptEdits"));
+    }
+
+    // Legacy path: bridge id == project id keys its own entry (back-compat).
+    // (Asserts only its own key, not global len — MODES is a process-global
+    // shared with the sibling test, which may run concurrently.)
+    #[tokio::test]
+    async fn legacy_bridge_equals_project_keys_one_entry() {
+        claude_set_permission_mode("projX-legacy".into(), "default".into())
+            .await
+            .unwrap();
+        let m = MODES.lock().await;
+        assert_eq!(m.get("projX-legacy").map(String::as_str), Some("default"));
+    }
 }

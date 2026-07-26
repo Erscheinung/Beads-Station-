@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setDefaultCwd } from './state/termPanes'
+import { setDefaultCwd, spawnAgent, setInsert } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -13,7 +13,7 @@ import { WhichKey } from './components/WhichKey'
 import { DebugOverlay } from './components/DebugOverlay'
 import { MorningConfirm, shouldConfirm, recordConfirmation } from './components/MorningConfirm'
 import { useProjects } from './state/projects'
-import { useVim } from './state/vim'
+import { useVim, setFocused } from './state/vim'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
@@ -57,6 +57,21 @@ export default function App() {
     window.addEventListener('project:cycle', onCycle)
     return () => window.removeEventListener('project:cycle', onCycle)
   }, [projects, activeId, setActive])
+
+  // RV2 — <leader>a spawns a new agent pane on the active project. useVimNav
+  // dispatches 'agent:spawn' (decoupled from project state); we resolve the
+  // active project here, mint a fresh session id, and focus the terminal
+  // surface in insert mode so typing lands in the new pane's input at once.
+  useEffect(() => {
+    const onSpawn = () => {
+      if (!active) return
+      spawnAgent(active.id, active.path, crypto.randomUUID(), permissionApi.mode)
+      setFocused('terminal')
+      setInsert(true)
+    }
+    window.addEventListener('agent:spawn', onSpawn)
+    return () => window.removeEventListener('agent:spawn', onSpawn)
+  }, [active, permissionApi.mode])
 
   // Memoized so their identity is stable across renders. Declared BEFORE the
   // early returns below (Rules of Hooks — a useCallback after a conditional

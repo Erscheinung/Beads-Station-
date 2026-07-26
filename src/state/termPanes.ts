@@ -27,6 +27,28 @@ export interface Leaf {
   paneId: string
   ptyId: number | null
   cwd: string
+  /**
+   * RV2 — additive agent-pane payload. Absent/undefined => legacy shell leaf.
+   * Present => this leaf hosts a Claude agent session (ClaudeChat) instead of
+   * an xterm shell. Kept as an OPTIONAL field on the same `kind:'leaf'` so all
+   * tree helpers (leavesOf/findLeaf/mapLeaf/removeLeaf/layout/moveFocus/
+   * cyclePane) stay untouched — they only match on `kind`. Shell leaves have
+   * ptyId; agent leaves keep ptyId:null and carry a bridgeId instead.
+   */
+  agent?: {
+    /** pane-scoped identity == claude event namespace + all FE state keys. */
+    bridgeId: string
+    /** the bd project this agent targets (for label + project RPCs). */
+    projectId: string
+    /** claude --session-id (uuid). */
+    sessionId: string
+    permissionMode?: 'acceptEdits' | 'default' | 'plan'
+  }
+}
+
+/** Named guard for call-site readability (G5). */
+export function isAgentLeaf(l: Leaf): boolean {
+  return l.agent != null
 }
 
 export interface Split {
@@ -63,6 +85,28 @@ function newLeaf(cwd: string): Leaf {
   return { kind: 'leaf', paneId: uid('pane'), ptyId: null, cwd }
 }
 
+/**
+ * RV2 — construct an agent leaf. bridgeId uses the same monotonic seq as
+ * paneId/tabId (`agent1`, `agent2`, …) so it's collision-free AND distinct
+ * from any projectId, guaranteeing two panes on the SAME project get separate
+ * event namespaces. cwd is the PICKED PROJECT path (caller passes it), NOT the
+ * active shell's cwd (G3).
+ */
+function newAgentLeaf(
+  cwd: string,
+  projectId: string,
+  sessionId: string,
+  permissionMode?: 'acceptEdits' | 'default' | 'plan',
+): Leaf {
+  return {
+    kind: 'leaf',
+    paneId: uid('pane'),
+    ptyId: null,
+    cwd,
+    agent: { bridgeId: uid('agent'), projectId, sessionId, permissionMode },
+  }
+}
+
 // ---- initial state: one tab, one leaf, no pty yet ----------------------
 
 function makeInitialTab(cwd: string): Tab {
@@ -82,9 +126,23 @@ function emit(): void {
   // keymap reader in useVimNav (avoids a stale closure / extra subscribe).
   try {
     const tab = state.tabs.find(t => t.id === state.activeTabId) ?? state.tabs[0]
-    ;(window as unknown as { __bsTerm?: { insert: boolean; paneCount: number } }).__bsTerm = {
+    const activeLeaf = tab ? findLeaf(tab.root, tab.activePaneId) : null
+    ;(window as unknown as {
+      __bsTerm?: {
+        insert: boolean
+        paneCount: number
+        activeIsAgent: boolean
+        activeAgentBridgeId: string | null
+      }
+    }).__bsTerm = {
       insert: state.insert,
       paneCount: tab ? leavesOf(tab.root).length : 0,
+      // RV2 — lets useVimNav branch focus routing (agent input vs xterm)
+      // without subscribing to the store. Status is NOT mirrored here (it
+      // changes every frame — would churn); read it via useClaudeStatus.
+      activeIsAgent: activeLeaf?.agent != null,
+      // The active agent's bridgeId — used to focus the RIGHT pane's input.
+      activeAgentBridgeId: activeLeaf?.agent?.bridgeId ?? null,
     }
   } catch {
     /* SSR / non-browser — ignore */
@@ -112,9 +170,18 @@ export function useTermPanes(): TermPanesState {
 // Seed the window mirror once at module load so useVimNav can read termMode
 // before any component subscribes.
 try {
-  ;(window as unknown as { __bsTerm?: { insert: boolean; paneCount: number } }).__bsTerm = {
+  ;(window as unknown as {
+    __bsTerm?: {
+      insert: boolean
+      paneCount: number
+      activeIsAgent: boolean
+      activeAgentBridgeId: string | null
+    }
+  }).__bsTerm = {
     insert: state.insert,
     paneCount: 1,
+    activeIsAgent: false,
+    activeAgentBridgeId: null,
   }
 } catch {
   /* noop */
@@ -221,11 +288,43 @@ export function splitActive(dir: SplitDir): void {
   emit()
 }
 
+/**
+ * RV2 — split the active pane and put a fresh AGENT leaf in the new half.
+ * Mirrors splitActive exactly but (a) inserts an agent leaf and (b) takes cwd
+ * from the caller (the picked project path) rather than spawnCwd(). Always a
+ * vertical seam (side-by-side) so the agent gets readable width.
+ */
+export function spawnAgent(
+  projectId: string,
+  cwd: string,
+  sessionId: string,
+  permissionMode?: 'acceptEdits' | 'default' | 'plan',
+): void {
+  const tab = activeTab(state)
+  const leaf = newAgentLeaf(cwd, projectId, sessionId, permissionMode)
+  const next: Tab = {
+    ...tab,
+    root: mapLeaf(tab.root, tab.activePaneId, existing => ({
+      kind: 'split',
+      dir: 'v',
+      ratio: 0.5,
+      a: existing,
+      b: leaf,
+    })),
+    activePaneId: leaf.paneId,
+  }
+  state = replaceTab(state, tab.id, next)
+  emit()
+}
+
 /** Close the active pane. If it's the last pane in the tab, close the tab. */
-export function closeActivePane(): { killPtyId: number | null } {
+export function closeActivePane(): { killPtyId: number | null; killBridgeId: string | null } {
   const tab = activeTab(state)
   const leaf = findLeaf(tab.root, tab.activePaneId)
   const killPtyId = leaf?.ptyId ?? null
+  // RV2 — an agent leaf has ptyId:null; the caller kills its claude session
+  // via killBridgeId (claude_kill) instead of killing a pty.
+  const killBridgeId = leaf?.agent?.bridgeId ?? null
   const newRoot = removeLeaf(tab.root, tab.activePaneId)
 
   if (newRoot === null) {
@@ -244,7 +343,7 @@ export function closeActivePane(): { killPtyId: number | null } {
     state = replaceTab(state, tab.id, { ...tab, root: newRoot, activePaneId: survivor.paneId })
   }
   emit()
-  return { killPtyId }
+  return { killPtyId, killBridgeId }
 }
 
 export function newTab(): void {

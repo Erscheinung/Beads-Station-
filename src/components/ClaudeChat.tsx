@@ -29,6 +29,7 @@ import { ApprovalCard, type ApprovalStatus } from './ApprovalCard'
 import { CostMeter } from './CostMeter'
 import { accumulate as accumulateUsage } from '../state/claudeUsage'
 import { useVim } from '../state/vim'
+import { PermissionModePicker } from '../state/claudeSettings'
 
 type Frame = any
 
@@ -37,6 +38,18 @@ interface ClaudeChatProps {
   cwd: string
   sessionId: string
   permissionMode?: 'acceptEdits' | 'default' | 'plan'
+  /**
+   * RV2 — pane-scoped session identity. Defaults to projectId (legacy single
+   * chat, byte-identical wire format). Agent panes pass a distinct bridgeId so
+   * two panes on the same project never collide on events/usage/status/portal.
+   */
+  bridgeId?: string
+  /**
+   * RV2 — whether this instance owns the global a/d approval keydown listener.
+   * Legacy chat leaves it undefined (gate unchanged). Agent panes pass their
+   * focused state so only the active pane resolves an approval (G1).
+   */
+  active?: boolean
 }
 
 type StartStatus = 'pending' | 'started' | 'frame' | 'failed'
@@ -110,7 +123,11 @@ function isEditableFocus(): boolean {
   return false
 }
 
-export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: ClaudeChatProps) {
+export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId, active }: ClaudeChatProps) {
+  // RV2 — every claude-session-scoped key (events, usage, status, approval
+  // RPCs, header portal id) uses `bridge`. The REAL projectId is kept only for
+  // project-scoped RPCs (projects_get) and the header label.
+  const bridge = bridgeId ?? projectId
   const [frames, setFrames] = useState<Frame[]>([])
   const [hookEvents, setHookEvents] = useState<HookEvent[]>([])
   const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalStatus>>({})
@@ -176,7 +193,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
       if (signal.aborted) return
       try {
         await invoke('claude_start', {
-          projectId,
+          projectId: bridge,
           cwd,
           sessionId: sid,
           permissionMode: permissionMode ?? 'acceptEdits',
@@ -202,7 +219,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
           // Send the reminder text as a user message so the running session
           // sees the rules. Wrapped in <system-reminder> tags by convention.
           try {
-            await invoke('claude_send', { projectId, text: reminder })
+            await invoke('claude_send', { projectId: bridge, text: reminder })
           } catch (e) {
             console.warn('[ClaudeChat] bd-prime claude_send failed (non-fatal)', e)
           }
@@ -211,10 +228,10 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         console.warn('[ClaudeChat] bd_prime failed (non-fatal)', e)
       }
 
-      await safeListen<Frame>(`claude_event:${projectId}`, e => {
+      await safeListen<Frame>(`claude_event:${bridge}`, e => {
         const frame = e.payload
         // Always feed the usage accumulator; it ignores frames it can't use.
-        accumulateUsage(projectId, frame)
+        accumulateUsage(bridge, frame)
         if (isHookFrame(frame)) {
           const hev = frameToHookEvent(frame)
           if (hev) setHookEvents(h => [...h, hev].slice(-200))
@@ -225,10 +242,10 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         appendFrame(frame)
         setStatus(s => (s === 'failed' ? s : 'frame'))
       }, signal)
-      await safeListen<string>(`claude_event_raw:${projectId}`, e => {
+      await safeListen<string>(`claude_event_raw:${bridge}`, e => {
         appendFrame({ _kind: 'raw', line: String(e.payload) })
       }, signal)
-      await safeListen<string>(`claude_stderr:${projectId}`, e => {
+      await safeListen<string>(`claude_stderr:${bridge}`, e => {
         appendFrame({ _kind: 'stderr', line: String(e.payload) })
         setStderrCount(c => c + 1)
       }, signal)
@@ -237,7 +254,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
       ac.abort()
       // Phase 6 manages claude lifecycles — do NOT auto-kill on unmount.
     }
-  }, [projectId, cwd, sessionId, permissionMode])
+  }, [projectId, bridge, cwd, sessionId, permissionMode])
 
   // Compute the topmost-pending approval for the keyboard shortcut. Walk
   // frames in order; the first frame that yields an extractable approval
@@ -255,7 +272,11 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
   // Keyboard shortcut: a / d when chat is focused and a pending approval
   // exists. Bypass when an editable element (the input field) has focus.
   useEffect(() => {
+    // RV2 — an agent pane passes active=false when it's not the focused pane,
+    // so only one instance resolves an approval (G1). Legacy chat leaves it
+    // undefined (=> gate unchanged).
     if (vim.focused !== 'chat') return
+    if (active === false) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (isEditableFocus()) return
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
@@ -274,14 +295,14 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
       const decide = key === 'a' ? 'approved' : 'denied'
       const cmd = key === 'a' ? 'claude_approve' : 'claude_deny'
       setApprovalStates(s => ({ ...s, [pending!.requestId]: decide }))
-      invoke(cmd, { projectId, requestId: pending.requestId }).catch(err => {
+      invoke(cmd, { projectId: bridge, requestId: pending.requestId }).catch(err => {
         console.error('[ClaudeChat] approval rpc failed', err)
         setApprovalStates(s => ({ ...s, [pending!.requestId]: 'pending' }))
       })
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [vim.focused, projectId])
+  }, [vim.focused, projectId, bridge, active])
 
   const send = async () => {
     const text = input.trim()
@@ -289,7 +310,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
     setBusy(true)
     appendFrame({ _local: true, role: 'user', text })
     setInput('')
-    try { await invoke('claude_send', { projectId, text }) } finally { setBusy(false) }
+    try { await invoke('claude_send', { projectId: bridge, text }) } finally { setBusy(false) }
   }
 
   // Status dot — same logic as pre-Phase-6.
@@ -303,7 +324,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', borderTop: '1px solid var(--bs-border)' }}>
+    <div data-bs-agent-pane={bridge} style={{ display: 'flex', flexDirection: 'column', height: '100%', borderTop: '1px solid var(--bs-border)' }}>
       <div style={{
         height: 24, padding: '0 10px', display: 'flex', alignItems: 'center', gap: 8,
         fontSize: 11, color: 'var(--bs-fg)', opacity: 0.85,
@@ -314,11 +335,16 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
           background: dotColor, flexShrink: 0,
         }} />
         <span style={{ opacity: 0.7 }}>claude · {projectId}</span>
-        {/* Stable slot for PermissionModePicker (Worker 3 portals into this id). */}
-        <span id="bs-claude-header-right" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }} />
+        {/* Stable slot for PermissionModePicker — bridge-scoped id so two
+            ClaudeChat instances never portal into one node (getElementById
+            returns only the first match). */}
+        <span id={`bs-claude-header-right-${bridge}`} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }} />
+        {/* Agent panes own their picker in-header (App.tsx mounts it only for
+            the legacy grid chat). bridgeId set => agent-pane mode. */}
+        {bridgeId != null && <PermissionModePicker projectId={projectId} bridgeId={bridge} />}
       </div>
 
-      <ToolDrawer projectId={projectId} events={hookEvents} />
+      <ToolDrawer projectId={bridge} events={hookEvents} />
 
       <div className="bs-chat-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12, fontSize: 12, lineHeight: 1.5 }}>
         {evictedCount > 0 && (
@@ -339,7 +365,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
             return (
               <ApprovalCard
                 key={`approval-${i}-${a.requestId}`}
-                projectId={projectId}
+                projectId={bridge}
                 requestId={a.requestId}
                 toolName={a.toolName}
                 input={a.input}
@@ -355,11 +381,12 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode }: Claude
         })}
       </div>
 
-      <CostMeter projectId={projectId} />
+      <CostMeter projectId={bridge} />
 
       <form onSubmit={e => { e.preventDefault(); send() }} style={{ display: 'flex', gap: 8, padding: 8, borderTop: '1px solid var(--bs-border)' }}>
         <input
           ref={inputRef}
+          data-bs-agent-input
           value={input}
           onChange={e => setInput(e.target.value)}
           placeholder={topmostPending ? `pending: approve(a)/deny(d) ${topmostPending.toolName}` : 'ask claude'}

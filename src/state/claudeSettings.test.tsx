@@ -48,7 +48,10 @@ vi.mock('@tauri-apps/plugin-store', () => ({
 
 import { PermissionModePicker } from './claudeSettings'
 
-const HOST_ID = 'bs-claude-header-right'
+// RV2 — the host id is now bridge-scoped: `bs-claude-header-right-${bridge}`,
+// where bridge defaults to projectId. The tests below render the picker with
+// projectId="p1" (bridge omitted), so the host id is the p1-suffixed one.
+const HOST_ID = 'bs-claude-header-right-p1'
 
 function makeHost(): HTMLDivElement {
   const el = document.createElement('div')
@@ -104,8 +107,36 @@ describe('PermissionModePicker render-loop regression', () => {
     expect(loggedUpdateDepth).toBe(false)
   })
 
+  // RV2 — bridge-scoped portal id. Two agent panes on the SAME project pass
+  // distinct bridgeIds and must portal into DISTINCT host nodes; the picker for
+  // bridge "agent7" must NOT attach to the p1 host, proving no collision.
+  it('portals into the bridge-scoped host, not the project host', async () => {
+    // Legacy host (bridge == projectId) present, agent host present too.
+    makeHost() // bs-claude-header-right-p1
+    const agentHost = document.createElement('div')
+    agentHost.id = 'bs-claude-header-right-agent7'
+    document.body.appendChild(agentHost)
+
+    render(
+      <React.StrictMode>
+        <PermissionModePicker projectId="p1" bridgeId="agent7" />
+      </React.StrictMode>,
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('radiogroup', { name: 'claude permission mode' }),
+      ).toBeInTheDocument(),
+    )
+    // The radiogroup lives inside the agent7 host, not the p1 host.
+    expect(agentHost.querySelector('[role="radiogroup"]')).not.toBeNull()
+    expect(document.getElementById(HOST_ID)?.querySelector('[role="radiogroup"]')).toBeNull()
+
+    agentHost.remove()
+  })
+
   it('renders null when the portal host is absent and does not infinite-retry', async () => {
-    // No makeHost() here: #bs-claude-header-right never appears. The bounded
+    // No makeHost() here: the host never appears. The bounded
     // retry chain (<=10 frames) must give up quietly — no radiogroup, no crash,
     // no update-depth error.
     render(

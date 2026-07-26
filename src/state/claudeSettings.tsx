@@ -110,9 +110,18 @@ export function usePermissionMode(projectId: string): PermissionModeApi {
 
 interface PickerProps {
   projectId: string
+  /**
+   * RV2 — pane-scoped identity. Defaults to projectId (legacy). The portal
+   * host id is `bs-claude-header-right-${bridge}`, matching the bridge-scoped
+   * slot ClaudeChat renders, so two pickers never fight over one node.
+   * Permission mode itself stays PROJECT-scoped (usePermissionMode(projectId))
+   * — two panes on one project share the persisted mode, which is correct.
+   */
+  bridgeId?: string
 }
 
-export function PermissionModePicker({ projectId }: PickerProps) {
+export function PermissionModePicker({ projectId, bridgeId }: PickerProps) {
+  const bridge = bridgeId ?? projectId
   const { mode, setMode, hydrated } = usePermissionMode(projectId)
   const [host, setHost] = useState<HTMLElement | null>(null)
 
@@ -126,7 +135,7 @@ export function PermissionModePicker({ projectId }: PickerProps) {
     let attempts = 0
     const find = () => {
       if (cancelled) return
-      const el = document.getElementById('bs-claude-header-right')
+      const el = document.getElementById(`bs-claude-header-right-${bridge}`)
       if (el) {
         // Guard on identity: only setState when the host node actually
         // changes. A ClaudeChat re-render that re-emits an equivalent slot
@@ -148,7 +157,7 @@ export function PermissionModePicker({ projectId }: PickerProps) {
       cancelled = true
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [projectId])
+  }, [projectId, bridge])
 
   if (!host) return null
   if (!hydrated) return null

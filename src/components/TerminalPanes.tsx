@@ -9,6 +9,8 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
+import { ClaudeChat } from './ClaudeChat'
+import { useClaudeStatus } from '../state/claudeStatus'
 import {
   useTermPanes,
   useZoom,
@@ -17,6 +19,7 @@ import {
   setInsert,
   switchTab,
   type Node,
+  type Leaf,
 } from '../state/termPanes'
 import { setFocused } from '../state/vim'
 
@@ -33,14 +36,16 @@ interface RenderCtx {
 }
 
 function PaneLeaf({
-  paneId,
-  cwd,
+  leaf,
   ctx,
 }: {
-  paneId: string
-  cwd: string
+  leaf: Leaf
   ctx: RenderCtx
 }) {
+  // RV2 — an agent leaf hosts a ClaudeChat instead of an xterm shell.
+  if (leaf.agent) return <AgentPaneLeaf leaf={leaf} ctx={ctx} />
+
+  const paneId = leaf.paneId
   const isActive = paneId === ctx.activePaneId
   const isZoomed = ctx.zoomed === paneId
   const hiddenByZoom = ctx.zoomed !== null && !isZoomed
@@ -70,7 +75,7 @@ function PaneLeaf({
     >
       <Terminal
         paneId={paneId}
-        cwd={cwd}
+        cwd={leaf.cwd}
         onSpawn={onSpawn}
         focused={isActive && ctx.termFocused}
         insert={isActive && ctx.termFocused && ctx.insert}
@@ -79,9 +84,76 @@ function PaneLeaf({
   )
 }
 
+// RV2 — agent leaf: same focus-ring/zoom wrapper as PaneLeaf, but hosts a
+// ClaudeChat bound to the leaf's (bridgeId, projectId, sessionId). The status
+// dot is read reactively via useClaudeStatus(bridgeId) — status lives in the
+// claudeStatus atom, NEVER on the termPanes leaf (it changes every frame and
+// would churn the store). Keyed by paneId upstream so reflow re-parents (the
+// ClaudeChat subtree + its stream subscription survive split/tab reflow).
+const STATUS_DOT: Record<string, string> = {
+  running: 'var(--bs-green)',
+  'awaiting-input': 'var(--bs-yellow)',
+  error: 'var(--bs-red)',
+  idle: 'var(--bs-fg-muted)',
+}
+function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
+  const a = leaf.agent!
+  const isActive = leaf.paneId === ctx.activePaneId
+  const isZoomed = ctx.zoomed === leaf.paneId
+  const hiddenByZoom = ctx.zoomed !== null && !isZoomed
+  const status = useClaudeStatus(a.bridgeId)
+  return (
+    <div
+      onMouseDown={() => {
+        focusPane(leaf.paneId)
+        setFocused('terminal')
+        setInsert(true)
+      }}
+      style={{
+        width: '100%',
+        height: '100%',
+        minWidth: 0,
+        minHeight: 0,
+        position: isZoomed ? 'absolute' : 'relative',
+        inset: isZoomed ? 0 : undefined,
+        zIndex: isZoomed ? 5 : undefined,
+        background: 'var(--bs-bg)',
+        display: 'flex',
+        flexDirection: 'column',
+        visibility: hiddenByZoom ? 'hidden' : 'visible',
+        boxShadow: isActive && ctx.termFocused ? 'inset 0 0 0 1px var(--bs-blue)' : undefined,
+      }}
+    >
+      {/* Pane header — status at a glance (req 5), keyed by bridgeId so two
+          same-project panes show independent dots. */}
+      <div style={{
+        height: 20, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
+        padding: '0 8px', fontSize: 10, color: 'var(--bs-fg-muted)',
+        background: 'var(--bs-bg-elev)', borderBottom: '1px solid var(--bs-border)',
+      }}>
+        <span style={{
+          display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
+          background: STATUS_DOT[status] ?? STATUS_DOT.idle, flexShrink: 0,
+        }} />
+        <span>agent · {a.projectId} · {status}</span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <ClaudeChat
+          projectId={a.projectId}
+          bridgeId={a.bridgeId}
+          cwd={leaf.cwd}
+          sessionId={a.sessionId}
+          permissionMode={a.permissionMode}
+          active={isActive && ctx.termFocused}
+        />
+      </div>
+    </div>
+  )
+}
+
 function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
   if (node.kind === 'leaf') {
-    return <PaneLeaf key={node.paneId} paneId={node.paneId} cwd={node.cwd} ctx={ctx} />
+    return <PaneLeaf key={node.paneId} leaf={node} ctx={ctx} />
   }
   // dir 'v' = vertical seam = children side-by-side (row).
   // dir 'h' = horizontal seam = children stacked (column).
