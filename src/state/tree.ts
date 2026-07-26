@@ -14,7 +14,10 @@ import { projectLabelFor } from './projectLabel';
 // Types
 // ---------------------------------------------------------------------------
 
-export type TreeNodeKind = 'project' | 'status' | 'issue';
+// RV3-B (Code-8ro): 'dir' | 'file' added so the shared flattenVisible/FlatRow
+// primitive can carry a filesystem tree too. The bd sidebar only ever produces
+// project/status/issue nodes; the file-nav pane only ever produces dir/file.
+export type TreeNodeKind = 'project' | 'status' | 'issue' | 'dir' | 'file';
 
 export interface TreeNode {
   kind: TreeNodeKind;

@@ -134,6 +134,7 @@ export function useVimNav(): void {
           paneCount: number
           activeIsAgent: boolean
           activeAgentBridgeId: string | null
+          activeIsFileNav: boolean
         }
       }).__bsTerm
       const vimMirror = (window as unknown as { __bsVim?: { focused: string } }).__bsVim
@@ -192,6 +193,19 @@ export function useVimNav(): void {
           return
         }
 
+        // RV3-B — a file-nav pane owns its own vim keys (j/k/h/l/Enter/g/G) via
+        // a keydown handler on its focused tree root. In pane-op mode we must
+        // NOT swallow those — let them bubble to the focused FileTree. Leader
+        // (Space), C-w focus moves, and Esc are still handled here (above/below).
+        if (termMirror?.activeIsFileNav && !ctrl) {
+          const leaderArmed = !!(window as unknown as { __bsVim?: { leaderActive: boolean } })
+            .__bsVim?.leaderActive
+          const navKeys = ['j', 'k', 'h', 'l', 'g', 'G', 'Enter']
+          if (!leaderArmed && k !== ' ' && k !== 'Escape' && navKeys.includes(k)) {
+            return // do not preventDefault — the FileTree's handler consumes it
+          }
+        }
+
         // i / Enter -> insert mode (hand keys to the shell, or the agent input)
         if ((k === 'i' || k === 'Enter') && !ctrl) {
           setInsert(true)
@@ -241,6 +255,11 @@ export function useVimNav(): void {
               // RV2 — spawn a new agent pane on the active project (App.tsx
               // handles the event; keeps useVimNav decoupled from project state).
               window.dispatchEvent(new CustomEvent('agent:spawn'))
+              event.preventDefault()
+              return
+            case 'e':
+              // RV3-B — spawn a file-nav pane on the active project.
+              window.dispatchEvent(new CustomEvent('filenav:spawn'))
               event.preventDefault()
               return
             case 'x': {
@@ -385,6 +404,11 @@ export function useVimNav(): void {
           case 'a':
             // RV2 — spawn a new agent pane (works from any focus).
             window.dispatchEvent(new CustomEvent('agent:spawn'))
+            event.preventDefault()
+            return
+          case 'e':
+            // RV3-B — spawn a file-nav pane (works from any focus).
+            window.dispatchEvent(new CustomEvent('filenav:spawn'))
             event.preventDefault()
             return
           case 'q':

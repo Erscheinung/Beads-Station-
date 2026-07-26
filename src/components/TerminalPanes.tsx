@@ -10,6 +10,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
 import { ClaudeChat } from './ClaudeChat'
+import { FileTree } from './FileTree'
 import { useClaudeStatus } from '../state/claudeStatus'
 import {
   useTermPanes,
@@ -44,6 +45,8 @@ function PaneLeaf({
 }) {
   // RV2 — an agent leaf hosts a ClaudeChat instead of an xterm shell.
   if (leaf.agent) return <AgentPaneLeaf leaf={leaf} ctx={ctx} />
+  // RV3-B — a file-nav leaf hosts a read-only FileTree.
+  if (leaf.fileNav) return <FileNavPaneLeaf leaf={leaf} ctx={ctx} />
 
   const paneId = leaf.paneId
   const isActive = paneId === ctx.activePaneId
@@ -150,6 +153,52 @@ function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
           permissionMode={a.permissionMode}
           active={isActive && ctx.termFocused}
         />
+      </div>
+    </div>
+  )
+}
+
+// RV3-B — file-nav leaf: same focus-ring/zoom wrapper, hosts a read-only
+// FileTree rooted at fileNav.rootPath. On becoming the active+focused pane we
+// focus the tree's root element so its scoped vim keydown (j/k/h/l/Enter)
+// fires. Header click focuses the pane (pane-op stays available via leader).
+function FileNavPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
+  const rootPath = leaf.fileNav!.rootPath
+  const isActive = leaf.paneId === ctx.activePaneId
+  const isZoomed = ctx.zoomed === leaf.paneId
+  const hiddenByZoom = ctx.zoomed !== null && !isZoomed
+  const focused = isActive && ctx.termFocused
+  return (
+    <div
+      onMouseDown={() => {
+        focusPane(leaf.paneId)
+        setFocused('terminal')
+      }}
+      style={{
+        width: '100%',
+        height: '100%',
+        minWidth: 0,
+        minHeight: 0,
+        position: isZoomed ? 'absolute' : 'relative',
+        inset: isZoomed ? 0 : undefined,
+        zIndex: isZoomed ? 5 : undefined,
+        background: 'var(--bs-bg)',
+        display: 'flex',
+        flexDirection: 'column',
+        visibility: hiddenByZoom ? 'hidden' : 'visible',
+        boxShadow: isActive && ctx.termFocused ? 'inset 0 0 0 1px var(--bs-blue)' : undefined,
+      }}
+    >
+      <div style={{
+        height: 20, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
+        padding: '0 8px', fontSize: 10, color: 'var(--bs-fg-muted)',
+        background: 'var(--bs-bg-elev)', borderBottom: '1px solid var(--bs-border)',
+      }}>
+        <span className="codicon codicon-folder-opened" style={{ fontSize: 12 }} aria-hidden />
+        <span>files · {rootPath.split('/').pop()}</span>
+      </div>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <FileTree rootPath={rootPath} active={focused} />
       </div>
     </div>
   )

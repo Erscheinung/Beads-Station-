@@ -44,11 +44,25 @@ export interface Leaf {
     sessionId: string
     permissionMode?: 'acceptEdits' | 'default' | 'plan'
   }
+  /**
+   * RV3-B — additive file-nav payload, mirroring `agent?`. Absent => shell or
+   * agent leaf; present => this leaf hosts a read-only FileTree rooted at
+   * rootPath (ptyId stays null, no bridgeId). Same optional-field discipline
+   * so the 7 tree helpers stay untouched (they only match on `kind`).
+   */
+  fileNav?: {
+    rootPath: string
+  }
 }
 
 /** Named guard for call-site readability (G5). */
 export function isAgentLeaf(l: Leaf): boolean {
   return l.agent != null
+}
+
+/** RV3-B — file-nav leaf guard, mirrors isAgentLeaf. */
+export function isFileNavLeaf(l: Leaf): boolean {
+  return l.fileNav != null
 }
 
 export interface Split {
@@ -107,6 +121,17 @@ function newAgentLeaf(
   }
 }
 
+/** RV3-B — construct a file-nav leaf rooted at a project path. */
+function newFileNavLeaf(rootPath: string): Leaf {
+  return {
+    kind: 'leaf',
+    paneId: uid('pane'),
+    ptyId: null,
+    cwd: rootPath,
+    fileNav: { rootPath },
+  }
+}
+
 // ---- initial state: one tab, one leaf, no pty yet ----------------------
 
 function makeInitialTab(cwd: string): Tab {
@@ -133,6 +158,7 @@ function emit(): void {
         paneCount: number
         activeIsAgent: boolean
         activeAgentBridgeId: string | null
+        activeIsFileNav: boolean
       }
     }).__bsTerm = {
       insert: state.insert,
@@ -143,6 +169,9 @@ function emit(): void {
       activeIsAgent: activeLeaf?.agent != null,
       // The active agent's bridgeId — used to focus the RIGHT pane's input.
       activeAgentBridgeId: activeLeaf?.agent?.bridgeId ?? null,
+      // RV3-B — active pane is a file-nav tree; useVimNav must not route keys
+      // to xterm, the FileTree handles j/k/h/l/Enter on its own focused root.
+      activeIsFileNav: activeLeaf?.fileNav != null,
     }
   } catch {
     /* SSR / non-browser — ignore */
@@ -302,6 +331,26 @@ export function spawnAgent(
 ): void {
   const tab = activeTab(state)
   const leaf = newAgentLeaf(cwd, projectId, sessionId, permissionMode)
+  const next: Tab = {
+    ...tab,
+    root: mapLeaf(tab.root, tab.activePaneId, existing => ({
+      kind: 'split',
+      dir: 'v',
+      ratio: 0.5,
+      a: existing,
+      b: leaf,
+    })),
+    activePaneId: leaf.paneId,
+  }
+  state = replaceTab(state, tab.id, next)
+  emit()
+}
+
+/** RV3-B — split the active pane and mount a file-nav tree rooted at `rootPath`.
+ *  Mirrors spawnAgent; no pty, no claude session. */
+export function spawnFileNav(rootPath: string): void {
+  const tab = activeTab(state)
+  const leaf = newFileNavLeaf(rootPath)
   const next: Tab = {
     ...tab,
     root: mapLeaf(tab.root, tab.activePaneId, existing => ({

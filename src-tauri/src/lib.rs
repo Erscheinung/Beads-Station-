@@ -8,6 +8,7 @@ mod bd;
 mod binresolve;
 mod claude;
 mod envloader;
+mod fs;
 mod projects;
 mod pty;
 mod telemetry;
@@ -99,6 +100,8 @@ pub fn run() {
             claude::claude_send,
             claude::claude_set_permission_mode,
             claude::claude_start,
+            fs::list_dir,
+            fs::read_file,
             projects::projects_get,
             projects::projects_list,
             projects::projects_set_claude_session,

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setDefaultCwd, spawnAgent } from './state/termPanes'
+import { setDefaultCwd, spawnAgent, spawnFileNav } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -75,6 +75,19 @@ export default function App() {
     window.addEventListener('agent:spawn', onSpawn)
     return () => window.removeEventListener('agent:spawn', onSpawn)
   }, [active, permissionApi.mode])
+
+  // RV3-B — <leader>e spawns a file-nav pane on the active project. Same
+  // decoupled-event pattern as agent:spawn; the FileTree focuses its own root
+  // on becoming active, so no synchronous focus dance is needed here.
+  useEffect(() => {
+    const onFileNav = () => {
+      if (!active) return
+      spawnFileNav(active.path)
+      setFocused('terminal')
+    }
+    window.addEventListener('filenav:spawn', onFileNav)
+    return () => window.removeEventListener('filenav:spawn', onFileNav)
+  }, [active])
 
   // Memoized so their identity is stable across renders. Declared BEFORE the
   // early returns below (Rules of Hooks — a useCallback after a conditional

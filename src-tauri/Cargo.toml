@@ -33,6 +33,9 @@ notify = { version = "8.2.0", default-features = false, features = ["macos_fseve
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# RV3-B (Code-8ro): gitignore-aware directory listing for the file-nav pane.
+# Same engine as ripgrep — respects .gitignore/.ignore, supports bounded depth.
+ignore = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
