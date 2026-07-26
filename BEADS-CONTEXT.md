@@ -384,6 +384,37 @@ The single collapsible Terminal is now a **terminal pane manager**: tabs-of-spli
 
 ---
 
+## RV2 — Multi-agent panes (N Claude sessions in one window) · 2026-07-26 · Code-fpc (in_progress — awaiting live confirm)
+
+Second value-track phase. Orchestration half of *one-window-everything*: the RV1 pane tree now hosts **live Claude agent sessions** as first-class leaves alongside shells. Split/tab/focus/zoom/close keymap applies uniformly to agent panes.
+
+Design was **workflow-judged** (3 independent architects → judge picked MINIMAL GRAFT 20/20 → synthesized; 4 forks user-decided). Spine:
+
+- **bridgeId = optional pane-scoped identity, defaults to projectId.** Every claude-session-scoped key (events `claude_event/status/stderr/event_raw:{id}`, usage bucket, status atom, header portal id, approval RPCs) uses `bridge`. Legacy single chat passes bridgeId omitted → `bridge===projectId` → byte-identical wire format, zero ABI break. Agent panes pass a distinct `uid('agent')` → isolated namespace, so two panes on the SAME project never collide.
+- **Agent leaf = optional `agent?` field on the existing `Leaf`** (`kind:'leaf'` unchanged) so all 7 termPanes tree helpers stay untouched. `isAgentLeaf(l)` guard. Shell leaves keep `ptyId`; agent leaves keep `ptyId:null` + carry `{bridgeId, projectId, sessionId, permissionMode}`.
+- **Status stays OFF-leaf** — `useClaudeStatus(bridgeId)` in the pane header (never written to termPanes state; it changes every frame → would churn the store / reintroduce the R3.5 loop).
+- **claude.rs:** Code-urn spawn-lock fixed — SESSIONS lock dropped across `.spawn()`, re-acquired with a compare-and-insert re-check that kills the losing child (no orphan, concurrent distinct-bridge spawns no longer serialize). `project_id` param name kept (value = bridgeId) → zero ABI change. +3 Rust tests.
+- **Keymap:** `<leader>a` spawns an agent pane on the active project (both leader menus; dispatches `agent:spawn`, App handles it). Close (`<leader>x` / `C-w q`) fires `claude_kill(bridgeId)` for agent leaves.
+- **Two chat surfaces coexist** (user-confirmed fork): the legacy fixed-grid ClaudeChat stays; agent panes are additive in the terminal tree.
+
+**Files:** `claude.rs`, `termPanes.ts`, `TerminalPanes.tsx` (AgentPaneLeaf), `ClaudeChat.tsx` (bridgeId/active props), `useVimNav.ts`, `App.tsx`, `claudeSettings.tsx` (+test). NO change: `vim.ts`, `claudeUsage`, `claudeStatus`, `CostMeter`, `ToolDrawer` (opaque-string keys accept bridgeId as-is).
+
+**Commits:** `b4bfb2a` (RV2) + `9aa9526` (focus-model + bd_prime toast fix).
+
+**Verification:** build (tsc+vite+emoji 0) clean · `cargo test claude` 3/3 · `vitest` 13/13 (incl. new bridge-scoped-portal test) · `tauri dev` clean boot (no render loop; StrictMode double-mount handled by the spawn-lock re-check).
+
+**Live bugs found + fixed (2026-07-26, commit `9aa9526`):**
+1. **Stuck typing in agent pane, leader/C-w dead, Esc doesn't exit insert.** Root: agent `<input>` holds real DOM focus but nothing tied it to the termPanes `insert` mirror (exactly RV1 handoff gotcha 2 — don't rely on blur for an always-focusable input). Fix: input `onFocus/onBlur` drive `setInsert` (real focus == insert truth); local Esc handler blurs; ClaudeChat rAF-autofocuses post-mount; removed the synchronous `setInsert(true)` from App spawn + AgentPaneLeaf mousedown (header/body click stays pane-op so leader/C-w work).
+2. **"invoke bd_prime failed" toast spam.** Root: ClaudeChat used `safeInvoke('bd_prime', …, {rethrow:true})` which toasts on every failure though the caller already treats it non-fatal; RV2 amplified (N panes = N bd_prime). Fix: plain `invoke()`, local catch warns silently.
+
+**STILL OWED (can't drive the WKWebview headless — RV1/R3.5 lesson: loops/focus only fire on real interaction):** manual Tauri-window pass — `<leader>a`×2 → two distinct live sessions + distinct status dots; type-isolation between panes; `<leader>x` kills only that session (`ps aux|grep claude`); leader/C-w don't leak into agent input; Esc exits insert.
+
+**Suspected environmental (NOT an RV2 code regression):** "issues gone on project switch" — most likely fork exhaustion (`fork failed: resource temporarily unavailable` was reproduced in-session) amplified by per-pane claude+bd subprocess load, colliding with the known bd-spawn-storm. IssueList/Board/useProjects/BdLiveProvider are untouched by RV2. Confirm live with a single agent pane before treating as a code bug.
+
+**Next value phase:** RV3 (file-nav + rich agent rendering — absorbs reboot R8/R9). Full handoff block in `Daily/2026-07-26.md` under `<!-- RV2-HANDOFF -->`.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
