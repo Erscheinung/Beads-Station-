@@ -46,7 +46,6 @@ import {
 } from '../state/termPanes'
 import { killPty } from '../components/TerminalPanes'
 
-const LEADER_TIMEOUT_MS = 1000
 const GQ_COMBO_TIMEOUT_MS = 700
 const COMBO_TIMEOUT_MS = 250
 
@@ -121,6 +120,10 @@ export function useVimNav(): void {
     let pendingCw = false
     let pendingCwAt = 0
     const CW_TIMEOUT_MS = 900
+    // RV2 fix — set per-event: true when a leader chord is mid-resolution so
+    // the editable-target bypass lets the second key through even while an
+    // agent/chat input holds focus.
+    let leaderChordActive = false
 
     const onKeyDown = (event: KeyboardEvent) => {
       // ----- RV1: terminal pane management (runs BEFORE the editable-target
@@ -212,6 +215,11 @@ export function useVimNav(): void {
             window.clearTimeout(leaderTimer)
             leaderTimer = null
           }
+          // Esc cancels the leader menu without firing a pane command.
+          if (k === 'Escape') {
+            event.preventDefault()
+            return
+          }
           switch (k) {
             case 's':
               splitActive('h')
@@ -268,12 +276,8 @@ export function useVimNav(): void {
           }
         }
         if (k === ' ' && !ctrl) {
+          // Persistent leader — no auto-dismiss (see the global activation).
           setLeaderActive(true)
-          if (leaderTimer !== null) window.clearTimeout(leaderTimer)
-          leaderTimer = window.setTimeout(() => {
-            setLeaderActive(false)
-            leaderTimer = null
-          }, LEADER_TIMEOUT_MS)
           event.preventDefault()
           return
         }
@@ -305,9 +309,36 @@ export function useVimNav(): void {
         // Ctrl/meta combos and non-printing keys fall through to global.
       }
 
+      // ----- Leader is a GLOBAL chord: if it's already armed, the next key
+      // resolves as a leader command REGARDLESS of what element has DOM focus.
+      // This runs BEFORE the editable-target bypass below, because an agent
+      // pane's <input> (or the legacy chat input) holds real focus, and
+      // without this the bypass would swallow the leader's second key and the
+      // command would silently no-op (menu shows, nothing fires). Blur any
+      // focused editable so the resolved command lands cleanly.
+      {
+        const vimNow = (window as unknown as {
+          __bsVim?: { leaderActive: boolean; focused: string }
+        }).__bsVim
+        if (vimNow?.leaderActive && !(event.ctrlKey || event.metaKey || event.altKey)) {
+          const editable = isEditableTarget(event.target)
+          if (editable) {
+            const el = document.activeElement as HTMLElement | null
+            el?.blur?.()
+          }
+          // Fall through to the shared leader-resolution switch below by NOT
+          // returning here; but we must ensure the editable bypass doesn't
+          // eat it. Set a local flag the bypass checks.
+          leaderChordActive = true
+        } else {
+          leaderChordActive = false
+        }
+      }
+
       // Bypass — typing into an editable surface; we have no business
-      // here, the OS / xterm / input element owns the keystroke.
-      if (isEditableTarget(event.target)) return
+      // here, the OS / xterm / input element owns the keystroke. EXCEPT when a
+      // leader chord is mid-resolution (handled just above).
+      if (isEditableTarget(event.target) && !leaderChordActive) return
 
       const key = event.key
       const hasMod =
@@ -329,6 +360,11 @@ export function useVimNav(): void {
           leaderTimer = null
         }
         setLeaderActive(false)
+        // Esc cancels the leader menu without firing a command (LazyVim feel).
+        if (key === 'Escape') {
+          event.preventDefault()
+          return
+        }
         switch (key) {
           case 'p':
             window.dispatchEvent(new CustomEvent('project:cycle'))
@@ -364,13 +400,10 @@ export function useVimNav(): void {
       }
 
       // ----- Activate leader on bare Space -----
+      // Persistent (LazyVim/which-key style): stays armed until a second key
+      // resolves it or Esc cancels — no auto-dismiss timeout.
       if (key === ' ' && !hasMod) {
         setLeaderActive(true)
-        if (leaderTimer !== null) window.clearTimeout(leaderTimer)
-        leaderTimer = window.setTimeout(() => {
-          setLeaderActive(false)
-          leaderTimer = null
-        }, LEADER_TIMEOUT_MS)
         event.preventDefault()
         return
       }

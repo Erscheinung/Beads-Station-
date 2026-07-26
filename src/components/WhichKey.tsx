@@ -12,6 +12,7 @@ const HINTS: KeyHint[] = [
   { key: 'b', label: 'focus board' },
   { key: 'c', label: 'focus chat' },
   { key: 's', label: 'focus sidebar' },
+  { key: 'a', label: 'new agent pane' },
   { key: 'q', label: 'quit' },
 ]
 
