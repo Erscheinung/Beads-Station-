@@ -67,6 +67,18 @@ pub fn run() {
             telemetry::start(app.handle().clone());
             Ok(())
         })
+        // RV2-fix (Code-51e): reap every live `claude --print` child when the
+        // window closes. Without this, each visited project / spawned agent
+        // pane leaked a persistent claude process for the app's lifetime —
+        // the fork/subprocess-exhaustion vector behind "issues gone on project
+        // switch". block_on is safe here: the close path is not latency
+        // sensitive and kill_all_sessions only does a bounded drain + waits.
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let reaped = tauri::async_runtime::block_on(claude::kill_all_sessions());
+                eprintln!("[claude] window close: reaped {reaped} live session(s)");
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             bd::bd_add_label,
             bd::bd_claim,
@@ -83,6 +95,7 @@ pub fn run() {
             claude::claude_approve,
             claude::claude_deny,
             claude::claude_kill,
+            claude::claude_kill_all,
             claude::claude_send,
             claude::claude_set_permission_mode,
             claude::claude_start,

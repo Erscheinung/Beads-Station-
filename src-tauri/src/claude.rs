@@ -162,6 +162,13 @@ pub async fn claude_start(
         .arg(&cwd)
         .current_dir(&cwd)
         .env("PATH", &path_env)
+        // RV2-fix (Code-51e): kill the child if its ClaudeSession is ever
+        // dropped without an explicit claude_kill. tokio Command orphans by
+        // default, so a dropped-but-unkilled session used to leak a live
+        // `claude --print` process for the app's lifetime. This is the
+        // last-line safety net; the app-exit CloseRequested handler and the
+        // legacy-chat unmount kill are the primary reapers.
+        .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -355,6 +362,27 @@ pub async fn claude_kill(project_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// RV2-fix (Code-51e): reap EVERY live claude session at once. Drains the
+/// SESSIONS map and kills each child. Invoked on window close (see lib.rs
+/// on_window_event) so quitting the app never orphans a `claude --print`
+/// child. Also callable from the FE as a panic button. Idempotent — a second
+/// call finds an empty map and returns Ok. Returns the count reaped.
+pub async fn kill_all_sessions() -> usize {
+    let mut guard = SESSIONS.lock().await;
+    let drained: Vec<ClaudeSession> = guard.drain().map(|(_, s)| s).collect();
+    let n = drained.len();
+    for mut session in drained {
+        let _ = session.child.start_kill();
+        let _ = session.child.wait().await;
+    }
+    n
+}
+
+#[tauri::command]
+pub async fn claude_kill_all() -> Result<usize, String> {
+    Ok(kill_all_sessions().await)
+}
+
 /// Phase 6 — set the per-project permission mode without restarting the
 /// session. The cached value is consulted by `claude_start` on the next
 /// (re)spawn. The FE persists the user-visible setting via
@@ -488,5 +516,23 @@ mod tests {
             .unwrap();
         let m = MODES.lock().await;
         assert_eq!(m.get("projX-legacy").map(String::as_str), Some("default"));
+    }
+
+    // RV2-fix (Code-51e): kill_all drains SESSIONS. Can't insert a real
+    // ClaudeSession without spawning claude (Child has no safe fake), so this
+    // asserts the honest headless-testable slice: on an empty/drained map the
+    // reaper returns 0 and is idempotent (never panics, never blocks). The
+    // real kill is exercised by the tokio Child in the running app + the
+    // CloseRequested handler; kill_on_drop is the type-level safety net.
+    #[tokio::test]
+    async fn kill_all_on_empty_is_zero_and_idempotent() {
+        // Ensure a clean slate w.r.t. this contract (other tests never insert
+        // into SESSIONS — only MODES — so this map is empty in the test bin).
+        let first = kill_all_sessions().await;
+        let second = kill_all_sessions().await;
+        assert_eq!(first, 0);
+        assert_eq!(second, 0);
+        let guard = SESSIONS.lock().await;
+        assert!(guard.is_empty());
     }
 }

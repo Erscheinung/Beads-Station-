@@ -257,7 +257,17 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
     })()
     return () => {
       ac.abort()
-      // Phase 6 manages claude lifecycles — do NOT auto-kill on unmount.
+      // RV2-fix (Code-51e): the LEGACY grid chat (bridgeId==null) is mounted
+      // as <ClaudeChat key={active.id}>, so it unmounts on EVERY project
+      // switch. It used to leave its backend claude session alive forever —
+      // visiting N projects leaked N `claude --print` children, exhausting
+      // forks until bd reads failed ("issues gone on project switch"). Kill
+      // it on unmount. AGENT panes (bridgeId set) are intentionally NOT
+      // killed here: they persist across project switches by design and are
+      // reaped by explicit <leader>x or the app-exit CloseRequested handler.
+      if (bridgeId == null) {
+        invoke('claude_kill', { projectId: bridge }).catch(() => {})
+      }
     }
   }, [projectId, bridge, cwd, sessionId, permissionMode])
 
