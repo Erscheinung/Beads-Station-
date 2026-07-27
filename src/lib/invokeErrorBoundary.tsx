@@ -18,7 +18,7 @@
 // can subscribe; <InvokeToasts/> renders the live list. This deliberately
 // mirrors the existing Board.tsx toast pattern (kind/timeout) but is global.
 
-import { Component, useSyncExternalStore, type ReactNode } from 'react'
+import { Component, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 
 // ---------------------------------------------------------------------------
 // Toast store
@@ -32,6 +32,8 @@ export interface InvokeToast {
   detail: string
   /** local-tz HH:MM:SS captured at push time. */
   timestamp: string
+  /** RV3.1 — how many identical messages coalesced into this toast. */
+  count: number
 }
 
 let counter = 0
@@ -53,6 +55,17 @@ function getSnapshot(): InvokeToast[] {
   return toasts
 }
 
+/** RV3.1 — read-only view of the live toasts (for tests + debugging). */
+export function peekToasts(): InvokeToast[] {
+  return toasts
+}
+
+/** RV3.1 — clear all toasts (test reset + a potential "dismiss all" affordance). */
+export function clearToasts(): void {
+  toasts = []
+  emit()
+}
+
 /** Auto-dismiss window (ms) unless the toast is hovered. */
 const AUTO_DISMISS_MS = 8000
 
@@ -61,9 +74,18 @@ export function dismissToast(id: number) {
   emit()
 }
 
-/** Push a toast. Returns its id. Exposed for tests + the error boundary. */
+/** RV3.1 — hard cap on distinct toasts. Under a fork-exhaustion storm, bd
+ *  failures fire faster than the 8s auto-dismiss can drain, so without a cap
+ *  they pile up and bury the UI (Esc/i unreachable). Oldest drop first. */
+const MAX_TOASTS = 6
+
+/** Push a toast. Returns its id. Exposed for tests + the error boundary.
+ *
+ * RV3.1 — identical `message`s COALESCE into one toast (count++) instead of
+ * stacking N copies, and the total is capped at MAX_TOASTS. This is what stops
+ * a bd fork-exhaustion cascade from flooding the screen with hundreds of
+ * "invoke bd_list failed" rows and locking the user out of Esc/i. */
 export function pushInvokeToast(message: string, detail: string): number {
-  const id = ++counter
   // Guard against Date being stubbed oddly; fall back to empty ts.
   let timestamp = ''
   try {
@@ -71,7 +93,24 @@ export function pushInvokeToast(message: string, detail: string): number {
   } catch {
     timestamp = ''
   }
-  toasts = [...toasts, { id, message, detail, timestamp }]
+
+  // Coalesce: if a toast with the same message is already live, bump its count
+  // + timestamp (and reuse its id so its dismiss timer re-arms on re-render).
+  const existing = toasts.find(t => t.message === message)
+  if (existing) {
+    toasts = toasts.map(t =>
+      t.id === existing.id ? { ...t, count: t.count + 1, timestamp, detail } : t,
+    )
+    emit()
+    return existing.id
+  }
+
+  const id = ++counter
+  toasts = [...toasts, { id, message, detail, timestamp, count: 1 }]
+  // Cap: drop the oldest toasts beyond MAX_TOASTS.
+  if (toasts.length > MAX_TOASTS) {
+    toasts = toasts.slice(toasts.length - MAX_TOASTS)
+  }
   emit()
   return id
 }
@@ -136,30 +175,25 @@ export function InvokeToasts() {
 }
 
 function ToastCard({ toast }: { toast: InvokeToast }) {
-  // Hover pauses auto-dismiss: we arm the timer on mount and clear it on
-  // hover-enter, re-arm on hover-leave. Simpler than tracking elapsed time.
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const arm = () => {
-    timer = setTimeout(() => dismissToast(toast.id), AUTO_DISMISS_MS)
-  }
-  const disarm = () => {
-    if (timer) {
-      clearTimeout(timer)
-      timer = null
-    }
-  }
+  // RV3.1 — hover pauses auto-dismiss; the timer re-arms whenever the toast's
+  // count/timestamp changes (a coalesced repeat) so a toast being actively hit
+  // stays up and clears 8s after the LAST hit, not the first. useEffect keyed
+  // on count+timestamp handles the re-arm cleanly (the old ref-callback only
+  // fired on mount, so coalesced repeats never reset the timer).
+  const [paused, setPaused] = useState(false)
+  useEffect(() => {
+    if (paused) return
+    const timer = setTimeout(() => dismissToast(toast.id), AUTO_DISMISS_MS)
+    return () => clearTimeout(timer)
+  }, [toast.id, toast.count, toast.timestamp, paused])
   return (
     <div
       className="bs-invoke-toast"
-      ref={el => {
-        // ref callback runs on mount (el != null) and unmount (el == null).
-        if (el) arm()
-        else disarm()
-      }}
-      onMouseEnter={disarm}
-      onMouseLeave={arm}
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
     >
       <div className="bs-invoke-toast-msg" title={toast.detail}>
+        {toast.count > 1 && <span className="bs-invoke-toast-count">{toast.count}×</span>}
         {toast.message}
       </div>
       <div className="bs-invoke-toast-foot">

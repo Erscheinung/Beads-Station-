@@ -543,3 +543,9 @@ body {
   background: var(--bs-bg-elev); border-top: 1px solid var(--bs-border);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+
+/* RV3.1 — coalesced-toast count badge. */
+.bs-invoke-toast-count {
+  display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 8px;
+  background: var(--bs-red); color: var(--bs-bg-dark); font-size: 10px; font-weight: 600;
+}

@@ -13,6 +13,25 @@ use tokio::process::Command;
 
 const ACTOR: &str = "Beads Station";
 
+/// RV3.1 — global cap on concurrent `bd` subprocess spawns from this app.
+/// bd is a ~130MB Go binary that forks git/dolt of its own; the app fires
+/// bd_list + bd_ready + bd_counts on a poll AND on every bd_changed, so an
+/// unthrottled burst (esp. with agent panes adding claude+bd load) can exhaust
+/// the process fork limit -> `fork: Resource temporarily unavailable` (EAGAIN /
+/// os error 35) -> cascading failures + a toast storm that buries the UI.
+/// Serializing to a small number keeps the app from being its own fork bomb;
+/// excess calls await a permit instead of spawning into an exhausted table.
+static BD_SEMAPHORE: once_cell::sync::Lazy<tokio::sync::Semaphore> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Semaphore::new(3));
+
+/// True when an error string looks like a fork/resource-exhaustion (EAGAIN),
+/// whether from our own spawn or from bd's internal fork of git/dolt.
+fn is_resource_exhaustion(msg: &str) -> bool {
+    msg.contains("os error 35")
+        || msg.contains("Resource temporarily unavailable")
+        || msg.contains("resource temporarily unavailable")
+}
+
 /// Outcome of a `bd` subprocess run. `NoDatabase` is the classified
 /// "no beads database found" case (project has no `.beads/` dir). Reads
 /// map it to an empty result; writes surface it as a real error so a
@@ -77,6 +96,39 @@ pub struct Issue {
 /// ensures the role check lands against the correct repo and writes
 /// actually persist.
 async fn run_bd_classified(repo_path: &str, args: &[&str]) -> Result<BdOutcome, String> {
+    // RV3.1 — hold a semaphore permit for the whole spawn so the app never has
+    // more than BD_SEMAPHORE bd children in flight at once. Acquire can't fail
+    // (the semaphore is never closed); the permit drops at end of scope.
+    let _permit = BD_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|e| format!("bd semaphore closed: {e}"))?;
+
+    // RV3.1 — retry on fork/resource exhaustion (EAGAIN / os error 35) with a
+    // short escalating backoff. A transient exhaustion (e.g. a subprocess burst
+    // draining the fork table) usually clears within a few hundred ms; retrying
+    // recovers silently instead of surfacing a toast. Non-EAGAIN errors return
+    // immediately. Bounded to 3 attempts so a genuine, sustained exhaustion
+    // still fails (rather than hanging) — but by then the semaphore + backoff
+    // have removed the app as the storm's amplifier.
+    const MAX_ATTEMPTS: usize = 3;
+    const BACKOFF_MS: [u64; 2] = [120, 350];
+    let mut attempt = 0;
+    loop {
+        match run_bd_once(repo_path, args).await {
+            Ok(outcome) => return Ok(outcome),
+            Err(e) if is_resource_exhaustion(&e) && attempt < MAX_ATTEMPTS - 1 => {
+                tokio::time::sleep(std::time::Duration::from_millis(BACKOFF_MS[attempt])).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// A single bd spawn + classify (no retry, no permit). Split out so
+/// `run_bd_classified` can wrap it in the semaphore + EAGAIN-retry loop.
+async fn run_bd_once(repo_path: &str, args: &[&str]) -> Result<BdOutcome, String> {
     // Phase 2.5: launchd-launched GUIs inherit an empty PATH, so
     // `Command::new("bd")` resolves to nothing. Always go through
     // binresolve::resolve_bin to find the canonical absolute path.
