@@ -68,6 +68,10 @@ let toastCounter = 0
 export function Board({ repoPath, projectId }: BoardProps) {
   const [state, setState] = useState<BoardState>(EMPTY_STATE)
   const [error, setError] = useState<string | null>(null)
+  // False until the first fetch for THIS repoPath resolves. The load window
+  // (bdReady+bdList can take several seconds cold) must not render as
+  // "no beads db" — that conflation was the RV3.2 / Code-hc9 bug.
+  const [loaded, setLoaded] = useState(false)
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
   // Bumped after every successful mutation to force a refetch.
@@ -112,14 +116,39 @@ export function Board({ repoPath, projectId }: BoardProps) {
       }
       setState(next)
       setError(null)
+      setLoaded(true)
     } catch (e) {
       setError(String(e))
+      setLoaded(true)
     }
   }, [repoPath, projectId])
+
+  // Reset the loaded gate on repo change so a new repo's load window doesn't
+  // inherit the previous repo's "loaded" truth.
+  useEffect(() => {
+    setLoaded(false)
+  }, [repoPath])
 
   useEffect(() => {
     refetch()
   }, [refetch, version])
+
+  // Self-heal a transient empty: bd reads can momentarily degrade to an empty
+  // result under subprocess/fork pressure (the backend maps a NoDatabase
+  // classification to []). Board fetches only on mount + bd_changed, so without
+  // this a transient empty LATCHES as "no beads db" forever while the
+  // Statusline (which polls every 5s) shows the true count — exactly the
+  // ready=10 / board-0 split seen live (RV3.2 / Code-hc9). While the board is
+  // loaded-but-empty-with-no-error, re-poll every 4s until issues appear or a
+  // real error surfaces; a genuinely empty repo just keeps confirming empty.
+  useEffect(() => {
+    if (!loaded) return
+    const count =
+      state.ready.length + state.in_progress.length + state.blocked.length + state.done.length
+    if (count > 0 || error) return
+    const id = window.setInterval(refetch, 4000)
+    return () => window.clearInterval(id)
+  }, [loaded, state, error, refetch])
 
   useBdLiveContext(repoPath, refetch)
 
@@ -210,7 +239,10 @@ export function Board({ repoPath, projectId }: BoardProps) {
   // has no `.beads/` dir (the backend now degrades a missing db to an empty
   // read rather than throwing). Surface that explicitly so a blank board reads
   // as intentional, not broken.
-  const noBeadsDb = totalCount === 0 && !error
+  // Only call it "no beads db" once a fetch has actually completed with zero
+  // issues and no error. Before that (loaded===false) the board is loading,
+  // not empty — see RV3.2 / Code-hc9.
+  const noBeadsDb = loaded && totalCount === 0 && !error
 
   return (
     <div
@@ -236,7 +268,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
         }}
       >
         <span>BOARD · {projectId}</span>
-        <span style={{ opacity: 0.5 }}>· {noBeadsDb ? 'no beads db · 0 issues' : `${totalCount} issues`}</span>
+        <span style={{ opacity: 0.5 }}>· {!loaded ? 'loading…' : noBeadsDb ? 'no beads db · 0 issues' : `${totalCount} issues`}</span>
         {error && (
           <span style={{ marginLeft: 'auto', color: 'var(--bs-red)' }}>{error}</span>
         )}

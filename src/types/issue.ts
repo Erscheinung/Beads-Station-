@@ -30,7 +30,11 @@ export interface Issue {
 
 /** `bd ready --json` — issues with no open blockers. */
 export async function bdReady(repoPath: string): Promise<Issue[]> {
-  return (await safeInvoke<Issue[]>('bd_ready', { repoPath }, { rethrow: true }))!;
+  const r = (await safeInvoke<Issue[]>('bd_ready', { repoPath }, { rethrow: true }))!;
+  // RV3.2 debug — trace bd read returns to the Web Inspector console so an
+  // empty/degraded result is visible against the Statusline's live count.
+  console.debug('[bd] bdReady', repoPath, '→', r.length);
+  return r;
 }
 
 /** `bd show <id> --json --long` — full issue detail. */
@@ -46,11 +50,13 @@ export async function bdList(
   repoPath: string,
   statusFilter?: string | null,
 ): Promise<Issue[]> {
-  return (await safeInvoke<Issue[]>(
+  const r = (await safeInvoke<Issue[]>(
     'bd_list',
     { repoPath, statusFilter: statusFilter ?? null },
     { rethrow: true },
   ))!;
+  console.debug('[bd] bdList', repoPath, statusFilter ?? 'all', '→', r.length);
+  return r;
 }
 
 // ---------------------------------------------------------------------------

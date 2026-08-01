@@ -66,6 +66,23 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             telemetry::start(app.handle().clone());
+            // RV3.2 debug — open the Web Inspector on launch so bd invoke
+            // returns can be watched live (release WKWebview is otherwise
+            // un-inspectable). Gated on the BS_DEVTOOLS env var so a normal
+            // launch stays clean; set BS_DEVTOOLS=1 to pop devtools.
+            #[cfg(feature = "devtools")]
+            if std::env::var("BS_DEVTOOLS").is_ok() {
+                use tauri::Manager;
+                if let Some(w) = app.get_webview_window("main") {
+                    // Delay: open_devtools() in setup can no-op on macOS before
+                    // the WKWebView is fully realized. Fire after a beat.
+                    let w2 = w.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                        w2.open_devtools();
+                    });
+                }
+            }
             Ok(())
         })
         // RV2-fix (Code-51e): reap every live `claude --print` child when the
