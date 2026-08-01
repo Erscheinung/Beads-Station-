@@ -27,6 +27,11 @@
 //   s — focus sidebar
 //   q — quit, with confirm
 //
+// Leader can also be armed with Cmd-P (mac) / Ctrl-P from ANY focus —
+// including a focused chat/agent input or xterm, where a bare Space would
+// (correctly) type a space instead. This is the discoverable escape hatch
+// out of an editable surface (RV3.4).
+//
 // All non-passthrough handled keys preventDefault to avoid the page
 // scrolling on Space, Tab focus-traversal, etc.
 
@@ -139,6 +144,32 @@ export function useVimNav(): void {
       }).__bsTerm
       const vimMirror = (window as unknown as { __bsVim?: { focused: string } }).__bsVim
       const termFocused = (vimMirror?.focused ?? 'board') === 'terminal'
+
+      // ----- RV3.4: global leader escape-hatch (Cmd/Ctrl-P) -----
+      // A bare Space cannot arm leader while an editable (Claude/agent input,
+      // xterm, legacy chat) holds focus — the keystroke belongs to that surface
+      // and swallowing Space would break typing spaces. Esc-to-normal-first is
+      // the intended flow but undiscoverable, so provide an explicit modifier
+      // chord that never collides with text input and arms leader from ANY
+      // focus. Cmd-P (mac) / Ctrl-P — same persistent semantics as bare Space.
+      // Runs before the terminal block AND the editable bypass so it works in
+      // xterm/agent-input insert mode and non-terminal inputs uniformly. The
+      // next key then resolves via whichever leader path owns the current focus
+      // (terminal pane-op switch, or the global switch via leaderChordActive).
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'p' || event.key === 'P')
+          && !event.altKey && !event.shiftKey) {
+        // Blur any focused editable + drop insert so the resolved command lands
+        // cleanly (mirrors the bare-Space-in-editable handling below).
+        if (isEditableTarget(event.target)) {
+          const el = document.activeElement as HTMLElement | null
+          el?.blur?.()
+        }
+        if (termMirror?.insert) setInsert(false)
+        setLeaderActive(true)
+        leaderChordActive = true
+        event.preventDefault()
+        return
+      }
 
       if (termFocused) {
         const insert = !!termMirror?.insert

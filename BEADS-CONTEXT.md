@@ -456,6 +456,18 @@ New RV1 leaf type, read-only (nav not edit; Claude does edits). **BE `src-tauri/
 
 ---
 
+## RV3.4 — leader escape hatch (Cmd-P) · 2026-08-01 · Code-6xu (closed)
+
+Live-surfaced P1 bug (screenshot 2026-08-01): with focus in the "ask claude" textarea or xterm, pressing **Space never armed leader** — all `<leader>` project commands were dead from any editable. Root: `useVimNav`'s editable-target bypass (`:360 return`) plus the terminal insert-mode early-return (`:146 return`) swallow the arming Space; `leaderChordActive` (RV2 `db6bd7e`) only let the SECOND chord key through, never the first Space that arms. Works fine from board/sidebar (non-editable). A bare Space in an input can't be special-cased (kills typing spaces).
+
+**Fix (UX option c — explicit non-colliding chord):** a global **Cmd-P (mac) / Ctrl-P** arm, handled at the very top of `onKeyDown` — before the terminal block AND the editable bypass — so it works uniformly in xterm/agent-input insert mode, legacy chat, and board. It blurs any focused editable, drops insert (`setInsert(false)`), and arms leader (`setLeaderActive(true)`) with the same persistent semantics as bare Space. Both `emit()`s write the `window.__bsVim`/`__bsTerm` mirrors **synchronously**, so the next keydown resolves via whichever leader path owns the current focus (terminal pane-op switch, or global switch via `leaderChordActive`). `WhichKey.tsx` gains a footer line ("Space arms leader · Cmd-P arms from any input") for discoverability.
+
+**Files:** `src/hooks/useVimNav.ts` (arm block + header doc), `src/components/WhichKey.tsx` (footer), `src/hooks/useVimNav.test.tsx` (NEW). **Test gotcha:** jsdom does NOT retarget `window.dispatchEvent`, so a window-dispatched keydown has `event.target === window` and `isEditableTarget` stays false — the regression test must dispatch from `document.activeElement` to exercise the editable path.
+
+**Verification:** vitest **32/32** (+2 mutation-verified: arm-from-focused-input, armed-second-key-resolves — both FAIL when the arm guard is neutered). `npm run build` clean (audit-emoji 0/50). `cargo check` exit 0 (no Rust touched). **NOT live-verified in the WKWebview** (same headless limit as every phase) — the manual pass owes: Cmd-P from the Claude input arms the which-key menu, then `b`/`c`/`p`/`x` fire.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.

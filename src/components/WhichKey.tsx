@@ -68,6 +68,17 @@ export function WhichKey() {
           <Row key={h.key} k={h.key} label={h.label} />
         ))}
       </div>
+      <div
+        style={{
+          marginTop: 14,
+          paddingTop: 10,
+          borderTop: '1px solid var(--bs-border)',
+          fontSize: 10,
+          color: 'var(--bs-fg-muted)',
+        }}
+      >
+        Space arms leader &middot; Cmd-P arms from any input (chat / terminal)
+      </div>
     </div>
   )
 }
