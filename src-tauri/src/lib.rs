@@ -115,6 +115,7 @@ pub fn run() {
             claude::claude_deny,
             claude::claude_kill,
             claude::claude_kill_all,
+            claude::claude_reconcile,
             claude::claude_send,
             claude::claude_set_permission_mode,
             claude::claude_start,

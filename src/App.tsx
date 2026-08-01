@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setDefaultCwd, spawnAgent, spawnFileNav } from './state/termPanes'
+import { setDefaultCwd, spawnAgent, spawnFileNav, useTermPanes, allAgentBridges } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -88,6 +88,21 @@ export default function App() {
     window.addEventListener('filenav:spawn', onFileNav)
     return () => window.removeEventListener('filenav:spawn', onFileNav)
   }, [active])
+
+  // RV3.7 (Code-uu5) — reconcile backend claude sessions against the live pane
+  // tree. Agent panes are persistent (unmount does NOT claude_kill), and a tab
+  // reset can drop an agent leaf without routing through closeActivePane, which
+  // would otherwise leak its claude child until app exit. On every pane-tree
+  // change (debounced) we send the set of still-live agent bridges; the backend
+  // reaps any session not in that set. useTermPanes() re-renders on each
+  // mutation so this effect re-runs; the debounce coalesces bursts.
+  const termState = useTermPanes()
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      invoke('claude_reconcile', { liveBridges: allAgentBridges() }).catch(() => {})
+    }, 500)
+    return () => window.clearTimeout(t)
+  }, [termState])
 
   // Memoized so their identity is stable across renders. Declared BEFORE the
   // early returns below (Rules of Hooks — a useCallback after a conditional

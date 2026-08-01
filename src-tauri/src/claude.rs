@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
@@ -55,7 +56,11 @@ fn augmented_path() -> String {
 }
 
 struct ClaudeSession {
-    stdin: ChildStdin,
+    // RV3.7 (Code-8vm) — stdin behind its own Arc<Mutex> so claude_send /
+    // permission responses lock ONLY this bridge's pipe, not the global
+    // SESSIONS map. A wedged/backpressured child stdin therefore can no longer
+    // stall every other bridge's send/approve/deny behind the map lock.
+    stdin: Arc<Mutex<ChildStdin>>,
     child: Child,
     session_id: String,
 }
@@ -196,6 +201,7 @@ pub async fn claude_start(
         .stdin
         .take()
         .ok_or_else(|| "claude stdin not captured".to_string())?;
+    let stdin = Arc::new(Mutex::new(stdin));
     let stdout = child
         .stdout
         .take()
@@ -298,31 +304,49 @@ pub async fn claude_start(
     // return the winner's session id. Distinct bridges never collide here, so
     // this path is near-dead in RV2 — but it's mandatory to avoid leaking an
     // orphan claude subprocess on the same-bridge race.
-    let mut guard = SESSIONS.lock().await;
-    if let Some(existing) = guard.get(&project_id) {
-        let sid = existing.session_id.clone();
-        let _ = child.start_kill();
-        let _ = child.wait().await;
-        return Ok(sid);
+    //
+    // RV3.7 (Code-9wf) — do NOT reap the redundant child under the SESSIONS
+    // lock: child.wait() can block on OS process teardown, and holding the
+    // global map lock across it stalls every other bridge's start/send/kill
+    // (the same class the Code-urn spawn fix addressed). On a lost race,
+    // capture the winner's sid, DROP the guard, then kill/wait outside the
+    // critical section.
+    {
+        let mut guard = SESSIONS.lock().await;
+        if let Some(existing) = guard.get(&project_id) {
+            let sid = existing.session_id.clone();
+            drop(guard);
+            let mut redundant = child;
+            let _ = redundant.start_kill();
+            let _ = redundant.wait().await;
+            return Ok(sid);
+        }
+        guard.insert(
+            project_id.clone(),
+            ClaudeSession {
+                stdin,
+                child,
+                session_id: session_id.clone(),
+            },
+        );
     }
-    guard.insert(
-        project_id.clone(),
-        ClaudeSession {
-            stdin,
-            child,
-            session_id: session_id.clone(),
-        },
-    );
 
     Ok(session_id)
 }
 
 #[tauri::command]
 pub async fn claude_send(project_id: String, text: String) -> Result<(), String> {
-    let mut guard = SESSIONS.lock().await;
-    let session = guard
-        .get_mut(&project_id)
-        .ok_or_else(|| format!("claude session not started for project {project_id}"))?;
+    // RV3.7 (Code-8vm) — hold the SESSIONS lock only long enough to clone the
+    // per-bridge stdin handle, then DROP it before the pipe write/flush. A
+    // full/backpressured child stdin now blocks only this bridge, not every
+    // other bridge's send/approve/deny.
+    let stdin = {
+        let guard = SESSIONS.lock().await;
+        let session = guard
+            .get(&project_id)
+            .ok_or_else(|| format!("claude session not started for project {project_id}"))?;
+        session.stdin.clone()
+    };
 
     let frame = json!({
         "type": "user",
@@ -338,13 +362,12 @@ pub async fn claude_send(project_id: String, text: String) -> Result<(), String>
         .map_err(|e| format!("serialize user frame: {e}"))?;
     line.push('\n');
 
-    session
-        .stdin
+    let mut stdin = stdin.lock().await;
+    stdin
         .write_all(line.as_bytes())
         .await
         .map_err(|e| format!("write to claude stdin: {e}"))?;
-    session
-        .stdin
+    stdin
         .flush()
         .await
         .map_err(|e| format!("flush claude stdin: {e}"))?;
@@ -381,6 +404,39 @@ pub async fn kill_all_sessions() -> usize {
 #[tauri::command]
 pub async fn claude_kill_all() -> Result<usize, String> {
     Ok(kill_all_sessions().await)
+}
+
+/// RV3.7 (Code-uu5) — reap any session whose bridge is no longer live in the
+/// FE pane tree. Agent-pane ClaudeChat unmount deliberately does NOT
+/// claude_kill (agent panes are persistent by design), and closeActivePane
+/// only reports the ACTIVE leaf's bridge — so an agent leaf discarded from
+/// state without being the active pane (e.g. a whole tab reset) leaks its
+/// `claude --print` child until app exit, since kill_on_drop only fires when
+/// the ClaudeSession is actually dropped (i.e. removed from SESSIONS). The FE
+/// calls this with the set of bridge ids still present in the pane tree; any
+/// SESSIONS entry NOT in that set is removed (dropped -> kill_on_drop) and
+/// reaped. Returns the count reaped. Bridges the FE still owns are untouched.
+#[tauri::command]
+pub async fn claude_reconcile(live_bridges: Vec<String>) -> Result<usize, String> {
+    let live: std::collections::HashSet<String> = live_bridges.into_iter().collect();
+    let stale: Vec<ClaudeSession> = {
+        let mut guard = SESSIONS.lock().await;
+        let stale_keys: Vec<String> = guard
+            .keys()
+            .filter(|k| !live.contains(*k))
+            .cloned()
+            .collect();
+        stale_keys
+            .into_iter()
+            .filter_map(|k| guard.remove(&k))
+            .collect()
+    };
+    let n = stale.len();
+    for mut session in stale {
+        let _ = session.child.start_kill();
+        let _ = session.child.wait().await;
+    }
+    Ok(n)
 }
 
 /// Phase 6 — set the per-project permission mode without restarting the
@@ -426,10 +482,16 @@ async fn write_permission_response(
     request_id: &str,
     decision: &'static str, // "approved" or "denied"
 ) -> Result<(), String> {
-    let mut guard = SESSIONS.lock().await;
-    let session = guard
-        .get_mut(project_id)
-        .ok_or_else(|| format!("claude session not started for project {project_id}"))?;
+    // RV3.7 (Code-8vm) — clone the per-bridge stdin under the map lock, drop
+    // it, then write/flush. Approvals no longer serialize behind a wedged
+    // sibling child's stdin.
+    let stdin = {
+        let guard = SESSIONS.lock().await;
+        let session = guard
+            .get(project_id)
+            .ok_or_else(|| format!("claude session not started for project {project_id}"))?;
+        session.stdin.clone()
+    };
 
     let frame = json!({
         "type": "user",
@@ -449,13 +511,12 @@ async fn write_permission_response(
         .map_err(|e| format!("serialize permission frame: {e}"))?;
     line.push('\n');
 
-    session
-        .stdin
+    let mut stdin = stdin.lock().await;
+    stdin
         .write_all(line.as_bytes())
         .await
         .map_err(|e| format!("write permission frame to claude stdin: {e}"))?;
-    session
-        .stdin
+    stdin
         .flush()
         .await
         .map_err(|e| format!("flush permission frame: {e}"))?;

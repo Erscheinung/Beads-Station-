@@ -241,6 +241,23 @@ export function resolveTargetAgentBridge(): string | null {
   return null // ambiguous — caller should hint the user to focus an agent
 }
 
+/**
+ * RV3.7 (Code-uu5) — every agent bridgeId live across ALL tabs (not just the
+ * active one). The FE reconciler passes this to the backend claude_reconcile
+ * so any SESSIONS entry whose bridge is no longer in the tree gets reaped;
+ * without it, an agent leaf discarded by a tab reset (not via closeActivePane)
+ * leaks its claude child until app exit.
+ */
+export function allAgentBridges(): string[] {
+  const out: string[] = []
+  for (const tab of state.tabs) {
+    for (const leaf of leavesOf(tab.root)) {
+      if (leaf.agent != null) out.push(leaf.agent.bridgeId)
+    }
+  }
+  return out
+}
+
 function findLeaf(node: Node, paneId: string): Leaf | null {
   if (node.kind === 'leaf') return node.paneId === paneId ? node : null
   return findLeaf(node.a, paneId) ?? findLeaf(node.b, paneId)
