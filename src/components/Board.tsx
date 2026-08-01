@@ -207,14 +207,22 @@ export function Board({ repoPath, projectId }: BoardProps) {
     [state],
   )
 
-  // When bd returns zero issues AND there was no error, the repo most likely
-  // has no `.beads/` dir (the backend now degrades a missing db to an empty
-  // read rather than throwing). Surface that explicitly so a blank board reads
-  // as intentional, not broken.
-  // Only call it "no beads db" once a fetch has actually completed with zero
-  // issues and no error. Before that (loaded===false) the board is loading,
-  // not empty — see RV3.2 / Code-hc9.
-  const noBeadsDb = loaded && totalCount === 0 && !error
+  // RV3.7 (Code-hc9) — "no beads db" is now gated on the backend's classified
+  // noDb signal, NOT on total===0. A repo that genuinely has no `.beads/` db
+  // reports noDb=true; a real-but-empty repo reports noDb=false and shows
+  // "0 issues" (its true state), never "no beads db". Error is distinct
+  // (rendered below). Before the first fetch (loaded===false) the board is
+  // loading. Four distinct states: loading / error / no-db / count.
+  const noBeadsDb = loaded && snap.noDb && !error
+
+  // Header status word for the four-way state.
+  const headerStatus = !loaded
+    ? 'loading…'
+    : error
+      ? 'error'
+      : noBeadsDb
+        ? 'no beads db · 0 issues'
+        : `${totalCount} issues`
 
   return (
     <div
@@ -240,7 +248,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
         }}
       >
         <span>BOARD · {projectId}</span>
-        <span style={{ opacity: 0.5 }}>· {!loaded ? 'loading…' : noBeadsDb ? 'no beads db · 0 issues' : `${totalCount} issues`}</span>
+        <span style={{ opacity: 0.5 }}>· {headerStatus}</span>
         {error && (
           <span style={{ marginLeft: 'auto', color: 'var(--bs-red)' }}>{error}</span>
         )}

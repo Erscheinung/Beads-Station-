@@ -46,7 +46,7 @@ describe('bdCache — RV3.3 shared snapshot', () => {
   })
 
   it('dedups concurrent fetches into ONE backend call', async () => {
-    let resolve!: (v: { ready: unknown[]; all: unknown[] }) => void
+    let resolve!: (v: { ready: unknown[]; all: unknown[]; no_db: boolean }) => void
     snapshotMock.mockImplementation(
       () => new Promise(r => { resolve = r as typeof resolve }),
     )
@@ -60,18 +60,18 @@ describe('bdCache — RV3.3 shared snapshot', () => {
     expect(p1).toBe(p2)
     expect(p2).toBe(p3)
 
-    resolve({ ready: [{ id: 'A' }], all: [{ id: 'A' }] })
+    resolve({ ready: [{ id: 'A' }], all: [{ id: 'A' }], no_db: false })
     await Promise.all([p1, p2, p3])
 
     // A fresh fetch after settle issues a new call (inFlight cleared).
-    snapshotMock.mockResolvedValueOnce({ ready: [], all: [{ id: 'A' }] })
+    snapshotMock.mockResolvedValueOnce({ ready: [], all: [{ id: 'A' }], no_db: false })
     await fetchSnapshot(REPO)
     expect(snapshotMock).toHaveBeenCalledTimes(2)
   })
 
   it('schedules exactly one self-heal retry on a settled empty snapshot', async () => {
     vi.useFakeTimers()
-    snapshotMock.mockResolvedValue({ ready: [], all: [] })
+    snapshotMock.mockResolvedValue({ ready: [], all: [], no_db: false })
 
     await fetchSnapshot(REPO)
     expect(snapshotMock).toHaveBeenCalledTimes(1)
@@ -87,7 +87,7 @@ describe('bdCache — RV3.3 shared snapshot', () => {
 
   it('does NOT schedule a retry when the snapshot is non-empty', async () => {
     vi.useFakeTimers()
-    snapshotMock.mockResolvedValue({ ready: [{ id: 'A' }], all: [{ id: 'A' }] })
+    snapshotMock.mockResolvedValue({ ready: [{ id: 'A' }], all: [{ id: 'A' }], no_db: false })
 
     await fetchSnapshot(REPO)
     expect(snapshotMock).toHaveBeenCalledTimes(1)
@@ -100,8 +100,8 @@ describe('bdCache — RV3.3 shared snapshot', () => {
     vi.useFakeTimers()
     // First settle empty -> arms heal; the heal retry returns non-empty.
     snapshotMock
-      .mockResolvedValueOnce({ ready: [], all: [] })
-      .mockResolvedValueOnce({ ready: [{ id: 'A' }], all: [{ id: 'A' }] })
+      .mockResolvedValueOnce({ ready: [], all: [], no_db: false })
+      .mockResolvedValueOnce({ ready: [{ id: 'A' }], all: [{ id: 'A' }], no_db: false })
 
     await fetchSnapshot(REPO)
     expect(snapshotMock).toHaveBeenCalledTimes(1)
@@ -121,7 +121,7 @@ describe('bdCache — RV3.3 shared snapshot', () => {
     // and applySnapshot published to a different entry object. With the fix,
     // the entry persists: cached data survives an unsubscribe and a later
     // subscriber reads it synchronously.
-    snapshotMock.mockResolvedValue({ ready: [{ id: 'A' }], all: [{ id: 'A' }, { id: 'B' }] })
+    snapshotMock.mockResolvedValue({ ready: [{ id: 'A' }], all: [{ id: 'A' }, { id: 'B' }], no_db: false })
 
     const cbA = vi.fn()
     const unsubA = __subscribeForTest(REPO, cbA)
@@ -143,7 +143,7 @@ describe('bdCache — RV3.3 shared snapshot', () => {
   })
 
   it('a mid-flight unsubscribe does not strand a sibling still subscribed', async () => {
-    let resolve!: (v: { ready: unknown[]; all: unknown[] }) => void
+    let resolve!: (v: { ready: unknown[]; all: unknown[]; no_db: boolean }) => void
     snapshotMock.mockImplementation(
       () => new Promise(r => { resolve = r as typeof resolve }),
     )
@@ -156,11 +156,38 @@ describe('bdCache — RV3.3 shared snapshot', () => {
     const p = fetchSnapshot(REPO)
     unsubA() // Board unmounts mid-flight (StrictMode-style churn)
 
-    resolve({ ready: [{ id: 'A' }], all: [{ id: 'A' }] })
+    resolve({ ready: [{ id: 'A' }], all: [{ id: 'A' }], no_db: false })
     await p
 
     // The still-subscribed sibling MUST be notified and see the data.
     expect(cbB).toHaveBeenCalled()
     expect(__getSnapshotForTest(REPO).all).toHaveLength(1)
+  })
+
+  it('a genuine no-db read sets noDb and does NOT self-heal (stable state)', async () => {
+    // RV3.7 (Code-hc9): a repo with no .beads db reports no_db=true. It must
+    // set noDb (so the FE labels 'no beads db' rather than mislabeling an empty
+    // real repo) AND must not arm the transient-empty self-heal — a missing db
+    // is a stable state, not a degrade, so retrying is wasted work.
+    vi.useFakeTimers()
+    snapshotMock.mockResolvedValue({ ready: [], all: [], no_db: true })
+
+    await fetchSnapshot(REPO)
+    expect(snapshotMock).toHaveBeenCalledTimes(1)
+    expect(__getSnapshotForTest(REPO).noDb).toBe(true)
+    expect(__getSnapshotForTest(REPO).loaded).toBe(true)
+
+    // No self-heal retry for a real no-db repo.
+    vi.advanceTimersByTime(10_000)
+    expect(snapshotMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('an empty real repo (no_db=false) does NOT report noDb', async () => {
+    // The other half of the distinction: a genuinely-empty but real repo must
+    // report noDb=false so the FE shows "0 issues", not "no beads db".
+    snapshotMock.mockResolvedValue({ ready: [], all: [], no_db: false })
+    await fetchSnapshot(REPO)
+    expect(__getSnapshotForTest(REPO).noDb).toBe(false)
+    expect(__getSnapshotForTest(REPO).loaded).toBe(true)
   })
 })

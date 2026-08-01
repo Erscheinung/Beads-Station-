@@ -36,6 +36,10 @@ export interface BdSnapshotState {
   all: Issue[]
   loaded: boolean
   error: string | null
+  /** RV3.7 (Code-hc9) — true only when the backend classified the read as
+   * NoDatabase. Consumers gate the "no beads db" label on this, so an empty
+   * but real repo (noDb=false, all=[]) is NOT mislabeled as no-db. */
+  noDb: boolean
 }
 
 interface Entry extends BdSnapshotState {
@@ -47,7 +51,7 @@ interface Entry extends BdSnapshotState {
   healTimer: ReturnType<typeof setTimeout> | null
 }
 
-const EMPTY: BdSnapshotState = { ready: [], all: [], loaded: false, error: null }
+const EMPTY: BdSnapshotState = { ready: [], all: [], loaded: false, error: null, noDb: false }
 
 const store = new Map<string, Entry>()
 
@@ -68,7 +72,7 @@ function ensure(repoPath: string): Entry {
 
 // Rebuild the frozen snapshot ref from the entry's live fields and notify.
 function publish(e: Entry): void {
-  e.snap = { ready: e.ready, all: e.all, loaded: e.loaded, error: e.error }
+  e.snap = { ready: e.ready, all: e.all, loaded: e.loaded, error: e.error, noDb: e.noDb }
   e.subscribers.forEach(cb => cb())
 }
 
@@ -97,6 +101,7 @@ export function fetchSnapshot(repoPath: string): Promise<void> {
     .catch((err: unknown) => {
       const e2 = ensure(repoPath)
       e2.error = String(err)
+      e2.noDb = false
       e2.loaded = true
       clearHeal(e2)
       publish(e2)
@@ -117,10 +122,16 @@ function applySnapshot(repoPath: string, data: BdSnapshotData): void {
   e.ready = data.ready
   e.all = data.all
   e.error = null
+  e.noDb = data.no_db
   e.loaded = true
   clearHeal(e)
-  // Transient-empty self-heal: schedule a single retry (see SELF_HEAL_MS).
-  if (e.all.length === 0) {
+  // Transient-empty self-heal: schedule a single retry (see SELF_HEAL_MS). Only
+  // for an empty read that is NOT a genuine no-db repo — a real missing-db
+  // repo is a stable state, not a transient degrade, so retrying it is wasted
+  // work (and would re-arm forever). A truly-empty real repo also self-confirms
+  // empty, so retrying it is harmless but pointless; scope the heal to the
+  // ambiguous case (empty + not no-db).
+  if (e.all.length === 0 && !e.noDb) {
     e.healTimer = setTimeout(() => {
       e.healTimer = null
       void fetchSnapshot(repoPath)

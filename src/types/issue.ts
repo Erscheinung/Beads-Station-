@@ -64,6 +64,10 @@ export async function bdList(
 export interface BdSnapshotData {
   ready: Issue[];
   all: Issue[];
+  /** RV3.7 (Code-hc9) — true only when bd classified the read as NoDatabase
+   * (no `.beads/` db). Lets the FE distinguish a real missing-db repo from a
+   * genuinely-empty one; both otherwise arrive as ready:[] all:[]. */
+  no_db: boolean;
 }
 
 export async function bdSnapshot(repoPath: string): Promise<BdSnapshotData> {

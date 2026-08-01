@@ -174,15 +174,24 @@ export function Statusline({ repoPath, projectPath }: Props) {
 
       {sep}
 
-      {/* Counts */}
-      <span>
-        <span style={labelStyle}>ready=</span>
-        <span style={valueStyle}>{counts.ready}</span>
-        <span style={labelStyle}>{' blocked='}</span>
-        <span style={valueStyle}>{counts.blocked}</span>
-        <span style={labelStyle}>{' closed='}</span>
-        <span style={valueStyle}>{counts.closed}</span>
-      </span>
+      {/* Counts — RV3.7 (Code-hc9): distinguish loading / error / no-db /
+          real counts instead of silently rendering 0s for all four. */}
+      {!snap.loaded ? (
+        <span style={labelStyle}>counts …</span>
+      ) : snap.error ? (
+        <span style={{ ...labelStyle, color: 'var(--bs-red)' }}>bd error</span>
+      ) : snap.noDb ? (
+        <span style={labelStyle}>no beads db</span>
+      ) : (
+        <span>
+          <span style={labelStyle}>ready=</span>
+          <span style={valueStyle}>{counts.ready}</span>
+          <span style={labelStyle}>{' blocked='}</span>
+          <span style={valueStyle}>{counts.blocked}</span>
+          <span style={labelStyle}>{' closed='}</span>
+          <span style={valueStyle}>{counts.closed}</span>
+        </span>
+      )}
 
       {/* Spacer */}
       <span style={{ marginLeft: 'auto' }} />

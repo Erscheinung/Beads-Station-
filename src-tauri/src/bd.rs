@@ -408,23 +408,49 @@ pub async fn bd_counts(repo_path: String) -> Result<BdCounts, String> {
 pub struct BdSnapshot {
     pub ready: Vec<Issue>,
     pub all: Vec<Issue>,
+    /// RV3.7 (Code-hc9) — true ONLY when a read classified as NoDatabase
+    /// (`bd` exited nonzero with "no beads database found"). Distinguishes a
+    /// repo that genuinely has no `.beads/` db from a repo that really is empty
+    /// (both otherwise arrive as {ready:[], all:[]}). The FE gates its "no beads
+    /// db" label on this instead of on `all.length === 0`, so an empty-but-real
+    /// repo no longer mislabels as no-db. A degraded read under fork pressure
+    /// surfaces as an Err (resource-exhaustion retry then error), NOT here.
+    pub no_db: bool,
+}
+
+/// Parse a classified read into issues, treating NoDatabase as an empty vec but
+/// signalling it via the returned bool so the caller can preserve the
+/// distinction (see BdSnapshot::no_db).
+fn parse_read(outcome: BdOutcome, what: &str) -> Result<(Vec<Issue>, bool), String> {
+    match outcome {
+        BdOutcome::NoDatabase => Ok((vec![], true)),
+        BdOutcome::Ok(stdout) => serde_json::from_slice::<Vec<Issue>>(&stdout)
+            .map(|v| (v, false))
+            .map_err(|e| format!("failed to parse bd {what} JSON: {e}")),
+    }
 }
 
 #[tauri::command]
 pub async fn bd_snapshot(repo_path: String) -> Result<BdSnapshot, String> {
     let start = std::time::Instant::now();
-    let (ready, all) = tokio::try_join!(
-        bd_ready(repo_path.clone()),
-        bd_list(repo_path.clone(), None),
+    // Use the classified runner directly (not bd_ready/bd_list, which collapse
+    // NoDatabase to Ok(vec![])) so we can tell a missing db from an empty repo.
+    let (ready_out, all_out) = tokio::try_join!(
+        run_bd_classified(&repo_path, &["ready", "--json", "--actor", ACTOR]),
+        run_bd_classified(&repo_path, &["list", "--json"]),
     )?;
+    let (ready, ready_nodb) = parse_read(ready_out, "ready")?;
+    let (all, all_nodb) = parse_read(all_out, "list")?;
+    let no_db = ready_nodb && all_nodb;
     tracing::info!(
         repo = %repo_path,
         elapsed_ms = start.elapsed().as_millis() as u64,
         ready = ready.len(),
         all = all.len(),
+        no_db,
         "bd_snapshot"
     );
-    Ok(BdSnapshot { ready, all })
+    Ok(BdSnapshot { ready, all, no_db })
 }
 
 // ---------- Phase 6: bd prime injector ----------
@@ -476,5 +502,22 @@ mod tests {
     fn other_errors_are_not_missing_db() {
         assert!(!is_no_database("Error: some other failure"));
         assert!(!is_no_database(""));
+    }
+
+    #[test]
+    fn parse_read_flags_no_database() {
+        // RV3.7 (Code-hc9) — a NoDatabase read must surface no_db=true so the
+        // FE can distinguish a missing db from a genuinely-empty repo.
+        let (issues, no_db) = parse_read(BdOutcome::NoDatabase, "list").unwrap();
+        assert!(issues.is_empty());
+        assert!(no_db);
+    }
+
+    #[test]
+    fn parse_read_empty_json_is_not_no_database() {
+        // An empty but real repo: bd returns "[]" with a live db -> no_db=false.
+        let (issues, no_db) = parse_read(BdOutcome::Ok(b"[]".to_vec()), "list").unwrap();
+        assert!(issues.is_empty());
+        assert!(!no_db);
     }
 }

@@ -65,7 +65,8 @@ const invokeMock = vi.fn(async (cmd: string) => {
       // RV3.3 — Board now reads through the shared bd snapshot cache, which
       // calls the single bd_snapshot command. Return the same fixtures the old
       // bd_ready/bd_list pair did so the gen-guard scenario is unchanged.
-      return { ready: readyFixture(), all: listFixture() }
+      // RV3.7 — carries no_db (false: fixtures are a real, populated repo).
+      return { ready: readyFixture(), all: listFixture(), no_db: false }
     case 'watcher_start':
       return undefined
     case 'bd_claim':
