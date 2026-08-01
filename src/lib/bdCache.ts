@@ -141,9 +141,17 @@ function subscribe(repoPath: string, cb: () => void): () => void {
     const e2 = store.get(repoPath)
     if (!e2) return
     e2.subscribers.delete(cb)
+    // RV3.6-fix — do NOT delete the entry when the last subscriber leaves.
+    // Deleting it raced with the shared in-flight fetch + StrictMode's
+    // mount/unmount/remount and per-render resubscribe: a transient refCount==0
+    // dropped the entry, so applySnapshot's ensure() rebuilt a DIFFERENT entry
+    // and published only to ITS subscribers — stranding sibling consumers
+    // (Board loaded, but IssueList + Statusline hung on "loading" / counts 0,
+    // observed live 2026-08-01). Entries are bounded by project count and
+    // cheap; keep them permanently so all consumers of a repoPath always share
+    // ONE stable entry. Only stop the background heal timer when nobody listens.
     if (e2.subscribers.size === 0) {
       clearHeal(e2)
-      store.delete(repoPath)
     }
   }
 }
@@ -185,4 +193,13 @@ export function __resetBdCacheForTest(): void {
 // Test-only seam: drive a settled snapshot without a real invoke.
 export function __applySnapshotForTest(repoPath: string, data: BdSnapshotData): void {
   applySnapshot(repoPath, data)
+}
+
+// Test-only seams for the subscribe/getSnapshot invariant (entry stability
+// across unsubscribe — RV3.6-fix).
+export function __subscribeForTest(repoPath: string, cb: () => void): () => void {
+  return subscribe(repoPath, cb)
+}
+export function __getSnapshotForTest(repoPath: string): BdSnapshotState {
+  return getSnapshot(repoPath)
 }

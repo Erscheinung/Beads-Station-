@@ -30,7 +30,7 @@ vi.mock('./BdLiveProvider', () => ({
   useBdLiveContext: () => {},
 }))
 
-import { fetchSnapshot, __resetBdCacheForTest } from './bdCache'
+import { fetchSnapshot, __resetBdCacheForTest, __subscribeForTest, __getSnapshotForTest } from './bdCache'
 
 const REPO = '/repo/a'
 
@@ -112,5 +112,55 @@ describe('bdCache — RV3.3 shared snapshot', () => {
     // No further retries: the non-empty result cleared the timer.
     await vi.advanceTimersByTimeAsync(10_000)
     expect(snapshotMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a settled entry after the last subscriber leaves (no stranded siblings)', async () => {
+    // Regression for the live bug (2026-08-01): Board loaded but IssueList +
+    // Statusline hung on "loading" / counts 0. Cause: unsubscribe deleted the
+    // entry at refCount 0, so a re-subscribing sibling saw a fresh EMPTY entry
+    // and applySnapshot published to a different entry object. With the fix,
+    // the entry persists: cached data survives an unsubscribe and a later
+    // subscriber reads it synchronously.
+    snapshotMock.mockResolvedValue({ ready: [{ id: 'A' }], all: [{ id: 'A' }, { id: 'B' }] })
+
+    const cbA = vi.fn()
+    const unsubA = __subscribeForTest(REPO, cbA)
+    await fetchSnapshot(REPO)
+    expect(__getSnapshotForTest(REPO).loaded).toBe(true)
+    expect(__getSnapshotForTest(REPO).all).toHaveLength(2)
+
+    // Last (only) subscriber leaves — pre-fix this deleted the entry.
+    unsubA()
+    // Data must still be there (entry not destroyed).
+    expect(__getSnapshotForTest(REPO).loaded).toBe(true)
+    expect(__getSnapshotForTest(REPO).all).toHaveLength(2)
+
+    // A new sibling subscribing later reads the SAME populated snapshot
+    // synchronously — no reset to EMPTY, no dependence on a re-notify.
+    const cbB = vi.fn()
+    __subscribeForTest(REPO, cbB)
+    expect(__getSnapshotForTest(REPO).all).toHaveLength(2)
+  })
+
+  it('a mid-flight unsubscribe does not strand a sibling still subscribed', async () => {
+    let resolve!: (v: { ready: unknown[]; all: unknown[] }) => void
+    snapshotMock.mockImplementation(
+      () => new Promise(r => { resolve = r as typeof resolve }),
+    )
+
+    const cbA = vi.fn()
+    const cbB = vi.fn()
+    const unsubA = __subscribeForTest(REPO, cbA) // Board
+    __subscribeForTest(REPO, cbB)                // IssueList (stays)
+
+    const p = fetchSnapshot(REPO)
+    unsubA() // Board unmounts mid-flight (StrictMode-style churn)
+
+    resolve({ ready: [{ id: 'A' }], all: [{ id: 'A' }] })
+    await p
+
+    // The still-subscribed sibling MUST be notified and see the data.
+    expect(cbB).toHaveBeenCalled()
+    expect(__getSnapshotForTest(REPO).all).toHaveLength(1)
   })
 })
