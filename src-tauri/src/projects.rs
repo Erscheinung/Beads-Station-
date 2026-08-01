@@ -138,6 +138,15 @@ fn get_or_mint_session_id(
 
     let new_id = Uuid::new_v4().to_string();
     store.set(id, JsonValue::String(new_id.clone()));
+    // RV3.7 (Code-1u9) — persist the mint immediately. The scan loop calls this
+    // per project and only store.save()s once after both passes; a fallible `?`
+    // between a mint and that final save would drop the freshly-minted UUID
+    // from disk (still live in memory), so the next scan re-mints a different
+    // id and breaks Claude session-id stability. Saving here (the plugin
+    // batches writes) makes each mint durable regardless of later failures.
+    store
+        .save()
+        .map_err(|e| format!("persist minted session id: {e}"))?;
     Ok((new_id, true))
 }
 
