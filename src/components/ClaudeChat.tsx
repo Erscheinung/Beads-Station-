@@ -20,7 +20,7 @@
 //   * The 24px header keeps a stable slot at #bs-claude-header-right that
 //     <PermissionModePicker> portals into.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen } from '../lib/safeListen'
 import { ToolDrawer, frameToHookEvent, type HookEvent } from './ToolDrawer'
@@ -333,20 +333,13 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
     [frames, isApprovalPending],
   )
 
-  // Keyboard shortcut: a / d when chat is focused and a pending approval
-  // exists. Bypass when an editable element (the input field) has focus.
-  useEffect(() => {
-    // RV2 — an agent pane passes active=false when it's not the focused pane,
-    // so only one instance resolves an approval (G1). Legacy chat leaves it
-    // undefined (=> gate unchanged).
-    if (vim.focused !== 'chat') return
-    if (active === false) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (isEditableFocus()) return
-      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
-      const key = event.key
-      if (key !== 'a' && key !== 'd') return
-      // Read the latest frames+states from refs (closure may be stale).
+  // Resolve the topmost pending approval. Shared by the window-level a/d
+  // shortcut (chat/pane focus, no editable) AND the agent input's own onKeyDown
+  // (RV3.12 — an agent pane's input holds focus, so a/d never reached the
+  // window listener; the placeholder promised approve(a)/deny(d) but the keys
+  // were dead). Returns true if it resolved something.
+  const resolveApproval = useCallback(
+    (decision: 'approved' | 'denied'): boolean => {
       let pending: PendingApproval | null = null
       for (const f of framesRef.current) {
         const a = extractApproval(f)
@@ -354,19 +347,47 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
         const state = approvalsRef.current[a.requestId] ?? 'pending'
         if (state === 'pending') { pending = a; break }
       }
-      if (!pending) return
-      event.preventDefault()
-      const decide = key === 'a' ? 'approved' : 'denied'
-      const cmd = key === 'a' ? 'claude_approve' : 'claude_deny'
-      setApprovalStates(s => ({ ...s, [pending!.requestId]: decide }))
-      invoke(cmd, { projectId: bridge, requestId: pending.requestId }).catch(err => {
+      if (!pending) return false
+      const cmd = decision === 'approved' ? 'claude_approve' : 'claude_deny'
+      const reqId = pending.requestId
+      setApprovalStates(s => ({ ...s, [reqId]: decision }))
+      invoke(cmd, { projectId: bridge, requestId: reqId }).catch(err => {
         console.error('[ClaudeChat] approval rpc failed', err)
-        setApprovalStates(s => ({ ...s, [pending!.requestId]: 'pending' }))
+        setApprovalStates(s => ({ ...s, [reqId]: 'pending' }))
       })
+      return true
+    },
+    [bridge],
+  )
+
+  // Keyboard shortcut: a / d when chat is focused and a pending approval
+  // exists. Bypass when an editable element (the input field) has focus.
+  useEffect(() => {
+    // RV2 — an agent pane passes active=false when it's not the focused pane,
+    // so only one instance resolves an approval (G1). Legacy chat leaves it
+    // undefined (=> gate unchanged).
+    // RV3.12 — an agent pane lives in vim.focused==='terminal', NOT 'chat', so
+    // gate on the explicit `active` flag when it's set (agent pane), and only
+    // fall back to the vim.focused==='chat' check for the legacy chat
+    // (active===undefined). Without this, agent-pane approvals were dead.
+    const isAgentPane = active !== undefined
+    if (isAgentPane) {
+      if (active !== true) return
+    } else if (vim.focused !== 'chat') {
+      return
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isEditableFocus()) return
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+      const key = event.key
+      if (key !== 'a' && key !== 'd') return
+      if (resolveApproval(key === 'a' ? 'approved' : 'denied')) {
+        event.preventDefault()
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [vim.focused, projectId, bridge, active])
+  }, [vim.focused, projectId, bridge, active, resolveApproval])
 
   const send = async () => {
     const text = input.trim()
@@ -464,6 +485,18 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
               e.stopPropagation()
               setTermInsert(false)
               ;(e.currentTarget as HTMLInputElement).blur()
+              return
+            }
+            // RV3.12 — while a tool approval is pending and the input is empty,
+            // a/d resolve it (the agent input holds focus, so the window-level
+            // a/d listener's isEditableFocus() bypass would otherwise swallow
+            // them — the placeholder promises approve(a)/deny(d)). Only when
+            // empty, so typing an actual message starting with a/d still works.
+            if (topmostPending && input.length === 0 && (e.key === 'a' || e.key === 'd')) {
+              if (resolveApproval(e.key === 'a' ? 'approved' : 'denied')) {
+                e.preventDefault()
+                e.stopPropagation()
+              }
             }
           } : undefined}
           placeholder={topmostPending ? `pending: approve(a)/deny(d) ${topmostPending.toolName}` : 'ask claude'}
