@@ -28,6 +28,18 @@ use tokio::sync::mpsc;
 
 const DEBOUNCE_MS: u64 = 250;
 
+/// RV3.6 — true for paths inside bd's embedded Dolt storage, which churns on
+/// every read (noms/manifest, journal.idx, nbs_manifest_*). These must NOT
+/// fire bd_changed or a read-triggered rewrite becomes an infinite refetch
+/// loop. Matches any path component `embeddeddolt` or `.dolt` so it's robust
+/// to the nested `<prefix>/.dolt/...` layout regardless of the repo prefix.
+fn is_dolt_internal(p: &Path) -> bool {
+    p.components().any(|c| {
+        let s = c.as_os_str();
+        s == "embeddeddolt" || s == ".dolt"
+    })
+}
+
 /// Holds the active watcher for the lifetime of the app. Dropping the
 /// `RecommendedWatcher` stops FSEvents delivery, so we keep it parked
 /// in a `Lazy<Mutex<Option<_>>>`. The current repo path is tracked
@@ -81,7 +93,19 @@ pub async fn watcher_start(window: Window, repo_path: String) -> Result<(), Stri
         if let Ok(event) = res {
             // First path is enough for the debouncer — we just need to
             // know *something* changed. The exact file isn't load-bearing.
+            //
+            // RV3.6 — but we MUST ignore Dolt's internal storage churn. bd's
+            // embedded Dolt rewrites `.beads/embeddeddolt/.../.dolt/noms/manifest`
+            // (+ journal.idx, nbs_manifest_*) on every READ. Watching those
+            // recursively made each bd_snapshot's `bd ready`/`bd list` retrigger
+            // bd_changed -> refetch -> Dolt touches manifest -> infinite loop
+            // (perpetual 7-9s bd spawns, app idle). Only real issue-data writes
+            // — the passive issues.jsonl export, config, top-level .beads files —
+            // should fire bd_changed.
             if let Some(p) = event.paths.into_iter().next() {
+                if is_dolt_internal(&p) {
+                    return
+                }
                 let _ = tx.send(p);
             }
         }
@@ -149,4 +173,33 @@ pub async fn watcher_stop() -> Result<(), String> {
     let mut guard = WATCHER.lock().map_err(|e| format!("watcher lock: {e}"))?;
     *guard = None; // Drop stops FSEvents.
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dolt_internals_are_ignored() {
+        // The exact paths observed looping live (2026-08-01).
+        assert!(is_dolt_internal(Path::new(
+            "/Users/x/Code/Beads-Station/.beads/embeddeddolt/Code/.dolt/noms/manifest"
+        )));
+        assert!(is_dolt_internal(Path::new(
+            "/repo/.beads/embeddeddolt/Code/.dolt/noms/journal.idx"
+        )));
+        assert!(is_dolt_internal(Path::new(
+            "/repo/.beads/embeddeddolt/Code/.dolt/noms/nbs_manifest_1353173261"
+        )));
+    }
+
+    #[test]
+    fn real_issue_data_changes_pass() {
+        // These SHOULD fire bd_changed — a genuine bd write updates the export
+        // and top-level metadata, not Dolt internals.
+        assert!(!is_dolt_internal(Path::new("/repo/.beads/issues.jsonl")));
+        assert!(!is_dolt_internal(Path::new("/repo/.beads/config.yaml")));
+        assert!(!is_dolt_internal(Path::new("/repo/.beads/interactions.jsonl")));
+        assert!(!is_dolt_internal(Path::new("/repo/.beads/last-touched")));
+    }
 }

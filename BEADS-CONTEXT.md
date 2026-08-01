@@ -489,6 +489,20 @@ Live-surfaced P1 (2026-08-01): Board (`bdReady`+`bdList`), IssueList (`bdList`),
 
 **Verification:** `cargo check` 0 · `npm run build` clean (audit-emoji 0/52) · vitest **36/36** (+4 bdCache: dedup + self-heal, both mutation-verified — dedup break → 1 fail, self-heal break → 2 fail; Board gen-guard still green). **OWED live pass:** open Beads-Station tab → board + sidebar + statusline all populate from ONE fetch; with `RUST_LOG=beads_station=debug`, one `bd_changed` logs ONE `bd_snapshot` (not a 3-component burst); counts no longer lag the board (RV3.2 split gone); no getSnapshot/render-loop warning.
 
+**LIVE-VERIFIED (2026-08-01, `tauri dev` + Chrome-shim pass):** RV3.3 confirmed — one real `bd` write = exactly ONE `bd_snapshot` (delta 1, not 3); FE cache is loop-free in Chrome (2 calls = StrictMode double-mount, then stable). BUT the live pass **surfaced RV3.6** (below) — a pre-existing watcher self-trigger loop that RV3.3 made the sole visible driver.
+
+---
+
+## RV3.6 — watcher self-triggers on Dolt internals · 2026-08-01 · Code-niv (closed)
+
+**Found by the live pass.** `tauri dev` with `RUST_LOG=beads_station=debug` showed `bd_snapshot` firing every ~2-4s **forever, app idle, no user action** — each call 7-9s cold. Not RV3.3's cache (Chrome proved it loop-free), not the FS (a top-level `.beads` mtime scan showed nothing). Instrumenting the watcher's emit revealed every `bd_changed` path was `.beads/embeddeddolt/Code/.dolt/noms/manifest` (+ `journal.idx`, `nbs_manifest_*`) — **bd's embedded Dolt storage**.
+
+**Root cause (predates RV3.3):** `watcher.rs` watched `.beads` `RecursiveMode::Recursive` with NO path filter. Embedded Dolt rewrites `.dolt/noms/manifest` on every READ, so each `bd_snapshot`'s `bd ready`/`bd list` → manifest rewrite → FSEvents → `bd_changed` → FE `invalidate` → `bd_snapshot` → manifest rewrite → **infinite loop**. Any `bd_changed` consumer would have looped; RV3.3 just made it the only caller so it stood out. (`find -newermt` missed it — sub-second manifest rewrites between 2s samples.)
+
+**Fix:** `is_dolt_internal(path)` in `watcher.rs` — skips any path whose components include `embeddeddolt` or `.dolt`, applied in the notify callback BEFORE `tx.send`. Only real issue-data writes (the passive `issues.jsonl` export, `config.yaml`, top-level `.beads` files) fire `bd_changed`. +2 rust unit tests (the exact looping paths ignored; `issues.jsonl`/`config.yaml`/`interactions.jsonl`/`last-touched` pass).
+
+**Live-verified after fix:** idle 20s = **ZERO** `bd_snapshot`; a real `bd note` + export = exactly **1** refetch (not over-filtered). `cargo test` 16/16 (+2 watcher), build clean, vitest 36/36.
+
 ---
 
 ## When to update this file
