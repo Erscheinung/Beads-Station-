@@ -505,6 +505,27 @@ Live-surfaced P1 (2026-08-01): Board (`bdReady`+`bdList`), IssueList (`bdList`),
 
 ---
 
+## Sidebar/statusline stranding + expectation audit · 2026-08-02
+
+### Sidebar/statusline stranded on loading (Code-niv follow-up, commit 4c48db5)
+
+Live screenshot: Board loaded but sidebar (IssueList) hung on "loading" and Statusline counts stuck at 0, though all read the same `useBdSnapshot(repoPath)`. Cause: `bdCache.subscribe()` deleted the store entry at refCount 0; StrictMode mount/unmount/remount + per-render resubscribe transiently zeroed refCount → entry dropped mid-flight → `applySnapshot` rebuilt a *different* entry and published only to its subscribers, stranding siblings. Fix: never delete the entry on unsubscribe (bounded by project count) — only clear the heal timer. +2 regression tests, entry-persistence mutation-verified.
+
+### Expectation audit (11 confirmed gaps, 4 refuted) → all 11 fixed
+
+Ran a 4-area workflow (19 agents: audit → adversarial verify) over the roadmap/issue history. Confirmed + fixed:
+
+- **Code-hc9 (P0, degraded conflation) — commit 2fd2436.** The RV3.3 snapshot contract had no degraded/no-db flag; `bd_ready`/`bd_list` both map NoDatabase→`Ok(vec![])`, so a genuinely-empty repo and a real missing-db repo arrived identically and all 3 surfaces conflated them. Fix: `bd_snapshot` now runs `run_bd_classified` directly and returns `no_db` (true only when BOTH reads classified NoDatabase); threaded → `BdSnapshotData` → `BdSnapshotState.noDb`. Board/IssueList/Statusline gate "no beads db" on `noDb` (empty-real repo shows counts); Statusline renders distinct loading / bd error / no beads db / counts instead of silent 0s. Self-heal scoped to empty AND `!noDb` (missing db is stable, not a degrade). +2 rust (parse_read) +4 bdCache tests.
+- **claude.rs concurrency (Code-8vm P1, Code-9wf P2, Code-uu5 P2) — commit d81c607.** (1) `claude_send`/`write_permission_response` held global SESSIONS lock across child stdin write+flush → stdin is now `Arc<Mutex<ChildStdin>>` per session, cloned under the map lock then written outside it. (2) `claude_start` same-bridge race loser reaped `child.wait().await` under the lock → now drops guard first. (3) leaked agent sessions never dropped (kill_on_drop only fires on drop) → new `claude_reconcile(live_bridges)` command reaps sessions absent from the pane tree; App.tsx calls it debounced on every pane-tree change via `allAgentBridges()`.
+- **R8/R9 render (Code-dz5, Code-sc4 both P2) — commit bef4bc9.** Added `rehype-sanitize` (was absent; markdown XSS was inert only by react-markdown default) with a schema permitting className on code/pre/span. DiffPair gained a unified↔side-by-side toggle (split two-column layout) + a `+N −M` header delta. +RenderItems.test.tsx (4 tests).
+- **Code-1u9 (P3) — commit 5bca156.** `get_or_mint_session_id` now `store.save()`s immediately after minting so an early `?` return can't drop the UUID (session-id stability).
+
+**Refuted (4, correctly NOT fixed):** Code-urn spawn-lock (already fixed in b4bfb2a), closeActivePane sibling-remount (no defect — stable pane keys), tab-close orphan-reaper (no such code path exists), unknownFrameWarnings telemetry (fabricated expectation — no such spec).
+
+**Gates across the session:** cargo test 18/18, vitest 44/44, build clean (audit-emoji 0/53). New bd issues Code-8vm/9wf/uu5/dz5/sc4 filed + closed; Code-hc9 + Code-1u9 closed.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
