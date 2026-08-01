@@ -396,6 +396,37 @@ pub async fn bd_counts(repo_path: String) -> Result<BdCounts, String> {
     Ok(c)
 }
 
+/// RV3.3 — one shared read for all three FE consumers (Board, IssueList,
+/// Statusline). Returns the full `ready` and `all` issue vectors in a single
+/// round-trip so the frontend can derive the board columns, the sidebar tree,
+/// AND the statusline counts from ONE fetch instead of each component spawning
+/// its own `bd` subprocess per change. Same `try_join(bd_ready, bd_list)` shape
+/// as `bd_counts`; the FE `bdCache` dedups concurrent callers so a `bd_changed`
+/// burst collapses to a single `bd_snapshot`. `bd_counts` is retained for
+/// back-compat (unused after the rewire).
+#[derive(serde::Serialize)]
+pub struct BdSnapshot {
+    pub ready: Vec<Issue>,
+    pub all: Vec<Issue>,
+}
+
+#[tauri::command]
+pub async fn bd_snapshot(repo_path: String) -> Result<BdSnapshot, String> {
+    let start = std::time::Instant::now();
+    let (ready, all) = tokio::try_join!(
+        bd_ready(repo_path.clone()),
+        bd_list(repo_path.clone(), None),
+    )?;
+    tracing::info!(
+        repo = %repo_path,
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        ready = ready.len(),
+        all = all.len(),
+        "bd_snapshot"
+    );
+    Ok(BdSnapshot { ready, all })
+}
+
 // ---------- Phase 6: bd prime injector ----------
 
 /// `bd prime` — runs the bd workflow primer subcommand under

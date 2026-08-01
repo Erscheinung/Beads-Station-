@@ -1,13 +1,17 @@
 // Lualine-style statusline pinned to the bottom of the app.
 // Sections: mode pill | path | branch | counts | (spacer) | clock | pending dot
 //
-// Polls bd_git_branch + bd_counts every 5s and on window focus, and also
-// listens to the same `bd_changed:{repoPath}` event the board uses for
-// reactive count updates.
+// RV3.3 — counts now come from the shared bd snapshot cache (useBdSnapshot),
+// the SAME deduped fetch that feeds Board + IssueList. The statusline no longer
+// spawns its own bd_counts (= bd_ready + bd_list) on a 5s poll or its own
+// bd_changed listener — that independent fan-out was a big part of the 8s cold
+// escalation. Only the git branch is still fetched here (cheap, unrelated,
+// one-shot), refreshed on bd_changed.
 
-import { useEffect, useState } from 'react'
-import { listen } from '@tauri-apps/api/event'
+import { useEffect, useMemo, useState } from 'react'
 import { safeInvoke } from '../lib/invokeErrorBoundary'
+import { useBdSnapshot } from '../lib/bdCache'
+import { useBdLiveContext } from '../lib/BdLiveProvider'
 
 declare global {
   interface Window {
@@ -46,9 +50,21 @@ function nowHHMM(): string {
 export function Statusline({ repoPath, projectPath }: Props) {
   const [mode, setMode] = useState<string>(() => window.__bsVim?.mode ?? 'NORMAL')
   const [branch, setBranch] = useState<string>('…')
-  const [counts, setCounts] = useState<BdCounts>({ ready: 0, in_progress: 0, blocked: 0, closed: 0 })
   const [clock, setClock] = useState<string>(nowHHMM())
   const [pending, setPending] = useState<boolean>(false)
+
+  // RV3.3 — counts derived client-side from the shared snapshot (same match
+  // arms the old bd_counts used). No independent bd subprocess.
+  const snap = useBdSnapshot(repoPath)
+  const counts: BdCounts = useMemo(() => {
+    const c: BdCounts = { ready: snap.ready.length, in_progress: 0, blocked: 0, closed: 0 }
+    for (const i of snap.all) {
+      if (i.status === 'in_progress') c.in_progress++
+      else if (i.status === 'blocked') c.blocked++
+      else if (i.status === 'closed') c.closed++
+    }
+    return c
+  }, [snap])
 
   // Mode tracking — passive read of window.__bsVim, refreshed on a tiny tick.
   useEffect(() => {
@@ -59,66 +75,22 @@ export function Statusline({ repoPath, projectPath }: Props) {
     return () => window.clearInterval(id)
   }, [])
 
-  // Branch + counts fetch loop.
+  // Git branch — cheap one-shot, refreshed on repo change and on bd_changed
+  // (a commit/branch switch usually coincides with a .beads write). Kept
+  // separate from the snapshot: it's a different backend call and doesn't
+  // belong in the issue cache.
   useEffect(() => {
     let cancelled = false
-    async function refresh() {
-      try {
-        const [b, c] = await Promise.all([
-          safeInvoke<string>('bd_git_branch', { repoPath }, { rethrow: true }),
-          safeInvoke<BdCounts>('bd_counts', { repoPath }, { rethrow: true }),
-        ])
-        if (cancelled) return
-        setBranch(b!)
-        setCounts(c!)
-      } catch {
-        if (cancelled) return
-        setBranch('(unknown)')
-      }
-    }
-    refresh()
-    const id = window.setInterval(refresh, 5000)
-    // Only refresh on a genuine window-level focus regain (target===window),
-    // and coalesce rapid focus events: during a render churn, window
-    // focus/blur can fire in a storm and each carries target===window, which
-    // would otherwise drive bd_counts unthrottled and amplify a loop. Cap to
-    // once/second — imperceptible to a human regaining the window.
-    let lastFocusRefresh = 0
-    const onFocus = (ev: FocusEvent) => {
-      if (ev.target !== window) return
-      const now = Date.now()
-      if (now - lastFocusRefresh < 1000) return
-      lastFocusRefresh = now
-      refresh()
-    }
-    window.addEventListener('focus', onFocus)
-    return () => {
-      cancelled = true
-      window.clearInterval(id)
-      window.removeEventListener('focus', onFocus)
-    }
+    safeInvoke<string>('bd_git_branch', { repoPath }, { rethrow: true })
+      .then(b => { if (!cancelled) setBranch(b!) })
+      .catch(() => { if (!cancelled) setBranch('(unknown)') })
+    return () => { cancelled = true }
   }, [repoPath])
-
-  // Reactive bd_changed listener — same channel the board uses.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined
-    let cancelled = false
-    listen(`bd_changed:${repoPath}`, async () => {
-      try {
-        const c = await safeInvoke<BdCounts>('bd_counts', { repoPath }, { rethrow: true })
-        if (!cancelled) setCounts(c!)
-      } catch {
-        /* swallow */
-      }
-    }).then(fn => {
-      if (cancelled) fn()
-      else unlisten = fn
-    })
-    return () => {
-      cancelled = true
-      unlisten?.()
-    }
-  }, [repoPath])
+  useBdLiveContext(repoPath, () => {
+    safeInvoke<string>('bd_git_branch', { repoPath }, { rethrow: true })
+      .then(b => setBranch(b!))
+      .catch(() => setBranch('(unknown)'))
+  })
 
   // Pending-write dot — flipped by `window` events.
   useEffect(() => {

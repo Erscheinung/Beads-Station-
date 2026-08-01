@@ -110,6 +110,7 @@ pub fn run() {
             bd::bd_remove_label,
             bd::bd_set_status,
             bd::bd_show,
+            bd::bd_snapshot,
             claude::claude_approve,
             claude::claude_deny,
             claude::claude_kill,

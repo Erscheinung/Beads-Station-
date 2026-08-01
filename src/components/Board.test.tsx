@@ -61,6 +61,11 @@ const invokeMock = vi.fn(async (cmd: string) => {
       return readyFixture()
     case 'bd_list':
       return listFixture()
+    case 'bd_snapshot':
+      // RV3.3 — Board now reads through the shared bd snapshot cache, which
+      // calls the single bd_snapshot command. Return the same fixtures the old
+      // bd_ready/bd_list pair did so the gen-guard scenario is unchanged.
+      return { ready: readyFixture(), all: listFixture() }
     case 'watcher_start':
       return undefined
     case 'bd_claim':
@@ -145,6 +150,7 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
 })
 
 import { Board } from './Board'
+import { __resetBdCacheForTest } from '../lib/bdCache'
 
 const dragEnd = (activeId: string, overId: string): DragEndEvent =>
   ({
@@ -159,6 +165,7 @@ describe('Board drag rollback generation guard', () => {
     capturedOnChange = null
     capturedOnDragEnd = null
     invokeMock.mockClear()
+    __resetBdCacheForTest()
   })
 
   it('preserves refetched data over the pre-drag snapshot on rejected mutation', async () => {

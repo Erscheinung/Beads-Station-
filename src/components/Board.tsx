@@ -10,15 +10,13 @@ import {
 } from '@dnd-kit/core'
 import type { Issue } from '../types/issue'
 import {
-  bdReady,
-  bdList,
   bdClaim,
   bdSetStatus,
   bdCloseIssue,
 } from '../types/issue'
 import { Card } from './Card'
 import { Column } from './Column'
-import { useBdLiveContext } from '../lib/BdLiveProvider'
+import { useBdSnapshot, invalidate } from '../lib/bdCache'
 
 interface BoardProps {
   repoPath: string
@@ -67,15 +65,17 @@ let toastCounter = 0
  */
 export function Board({ repoPath, projectId }: BoardProps) {
   const [state, setState] = useState<BoardState>(EMPTY_STATE)
-  const [error, setError] = useState<string | null>(null)
-  // False until the first fetch for THIS repoPath resolves. The load window
-  // (bdReady+bdList can take several seconds cold) must not render as
-  // "no beads db" — that conflation was the RV3.2 / Code-hc9 bug.
-  const [loaded, setLoaded] = useState(false)
+  // RV3.3 — board data now flows from the shared bd snapshot cache (one deduped
+  // fetch feeds Board + IssueList + Statusline). `error`/`loaded` are read from
+  // the cache; `state` stays LOCAL because drag does optimistic mutation +
+  // rollback on it (the snapshot is the source of truth, the local state is the
+  // editable projection). RV3.2 loading/empty/error tri-state is preserved via
+  // the cache's `loaded`/`error`.
+  const snap = useBdSnapshot(repoPath)
+  const error = snap.error
+  const loaded = snap.loaded
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null)
   const [toasts, setToasts] = useState<Toast[]>([])
-  // Bumped after every successful mutation to force a refetch.
-  const [version, setVersion] = useState(0)
   const dragGenRef = useRef(0)
 
   const sensors = useSensors(
@@ -88,69 +88,38 @@ export function Board({ repoPath, projectId }: BoardProps) {
     setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500)
   }, [])
 
-  const refetch = useCallback(async () => {
-    try {
-      dragGenRef.current++
-      const [ready, all] = await Promise.all([bdReady(repoPath), bdList(repoPath, null)])
+  // Derive the board columns from the shared snapshot. Runs on every snapshot
+  // change (mount, bd_changed, self-heal). The dragGenRef guard prevents a
+  // refetch that lands mid-drag from clobbering the optimistic local state —
+  // same generation discipline the old imperative refetch used (Board.test.tsx
+  // asserts a stale mutation-reject does NOT survive a newer snapshot).
+  useEffect(() => {
+    if (!snap.loaded) return
+    dragGenRef.current++
+    const { ready, all } = snap
 
-      // Project filter: prefer label-based when present anywhere in the repo.
-      const projectLabel = `project=${projectId}`
-      const anyLabeled = all.some(i => (i.labels ?? []).includes(projectLabel))
-      const filterIssue = (i: Issue) =>
-        !anyLabeled || (i.labels ?? []).includes(projectLabel)
+    // Project filter: prefer label-based when present anywhere in the repo.
+    const projectLabel = `project=${projectId}`
+    const anyLabeled = all.some(i => (i.labels ?? []).includes(projectLabel))
+    const filterIssue = (i: Issue) =>
+      !anyLabeled || (i.labels ?? []).includes(projectLabel)
 
-      const filteredReady = ready.filter(filterIssue)
-      const filteredAll = all.filter(filterIssue)
+    const filteredReady = ready.filter(filterIssue)
+    const filteredAll = all.filter(filterIssue)
+    const readyIds = new Set(filteredReady.map(i => i.id))
 
-      const readyIds = new Set(filteredReady.map(i => i.id))
-
-      const next: BoardState = { ready: filteredReady, in_progress: [], blocked: [], done: [] }
-      for (const i of filteredAll) {
-        if (i.status === 'in_progress') next.in_progress.push(i)
-        else if (i.status === 'blocked') next.blocked.push(i)
-        else if (i.status === 'closed') next.done.push(i)
-        else if (i.status === 'open' && !readyIds.has(i.id)) {
-          // Open but excluded from ready (likely has open blockers).
-          next.blocked.push(i)
-        }
+    const next: BoardState = { ready: filteredReady, in_progress: [], blocked: [], done: [] }
+    for (const i of filteredAll) {
+      if (i.status === 'in_progress') next.in_progress.push(i)
+      else if (i.status === 'blocked') next.blocked.push(i)
+      else if (i.status === 'closed') next.done.push(i)
+      else if (i.status === 'open' && !readyIds.has(i.id)) {
+        // Open but excluded from ready (likely has open blockers).
+        next.blocked.push(i)
       }
-      setState(next)
-      setError(null)
-      setLoaded(true)
-    } catch (e) {
-      setError(String(e))
-      setLoaded(true)
     }
-  }, [repoPath, projectId])
-
-  // Reset the loaded gate on repo change so a new repo's load window doesn't
-  // inherit the previous repo's "loaded" truth.
-  useEffect(() => {
-    setLoaded(false)
-  }, [repoPath])
-
-  useEffect(() => {
-    refetch()
-  }, [refetch, version])
-
-  // Self-heal a transient empty: bd reads can momentarily degrade to an empty
-  // result under subprocess/fork pressure (the backend maps a NoDatabase
-  // classification to []). Board fetches only on mount + bd_changed, so without
-  // this a transient empty LATCHES as "no beads db" forever while the
-  // Statusline (which polls every 5s) shows the true count — exactly the
-  // ready=10 / board-0 split seen live (RV3.2 / Code-hc9). While the board is
-  // loaded-but-empty-with-no-error, re-poll every 4s until issues appear or a
-  // real error surfaces; a genuinely empty repo just keeps confirming empty.
-  useEffect(() => {
-    if (!loaded) return
-    const count =
-      state.ready.length + state.in_progress.length + state.blocked.length + state.done.length
-    if (count > 0 || error) return
-    const id = window.setInterval(refetch, 4000)
-    return () => window.clearInterval(id)
-  }, [loaded, state, error, refetch])
-
-  useBdLiveContext(repoPath, refetch)
+    setState(next)
+  }, [snap, projectId])
 
   const findIssue = useCallback(
     (id: string): { issue: Issue; column: ColumnId } | null => {
@@ -219,7 +188,10 @@ export function Board({ repoPath, projectId }: BoardProps) {
 
       try {
         await mutate()
-        setVersion(v => v + 1)
+        // RV3.3 — force a deduped refetch through the shared cache. The
+        // bd_changed watcher will also fire, but the explicit invalidate makes
+        // the board reflect the mutation without waiting on the file-watch.
+        invalidate(repoPath)
       } catch (err) {
         if (dragGenRef.current === gen) {
           setState(snapshot)

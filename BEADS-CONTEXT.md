@@ -468,6 +468,29 @@ Live-surfaced P1 bug (screenshot 2026-08-01): with focus in the "ask claude" tex
 
 ---
 
+## RV3.5 — boot hotfix · 2026-08-01 · Code-b87 (closed, already-shipped)
+
+Audit found all 5 boot bugs from the 2026-07-22 screenshots were **already fixed across prior RV commits** — nothing new to code. Verified sites: (1) fd exhaustion — `lib.rs:18-45` setrlimit `RLIMIT_NOFILE → min(hard,8192)`; (2) missing-bd-db — `bd.rs` `BdOutcome::NoDatabase` classified, reads map to `Ok(vec![])` (:202/:228), writes stay `Err`; (3) claude `--verbose` — `claude.rs:152` present; (4) MorningConfirm once-per-launch — `App.tsx:138` gate + `handleResume`/`handleNew` seed `confirmedFor` with ALL project ids, R3.5 render-loop fixed via stable `useCallback`; (5) git PATH — `bd.rs:350` `bd_git_branch` uses `binresolve::resolve_bin("git")`. Closed as already-implemented.
+
+---
+
+## RV3.3 — shared bd snapshot cache · 2026-08-01 · Code-1t8 (closed)
+
+Live-surfaced P1 (2026-08-01): Board (`bdReady`+`bdList`), IssueList (`bdList`), and Statusline (`bd_counts` = `bd_ready`+`bd_list`, on a 5s poll AND its own raw `bd_changed` listener) each fetched bd **independently** — one change event spawned ~5 cold starts of the 130MB `bd` wrapper through the lockf semaphore, serialized. Measured `bd_counts` 3.7→8.0s escalating; boards felt dead/stale = "unusable".
+
+**Fix — one shared, in-flight-deduped snapshot per `repoPath`:**
+- **Backend `bd.rs`:** new `bd_snapshot` command = `try_join!(bd_ready, bd_list)` returning `{ ready, all }` (same shape `bd_counts` computed internally). Registered in `lib.rs`. `bd_counts` + `BdCounts` **kept** for back-compat (unused after rewire — user decision). `NoDatabase → Ok(vec![])` degradation on the underlying reads is inherited, so a db-less repo yields `{ ready:[], all:[] }`.
+- **FE `src/lib/bdCache.ts` (NEW):** module-level `Map` store + `useSyncExternalStore` hook `useBdSnapshot(repoPath)`, mirroring the `BdLiveProvider` ref-count pattern + the termPanes/vim cached-snapshot discipline (store object REPLACED not mutated — avoids the R3.5 getSnapshot loop). **In-flight dedup**: N concurrent consumers (or mount + a `bd_changed`) share ONE `invoke('bd_snapshot')`. **Self-heal**: the RV3.2 transient-empty anti-latch moved here — a settled `loaded && empty && !error` snapshot schedules ONE 4s retry (not a steady poll), cleared the instant issues/error arrive. Change signal is the existing `useBdLiveContext` fan-out → `invalidate`.
+- **Rewired all 3 consumers:** Board derives columns in a `useMemo`/effect off the snapshot, guarded by `dragGenRef` (gen-guard preserved — Board.test.tsx still green); post-mutation `invalidate(repoPath)` replaces the old `setVersion` refetch. IssueList reads `snap.all`. Statusline derives counts client-side from `snap.all[]` + `snap.ready.length` and **dropped** its 5s `bd_counts` poll, its raw `bd_changed` listener, and the `bd_counts` call (branch fetch kept, refreshed on `bd_changed`).
+
+**Decisions (user):** refresh = event-only, no poll (watcher + mount drive it; self-heal is the one retained timer); backend = add `bd_snapshot`, keep `bd_counts`.
+
+**Files:** `bd.rs` (+`bd_snapshot`/`BdSnapshot`), `lib.rs` (register), `types/issue.ts` (+`bdSnapshot`/`BdSnapshotData`), `lib/bdCache.ts` (NEW), `Board.tsx`, `IssueList.tsx`, `Statusline.tsx`, `lib/bdCache.test.ts` (NEW), `Board.test.tsx` (mock `bd_snapshot` + reset cache).
+
+**Verification:** `cargo check` 0 · `npm run build` clean (audit-emoji 0/52) · vitest **36/36** (+4 bdCache: dedup + self-heal, both mutation-verified — dedup break → 1 fail, self-heal break → 2 fail; Board gen-guard still green). **OWED live pass:** open Beads-Station tab → board + sidebar + statusline all populate from ONE fetch; with `RUST_LOG=beads_station=debug`, one `bd_changed` logs ONE `bd_snapshot` (not a 3-component burst); counts no longer lag the board (RV3.2 split gone); no getSnapshot/render-loop warning.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.

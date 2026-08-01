@@ -59,6 +59,23 @@ export async function bdList(
   return r;
 }
 
+/** RV3.3 — `bd_snapshot`: one round-trip returning `ready` + `all` so a single
+ * shared fetch feeds Board, IssueList, and Statusline (see lib/bdCache.ts). */
+export interface BdSnapshotData {
+  ready: Issue[];
+  all: Issue[];
+}
+
+export async function bdSnapshot(repoPath: string): Promise<BdSnapshotData> {
+  const r = (await safeInvoke<BdSnapshotData>(
+    'bd_snapshot',
+    { repoPath },
+    { rethrow: true },
+  ))!;
+  console.debug('[bd] bdSnapshot', repoPath, '→ ready', r.ready.length, 'all', r.all.length);
+  return r;
+}
+
 // ---------------------------------------------------------------------------
 // Mutations — Phase 3.
 //
