@@ -2,8 +2,8 @@
 // buildRenderItems. Everything here is presentational; the pairing/nesting
 // logic lives in ../lib/renderItems.ts (pure + unit-tested).
 //
-// - MarkdownText : sanitized markdown (react-markdown renders NO raw HTML by
-//                  default = safe) + syntax-highlighted fences (rehype-highlight).
+// - MarkdownText : sanitized markdown (rehype-sanitize, defense-in-depth) +
+//                  syntax-highlighted fences (rehype-highlight).
 // - ToolPair     : collapsible tool_use ↔ tool_result unit.
 // - DiffPair     : Edit/Write/MultiEdit rendered as a unified line diff.
 // - TaskChain    : recursive, collapsible subagent chain.
@@ -15,13 +15,32 @@
 
 import { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import type { PluggableList } from 'unified';
 import rehypeHighlight from 'rehype-highlight';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { diffLines } from 'diff';
 
 import type { RenderItem, ToolResultBlock, ToolUseBlock } from '../lib/renderItems';
 import { resultToText } from '../lib/renderItems';
 
-const REHYPE_PLUGINS = [rehypeHighlight];
+// RV3.7 (Code-dz5) — R8 §5/§8 mandated defense-in-depth sanitization. The
+// default react-markdown@10 pipeline renders no raw HTML, but that is an
+// implicit property, not the specified defense — if rehype-raw is ever added,
+// raw <script>/<img onerror> in an assistant message would execute. Run
+// rehype-sanitize LAST, with a schema that additionally permits `className` on
+// code/pre/span so rehype-highlight's hljs token classes survive the sanitizer
+// (the default schema strips them — the R8 "load-bearing schema" warning).
+const SANITIZE_SCHEMA = {
+  ...defaultSchema,
+  attributes: {
+    ...defaultSchema.attributes,
+    code: [...(defaultSchema.attributes?.code ?? []), 'className'],
+    pre: [...(defaultSchema.attributes?.pre ?? []), 'className'],
+    span: [...(defaultSchema.attributes?.span ?? []), 'className'],
+  },
+};
+
+const REHYPE_PLUGINS: PluggableList = [rehypeHighlight, [rehypeSanitize, SANITIZE_SCHEMA]];
 
 function Chevron({ open }: { open: boolean }) {
   return (
@@ -124,30 +143,106 @@ export function DiffPair({
   after: string;
 }) {
   const [open, setOpen] = useState(true); // diffs are the payoff — default open
+  // RV3.7 (Code-sc4) — R9 §5 requires a unified↔side-by-side view-mode toggle.
+  const [mode, setMode] = useState<'unified' | 'split'>('unified');
   const parts = useMemo(() => diffLines(before, after), [before, after]);
+
+  // RV3.7 (Code-sc4) — R9 §5 header line-count delta (+N −M), derived from the
+  // diff parts (count lines in added/removed hunks).
+  const { added, removed } = useMemo(() => {
+    let a = 0;
+    let r = 0;
+    for (const p of parts) {
+      if (p.added || p.removed) {
+        const n = p.value.replace(/\n$/, '').split('\n').length;
+        if (p.added) a += n;
+        else r += n;
+      }
+    }
+    return { added: a, removed: r };
+  }, [parts]);
+
   const label = `${tool.name} · ${filePath.split('/').pop() || filePath}`;
   return (
     <div className="bs-tool bs-diff">
       <ToolHeader tool={tool} result={result} open={open} onToggle={() => setOpen((o) => !o)} label={label} />
       {open && (
-        <div className="bs-diff-body">
-          {parts.map((p, i) => {
-            const cls = p.added ? 'bs-diff-add' : p.removed ? 'bs-diff-del' : 'bs-diff-ctx';
-            const mark = p.added ? '+' : p.removed ? '-' : ' ';
-            // Split into lines so each gets its own gutter mark.
-            const lines = p.value.replace(/\n$/, '').split('\n');
-            return lines.map((ln, j) => (
-              <div key={`${i}-${j}`} className={`bs-diff-line ${cls}`}>
-                <span className="bs-diff-gutter" aria-hidden>{mark}</span>
-                <span className="bs-diff-text">{ln}</span>
-              </div>
-            ));
-          })}
-          {result?.is_error && (
-            <pre className="bs-tool-result bs-tool-result-err">{resultToText(result)}</pre>
+        <>
+          {/* Diff sub-header: line-count delta + view-mode toggle (R9 §5). */}
+          <div className="bs-diff-subhead">
+            <span className="bs-diff-delta">
+              <span className="bs-diff-delta-add">{`+${added}`}</span>
+              {' '}
+              <span className="bs-diff-delta-del">{`-${removed}`}</span>
+            </span>
+            <button
+              type="button"
+              className="bs-diff-toggle"
+              onClick={() => setMode((m) => (m === 'unified' ? 'split' : 'unified'))}
+              title="Toggle unified / side-by-side"
+            >
+              {mode === 'unified' ? 'side-by-side' : 'unified'}
+            </button>
+          </div>
+          {mode === 'unified' ? (
+            <div className="bs-diff-body">
+              {parts.map((p, i) => {
+                const cls = p.added ? 'bs-diff-add' : p.removed ? 'bs-diff-del' : 'bs-diff-ctx';
+                const mark = p.added ? '+' : p.removed ? '-' : ' ';
+                // Split into lines so each gets its own gutter mark.
+                const lines = p.value.replace(/\n$/, '').split('\n');
+                return lines.map((ln, j) => (
+                  <div key={`${i}-${j}`} className={`bs-diff-line ${cls}`}>
+                    <span className="bs-diff-gutter" aria-hidden>{mark}</span>
+                    <span className="bs-diff-text">{ln}</span>
+                  </div>
+                ));
+              })}
+              {result?.is_error && (
+                <pre className="bs-tool-result bs-tool-result-err">{resultToText(result)}</pre>
+              )}
+            </div>
+          ) : (
+            <div className="bs-diff-split">
+              <DiffColumn parts={parts} side="before" />
+              <DiffColumn parts={parts} side="after" />
+            </div>
           )}
-        </div>
+        </>
       )}
+    </div>
+  );
+}
+
+// RV3.7 (Code-sc4) — side-by-side column. 'before' shows context + removed
+// lines; 'after' shows context + added lines. Added/removed rows on the
+// opposite side render as empty placeholders so the two columns stay aligned.
+function DiffColumn({ parts, side }: { parts: ReturnType<typeof diffLines>; side: 'before' | 'after' }) {
+  const rows: { cls: string; text: string; mark: string }[] = [];
+  for (const p of parts) {
+    const lines = p.value.replace(/\n$/, '').split('\n');
+    if (p.added) {
+      for (const ln of lines) {
+        if (side === 'after') rows.push({ cls: 'bs-diff-add', text: ln, mark: '+' });
+        else rows.push({ cls: 'bs-diff-empty', text: '', mark: '' });
+      }
+    } else if (p.removed) {
+      for (const ln of lines) {
+        if (side === 'before') rows.push({ cls: 'bs-diff-del', text: ln, mark: '-' });
+        else rows.push({ cls: 'bs-diff-empty', text: '', mark: '' });
+      }
+    } else {
+      for (const ln of lines) rows.push({ cls: 'bs-diff-ctx', text: ln, mark: ' ' });
+    }
+  }
+  return (
+    <div className="bs-diff-col">
+      {rows.map((r, i) => (
+        <div key={i} className={`bs-diff-line ${r.cls}`}>
+          <span className="bs-diff-gutter" aria-hidden>{r.mark}</span>
+          <span className="bs-diff-text">{r.text}</span>
+        </div>
+      ))}
     </div>
   );
 }

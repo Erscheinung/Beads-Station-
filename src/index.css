@@ -493,6 +493,17 @@ body {
 .bs-diff-del { background: color-mix(in srgb, var(--bs-red) 14%, transparent); }
 .bs-diff-del .bs-diff-gutter { color: var(--bs-red); }
 .bs-diff-ctx { color: var(--bs-fg-muted); }
+/* RV3.7 (Code-sc4) — diff sub-header (line-count delta + view-mode toggle). */
+.bs-diff-subhead { display: flex; align-items: center; gap: 10px; padding: 3px 8px; border-top: 1px solid var(--bs-border-faint); font-size: 10px; }
+.bs-diff-delta { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; }
+.bs-diff-delta-add { color: var(--bs-green); }
+.bs-diff-delta-del { color: var(--bs-red); }
+.bs-diff-toggle { margin-left: auto; background: transparent; border: 1px solid var(--bs-border); border-radius: 3px; color: var(--bs-fg-muted); font-size: 10px; padding: 1px 6px; cursor: pointer; }
+.bs-diff-toggle:hover { color: var(--bs-fg); border-color: var(--bs-fg-muted); }
+/* Side-by-side split view. Two equal columns, each an independent line list. */
+.bs-diff-split { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--bs-border-faint); border-top: 1px solid var(--bs-border-faint); font-size: 11px; }
+.bs-diff-col { background: var(--bs-bg); padding: 4px 0; min-width: 0; }
+.bs-diff-empty { background: color-mix(in srgb, var(--bs-fg-muted) 6%, transparent); min-height: 1.35em; }
 
 /* Recursive subagent chain. Nested indent so depth reads visually. */
 .bs-task-body { border-top: 1px solid var(--bs-border-faint); padding: 8px; }
