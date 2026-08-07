@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Playwright live-verify (R12)
+test-results
+playwright-report
+.playwright
+
 # Secrets — never commit these
 .env
 .env.*

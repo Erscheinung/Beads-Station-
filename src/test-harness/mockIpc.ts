@@ -1,0 +1,79 @@
+// Beads Station — R12 live-verify harness
+// Browser-mode Tauri IPC shim. Lets the React app boot in plain Chrome
+// (vite dev @ localhost:1420, no Tauri runtime) so Playwright can drive real
+// focus/keydown/render — the frontend behavior headless vitest cannot reach.
+//
+// mockIPC() patches window.__TAURI_INTERNALS__.invoke, which BOTH the scattered
+// direct `invoke` calls AND safeInvoke's dynamic import('@tauri-apps/api/core')
+// read through — one install covers the whole IPC surface. shouldMockEvents:true
+// routes plugin:event|listen/emit through the mock's own listener map, so
+// emit(channel, payload) delivers to the app's listen() handlers.
+//
+// Dev-only: dynamically imported from main.tsx behind VITE_LIVE_MOCK. Never
+// bundled into a production build.
+
+import { mockIPC } from '@tauri-apps/api/mocks'
+import { emit } from '@tauri-apps/api/event'
+import { PROJECTS, SNAPSHOT } from './fixtures'
+
+declare global {
+  interface Window {
+    /** Test hook: fire a Tauri event into the app (e.g. a claude_event frame). */
+    __bsMockEmit?: (channel: string, payload: unknown) => Promise<void>
+    /** Set once the mock IPC layer is installed — Playwright waits on this. */
+    __bsMockReady?: boolean
+    /** Ordered log of every invoke the app made — tests assert against it
+     *  (e.g. that pressing 'a' fired claude_approve with the right requestId). */
+    __bsInvokeLog?: Array<{ cmd: string; args: Record<string, unknown> | undefined }>
+  }
+}
+
+/** Router for every `invoke(cmd, args)` the app makes. Unknown commands
+ *  resolve to null (void) so a new call site never crashes the harness;
+ *  add a case here when a test needs a specific return shape. */
+function route(cmd: string, args: Record<string, unknown> | undefined): unknown {
+  switch (cmd) {
+    // --- reads the app makes on mount (must all succeed, else InvokeErrorBoundary toasts) ---
+    case 'projects_list':
+      return PROJECTS
+    case 'projects_get':
+      return PROJECTS.find(p => p.id === (args?.id as string)) ?? PROJECTS[0]
+    case 'bd_snapshot':
+      return SNAPSHOT
+    case 'bd_ready':
+      return SNAPSHOT.ready
+    case 'bd_list':
+      return SNAPSHOT.all
+    case 'bd_show':
+      return SNAPSHOT.all.find(i => i.id === (args?.id as string)) ?? SNAPSHOT.all[0]
+    case 'bd_git_branch':
+      return 'main'
+    case 'bd_prime':
+      return ''
+
+    // --- PTY: hand back a fake id so Terminal panes mount without a real pty ---
+    case 'pty_spawn':
+      return 1
+
+    // --- everything else is fire-and-forget void (claude_*, watcher_start,
+    //     bd mutations, pty_write/resize/kill, set_status, etc.) ---
+    default:
+      return null
+  }
+}
+
+export function installMockIpc(): void {
+  window.__bsInvokeLog = []
+  mockIPC((cmd, args) => {
+    window.__bsInvokeLog!.push({ cmd, args: args as Record<string, unknown> | undefined })
+    return route(cmd, args as Record<string, unknown> | undefined)
+  }, {
+    shouldMockEvents: true,
+  })
+
+  // emit() now flows through the mock's listener map to the app's listen()
+  // handlers. Expose it so Playwright can push frames (approval requests,
+  // status changes) at the exact moment a test needs them.
+  window.__bsMockEmit = (channel: string, payload: unknown) => emit(channel, payload)
+  window.__bsMockReady = true
+}

@@ -55,8 +55,14 @@ This repo has a remote at `origin = https://remote.example/Beads-Station.git`. C
 2. Run quality gates (tests, linters, builds) if code changed:
    ```bash
    npm run build                              # tsc + vite (also runs the audit-emoji gate)
+   npm test                                   # vitest unit suite
+   npm run test:live                          # R12 Playwright live-verify (drives Chrome vs vite+mockIPC)
    cargo check --manifest-path src-tauri/Cargo.toml --quiet
    ```
+   `test:live` is the frontend live gate (focus/keydown/pane/a-d) that headless
+   vitest can't reach. It auto-starts vite in VITE_LIVE_MOCK mode; needs the
+   Playwright chromium browser (`npx playwright install chromium` once). It does
+   NOT cover WKWebView/the real Rust backend (macOS has no WebKitWebDriver).
 3. Update both BEADS-CONTEXT.md copies (in-repo + Obsidian mirror at `~/Documents/Beads/BEADS-CONTEXT.md`); they should be byte-identical
 4. Append a `## HH:MM — <what shipped>` subsection to `~/Documents/Beads/Daily/{YYYY-MM-DD}.md`
 5. Commit + push:
