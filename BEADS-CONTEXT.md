@@ -526,6 +526,27 @@ Ran a 4-area workflow (19 agents: audit → adversarial verify) over the roadmap
 
 ---
 
+## R12 — Live-verify harness (2026-08-07)
+
+The root cause of "Beads Station just doesn't work" was diagnosed as a missing *capability*, not bad code: every prior session ended "code landed, unit gates green, owed live pass (headless can't drive WKWebview)." Frontend bugs that only manifest under real focus/keydown shipped "fixed" and reappeared (Code-ape a/d approval). A pivot to a neovim/cmux/Svelte stack was evaluated and rejected — it trades a fixable verification gap for a larger integration problem, and the current app is ~70% of the described vision already.
+
+**Platform constraint (locked):** macOS has no `WebKitWebDriver`; `safaridriver` drives Safari, not the embedded WKWebView. The real bundle is undriveable by WebDriver on macOS. So the harness drives **Chromium via Playwright against the vite dev server (:1420)** with a dev-only **`mockIPC` shim**. This verifies frontend behavior (focus, keydown, a/d, pane isolation, render) — the debt that actually recurs — NOT the WKWebView layer or the real Rust backend (those stay on `cargo test`).
+
+**How it works:**
+- `src/test-harness/mockIpc.ts` — `mockIPC(router, { shouldMockEvents: true })` patches `window.__TAURI_INTERNALS__.invoke`, covering both scattered direct `invoke()` and `safeInvoke`'s dynamic `import('@tauri-apps/api/core')` in one install. `emit()` delivers events to the app's `listen()` handlers. Records `window.__bsInvokeLog` for assertions.
+- `src/test-harness/{fixtures,boot}.ts` — seed 2 projects + 6 issues; boot entry imported from `main.tsx` only when `import.meta.env.VITE_LIVE_MOCK` (dynamic import → tree-shaken from prod; verified no harness strings in `dist/`).
+- `tests/live/helpers.ts` — `boot`, `spawnAgentPane`, `leader` (blurs editable before Space), `emit`, `invokeLog`, `termMirror`.
+- `tests/live/approval-ad.spec.ts` (Code-ape) + `tests/live/pane-isolation.spec.ts` (Code-51e).
+- `playwright.config.ts`, `npm run test:live`. `vitest.config.ts` excludes `tests/live/**`.
+
+**Gotchas discovered:** (1) app boots with one agent pane already present — measure pane counts relative to baseline. (2) `leader()` must blur the focused editable before Space or the keydown bypass swallows it. (3) ApprovalCard UNMOUNTS on resolve (ClaudeChat.tsx:451 `isApprovalPending`→false), so the resolved `[ok] approved` variant is dead code for permission_request frames — assert resolution via the invoke log + pending-card-gone, not a resolved DOM node. Filed Code-x5l (P3) for the UX gap.
+
+**RV3 audit finding:** RV3-A (`d3p`, rich render), RV3-B (`8ro`, file-nav pane + Rust fs.rs) are BOTH already code-complete with unit tests — they sat `in_progress` only because they owed a live pass. Same debt for RV2 (`fpc`). The whole RV3 epic is "built, never live-verified, never closed." Each now has a live-spec close criterion in its bd notes.
+
+**Gates:** test:live 8/8, vitest 44/44, cargo check clean, build clean, dist/ harness-free. Closed Code-ape + Code-51e (live) + Code-4vs (R12). Branch `r12-live-verify` pushed to origin.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
