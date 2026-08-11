@@ -1,0 +1,56 @@
+/*
+ * Designer UI light token layer.
+ * Applied by adding class="du-theme" to the DesignerShell root.
+ * Swaps --bs-* tokens into light equivalents — does NOT fork components.
+ * Rule: no purple, no AI-gradient. Orange accent only.
+ */
+.du-theme {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bs-bg:          #ffffff;
+  --bs-bg-dark:     #f5f5f7;
+  --bs-bg-float:    #ffffff;
+  --bs-bg-elev:     #f0f0f2;
+
+  /* Text */
+  --bs-fg:          #1d1d1f;
+  --bs-fg-muted:    #4a4a52;
+  --bs-fg-faint:    #8e8e96;
+
+  /* Borders */
+  --bs-border:        #d8d8de;
+  --bs-border-faint:  #ebebef;
+
+  /* Semantic accents */
+  --bs-orange:    #ff6b4a;   /* primary accent */
+  --bs-blue:      #3b82f6;   /* in-progress */
+  --bs-green:     #22c55e;   /* done */
+  --bs-yellow:    #f59e0b;   /* ready / amber */
+  --bs-red:       #ef4444;   /* blocked */
+  --bs-cyan:      #0ea5e9;
+  --bs-magenta:   #d946ef;   /* syntax only — never surfaces */
+  --bs-purple:    #d946ef;   /* alias — syntax only */
+
+  --bs-accent: var(--bs-orange);
+
+  /* Shadows — lighter for a light surface */
+  --bs-shadow-card:  0 1px 0 var(--bs-border);
+  --bs-shadow-modal: 0 1px 0 var(--bs-border), 0 8px 24px rgba(0, 0, 0, 0.10);
+
+  /* Status dot overrides for light bg */
+  --du-status-open:        var(--bs-blue);
+  --du-status-in_progress: var(--bs-yellow);
+  --du-status-blocked:     var(--bs-red);
+  --du-status-closed:      #c0c0c8;
+  --du-status-ready:       var(--bs-green);
+
+  /* Typography — Inter for the designer surface; mono stays for code */
+  --du-font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --du-font-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+}
+
+/* Base resets scoped to the designer shell */
+.du-theme * {
+  box-sizing: border-box;
+}

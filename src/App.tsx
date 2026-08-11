@@ -17,6 +17,7 @@ import { useVim, setFocused } from './state/vim'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
+import { DesignerShell } from './components/designer/DesignerShell'
 
 export default function App() {
   useVimNav()
@@ -134,6 +135,13 @@ export default function App() {
     recordConfirmation(active.id)
     setConfirmedFor(() => new Set(projects.map(p => p.id)))
   }, [active, projects, refresh])
+
+  // DU1 — designer skin: ?ui=designer mounts DesignerShell instead of the
+  // terminal shell. All hooks above still run (Rules of Hooks); this check
+  // lives after every hook so the hook count is unconditionally stable.
+  if (new URLSearchParams(location.search).get('ui') === 'designer') {
+    return <DesignerShell />
+  }
 
   if (loaded && projects.length === 0) {
     return <Dashboard />

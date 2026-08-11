@@ -26,6 +26,14 @@ export interface Issue {
   comment_count: number;
   labels: string[] | null;
   parent: string | null;
+  dependencies: Dependency[];
+}
+
+/** A bd dependency edge: `depends_on_id` blocks `issue_id`. */
+export interface Dependency {
+  issue_id: string;
+  depends_on_id: string;
+  type: string;
 }
 
 /** `bd ready --json` — issues with no open blockers. */

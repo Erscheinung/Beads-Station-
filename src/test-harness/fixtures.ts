@@ -21,6 +21,7 @@ function issue(partial: Partial<Issue> & Pick<Issue, 'id' | 'title' | 'status' |
     comment_count: 0,
     labels: null,
     parent: null,
+    dependencies: [],
     ...partial,
   }
 }

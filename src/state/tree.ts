@@ -288,6 +288,7 @@ if (import.meta.env && import.meta.env.DEV) {
     comment_count: 0,
     labels: ['Demo'],
     parent: null,
+    dependencies: [],
   };
   const oneTree = buildTree([oneIssue]);
   console.assert(oneTree.length === 1 && oneTree[0].kind === 'project', 'tree.ts: single issue → 1 project root');

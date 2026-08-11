@@ -83,6 +83,23 @@ pub struct Issue {
     pub labels: Option<Vec<String>>,
     #[serde(default)]
     pub parent: Option<String>,
+    // bd's `--json` emits the full dependency edge list here. We keep only the
+    // fields the graph needs; extra fields (created_at/by, metadata) are dropped
+    // by serde since they're absent from the struct.
+    #[serde(default)]
+    pub dependencies: Vec<Dependency>,
+}
+
+/// A single bd dependency edge. `depends_on_id` blocks `issue_id`; `type` is
+/// bd's link kind ("blocks", "parent-child", etc.).
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct Dependency {
+    #[serde(default)]
+    pub issue_id: String,
+    #[serde(default)]
+    pub depends_on_id: String,
+    #[serde(default, rename = "type")]
+    pub dep_type: String,
 }
 
 /// Run `bd` and classify the outcome. Returns `BdOutcome::Ok(stdout)` on
