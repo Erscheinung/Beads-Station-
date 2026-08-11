@@ -115,12 +115,24 @@ export function fetchSnapshot(repoPath: string): Promise<void> {
   return p
 }
 
+// Filter out bd formula/molecule TEMPLATE artifacts. A persisted proto (e.g.
+// `bd cook --persist`) leaves an uninstantiated template epic + its step
+// children in the graph; bd surfaces the steps in `bd ready`, which polluted
+// the board (a stray "Triage {{bead_id}}" READY card) and the sidebar's
+// UNLABELED group. Real work never carries a `template` label nor an
+// uninstantiated `{{var}}` placeholder in its title.
+function notTemplateArtifact(i: Issue): boolean {
+  if ((i.labels ?? []).includes('template')) return false
+  if (typeof i.title === 'string' && /\{\{[^}]+\}\}/.test(i.title)) return false
+  return true
+}
+
 // Split out so tests can drive a settled result without a real invoke, and so
 // the self-heal scheduling lives in one place.
 function applySnapshot(repoPath: string, data: BdSnapshotData): void {
   const e = ensure(repoPath)
-  e.ready = data.ready
-  e.all = data.all
+  e.ready = data.ready.filter(notTemplateArtifact)
+  e.all = data.all.filter(notTemplateArtifact)
   e.error = null
   e.noDb = data.no_db
   e.loaded = true

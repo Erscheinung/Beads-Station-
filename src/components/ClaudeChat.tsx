@@ -395,7 +395,18 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
     setBusy(true)
     appendFrame({ _local: true, role: 'user', text })
     setInput('')
-    try { await invoke('claude_send', { projectId: bridge, text }) } finally { setBusy(false) }
+    try {
+      await invoke('claude_send', { projectId: bridge, text })
+    } catch (e) {
+      // Don't swallow: a failed send (e.g. session never started / claude died
+      // on a bad ANTHROPIC_BASE_URL) previously looked identical to success —
+      // the local user frame appeared but nothing came back. Surface it.
+      console.error('claude_send failed', e)
+      appendFrame({ _kind: 'stderr', line: 'send failed: ' + String(e) })
+      setStderrCount(c => c + 1)
+    } finally {
+      setBusy(false)
+    }
   }
 
   // Status dot — same logic as pre-Phase-6.

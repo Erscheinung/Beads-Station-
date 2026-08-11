@@ -117,14 +117,24 @@ pub fn load_dotenv() -> HashMap<String, String> {
     HashMap::new()
 }
 
-/// Push every (k, v) into std::env via set_var so child processes spawned
-/// later inherit them. Returns the list of keys actually installed (never
-/// the values) so callers can log presence without leaking secrets.
+/// Push each (k, v) into std::env via set_var so child processes spawned later
+/// inherit them. An already-present environment variable is NOT overwritten:
+/// the live process environment wins over the `.env` file. This matters when
+/// the app inherited a correct value (e.g. a Gateway `ANTHROPIC_AUTH_TOKEN`
+/// + `ANTHROPIC_BASE_URL=.../anthropic/`) — a stale repo `.env` must not clobber
+/// it and point `claude` at a dead endpoint. `.env` only fills what the
+/// environment is missing (the launchd-empty-PATH case). Returns the keys
+/// actually installed (never values).
 pub fn install_into_process_env(map: &HashMap<String, String>) -> Vec<String> {
-    let mut keys: Vec<String> = Vec::with_capacity(map.len());
+    let mut keys: Vec<String> = Vec::new();
     for (k, v) in map {
-        std::env::set_var(k, v);
-        keys.push(k.clone());
+        match std::env::var(k) {
+            Ok(existing) if !existing.is_empty() => continue, // live env wins
+            _ => {
+                std::env::set_var(k, v);
+                keys.push(k.clone());
+            }
+        }
     }
     keys.sort();
     keys
@@ -203,5 +213,28 @@ mod tests {
             parse_line("  FOO  =  bar  "),
             Some(("FOO".to_string(), "bar".to_string()))
         );
+    }
+
+    #[test]
+    fn install_does_not_clobber_existing_env() {
+        // A live env var (e.g. a Gateway ANTHROPIC_AUTH_TOKEN) must survive a
+        // stale .env — the .env only fills what's missing.
+        let present = "BS_ENVTEST_PRESENT";
+        let missing = "BS_ENVTEST_MISSING";
+        std::env::set_var(present, "live-value");
+        std::env::remove_var(missing);
+
+        let mut map = HashMap::new();
+        map.insert(present.to_string(), "dotenv-value".to_string());
+        map.insert(missing.to_string(), "dotenv-fill".to_string());
+        let installed = install_into_process_env(&map);
+
+        assert_eq!(std::env::var(present).unwrap(), "live-value"); // not clobbered
+        assert_eq!(std::env::var(missing).unwrap(), "dotenv-fill"); // filled
+        assert!(installed.contains(&missing.to_string()));
+        assert!(!installed.contains(&present.to_string()));
+
+        std::env::remove_var(present);
+        std::env::remove_var(missing);
     }
 }
