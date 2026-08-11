@@ -301,7 +301,17 @@ export function RenderItemView({ item }: { item: RenderItem }) {
     case 'localuser':
       return <div className="bs-chat-you">&gt; {item.text}</div>;
     case 'reminder':
-      return <div className="bs-system-reminder">{item.text}</div>;
+      // Collapsed by default — the bd-prime primer is long and injected on
+      // every session open; a one-line summary keeps the chat readable while
+      // the full text stays one click away (claude still receives it in full).
+      return (
+        <details className="bs-system-reminder">
+          <summary style={{ cursor: 'pointer', listStyle: 'revert' }}>
+            bd prime context (auto-injected) — click to expand
+          </summary>
+          <div style={{ marginTop: 6, whiteSpace: 'pre-wrap' }}>{item.text}</div>
+        </details>
+      );
     case 'stderr':
       return <pre className="bs-chat-line bs-chat-stderr">[stderr] {item.text}</pre>;
     case 'raw':

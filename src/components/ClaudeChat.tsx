@@ -398,11 +398,29 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
     try {
       await invoke('claude_send', { projectId: bridge, text })
     } catch (e) {
-      // Don't swallow: a failed send (e.g. session never started / claude died
-      // on a bad ANTHROPIC_BASE_URL) previously looked identical to success —
-      // the local user frame appeared but nothing came back. Surface it.
+      const msg = String(e)
+      // A dead session (child exited on a bad endpoint since it was started)
+      // surfaces as "session dead: ..." — the backend has already evicted it.
+      // Respawn once and retry the send so the user doesn't have to reload.
+      if (msg.includes('session dead')) {
+        try {
+          await invoke('claude_start', {
+            projectId: bridge,
+            cwd,
+            sessionId: sessionId || undefined,
+            permissionMode: permissionMode ?? 'acceptEdits',
+          })
+          await invoke('claude_send', { projectId: bridge, text })
+          return
+        } catch (e2) {
+          console.error('claude respawn+resend failed', e2)
+          appendFrame({ _kind: 'stderr', line: 'send failed (respawn): ' + String(e2) })
+          setStderrCount(c => c + 1)
+          return
+        }
+      }
       console.error('claude_send failed', e)
-      appendFrame({ _kind: 'stderr', line: 'send failed: ' + String(e) })
+      appendFrame({ _kind: 'stderr', line: 'send failed: ' + msg })
       setStderrCount(c => c + 1)
     } finally {
       setBusy(false)

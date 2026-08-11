@@ -108,9 +108,20 @@ pub async fn claude_start(
     // serialized concurrent starts (two `<leader>a` spawns would block on one
     // mutex through a process fork). Scope the guard so it releases here.
     {
-        let guard = SESSIONS.lock().await;
-        if let Some(existing) = guard.get(&project_id) {
-            return Ok(existing.session_id.clone());
+        let mut guard = SESSIONS.lock().await;
+        if let Some(existing) = guard.get_mut(&project_id) {
+            // Liveness check: a session may exist in the map but its child has
+            // already exited (e.g. claude died on a bad ANTHROPIC_BASE_URL /
+            // auth). Returning the corpse means every claude_send writes to a
+            // dead stdin -> "Broken pipe (os error 32)". try_wait() is
+            // non-blocking: Ok(Some(_)) => process exited; Ok(None) => alive.
+            match existing.child.try_wait() {
+                Ok(Some(_status)) => {
+                    // Dead — evict and fall through to respawn a fresh session.
+                    guard.remove(&project_id);
+                }
+                _ => return Ok(existing.session_id.clone()), // alive (or unknowable) — reuse
+            }
         }
     }
 
@@ -363,14 +374,19 @@ pub async fn claude_send(project_id: String, text: String) -> Result<(), String>
     line.push('\n');
 
     let mut stdin = stdin.lock().await;
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| format!("write to claude stdin: {e}"))?;
-    stdin
-        .flush()
-        .await
-        .map_err(|e| format!("flush claude stdin: {e}"))?;
+    if let Err(e) = stdin.write_all(line.as_bytes()).await {
+        // A broken pipe means the child died since we cloned its stdin. Evict
+        // the dead session so the next claude_start respawns instead of writing
+        // to a corpse forever. Return a typed marker the FE can retry on.
+        drop(stdin);
+        SESSIONS.lock().await.remove(&project_id);
+        return Err(format!("session dead: write to claude stdin: {e}"));
+    }
+    if let Err(e) = stdin.flush().await {
+        drop(stdin);
+        SESSIONS.lock().await.remove(&project_id);
+        return Err(format!("session dead: flush claude stdin: {e}"));
+    }
 
     Ok(())
 }
