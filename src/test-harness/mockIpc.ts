@@ -55,6 +55,30 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
     case 'pty_spawn':
       return 1
 
+    // --- RV3-B file-nav (Code-8ro): a small deterministic tree + file preview
+    //     so a filenav pane renders real rows instead of an empty pane. ---
+    case 'list_dir': {
+      const path = (args?.path as string) ?? '/tmp/beads-station'
+      return {
+        entries: [
+          { path: `${path}/src`, name: 'src', isDir: true },
+          { path: `${path}/README.md`, name: 'README.md', isDir: false },
+          { path: `${path}/package.json`, name: 'package.json', isDir: false },
+        ],
+        truncated: false,
+      }
+    }
+    case 'read_file': {
+      const path = (args?.path as string) ?? '/tmp/beads-station/README.md'
+      return {
+        path,
+        content: `# ${path.split('/').pop()}\n\nMock preview body for live-verify.\n`,
+        truncated: false,
+        binary: false,
+        totalBytes: 64,
+      }
+    }
+
     // --- everything else is fire-and-forget void (claude_*, watcher_start,
     //     bd mutations, pty_write/resize/kill, set_status, etc.) ---
     default:
