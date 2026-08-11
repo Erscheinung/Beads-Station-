@@ -565,6 +565,22 @@ Three tracks, orchestrated as one ultracode workflow (opus for schema/graph, son
 
 ---
 
+## RV4.1 — the conductor pulse (2026-08-11)
+
+The scheduler RV4.0 was missing. `src-tauri/src/conductor.rs` (`Code-wvl`) — a tokio-interval scheduler firing ONE ephemeral `claude -p` run per tick. Pulse sequence: `bd prime` (context) → `bd doctor` (health gate) → `bd ready` (top priority bead) → one-shot `claude` advancing exactly ONE molecule step → `bd remember` heartbeat. State lives entirely in bd; a killed pulse costs one retried step (next pulse re-derives from `bd ready`/`bd mol`).
+
+**Two locked safety decisions (this session):** (1) **default OFF** — nothing auto-starts in `lib.rs::setup`; a live claude pulse fires only after an explicit `conductor_start`. (2) **bd-state only** — the pulse ships **dry-run by default** (`claude --permission-mode plan`: reasons + read-only bd verbs, no edits); real diffs stay gated behind the formula's human gate (RV5.0). `dry_run: Some(false)` opts into `acceptEdits`.
+
+**Design:** `conductor_start(interval_secs?, repo_path, dry_run?)` / `conductor_stop` commands. First `tokio::sync::Notify` + `tokio::select!` in the backend — the loop selects stop-notify vs interval tick; stop halts the schedule at the next boundary, never aborts an in-flight pulse. Off-minute jitter (one-time pre-loop offset), idempotent same-repo start, replace-on-different-repo, `PULSE_TIMEOUT < interval` (non-overlapping ticks). `conductor_status` event (`waking|awake|idle|deferred|error|stopped`) for the DU footer + DU3 panel — FE wiring is a later phase, not this ticket. Model `claude-haiku-4-5-20251001`.
+
+**Molecule-advance model (confirmed bd 1.0.4):** no `bd mol advance` verb. A molecule is a real bead DAG; "advance one step" = work the ready step, `bd close <step>`, which unblocks the next. bd verb arg shapes confirmed: `bd defer <id>` (no `--reason`; use `bd note`), `bd remember "<insight>" --key heartbeat` (insight positional), `bd doctor` (exit status = health, no `--json`).
+
+**Reuse (no duplication of the RV3.1 fork-storm guard):** `bd.rs` — new `pub(crate) run_bd_verb` wrapper over private `run_bd_classified` so the conductor's doctor/defer/note/remember share `BD_SEMAPHORE` + EAGAIN retry; `ACTOR` made `pub(crate)`. `claude.rs` — `CLAUDE_BIN_FALLBACK` + `augmented_path` made `pub(crate)`; ANTHROPIC env-forward duplicated (5 lines) rather than refactoring the persistent-session path. `lib.rs` — `mod conductor` + handler, no auto-start.
+
+**Gates:** cargo test 5/5 conductor (jitter bounds, interval default/floor, bd arg builders, prompt safety contract), full cargo 23/23, tsc clean. **NOT yet done** (needs a live app; WKWebView undriveable headless): manual short-interval smoke, mid-step-kill idempotency, FE footer wiring + mockIPC status assert. `Code-wvl` stays open until RV4.0's dep chain (RV3 `Code-ab4` + Phase 7 `Code-ky4.7`) clears. Commit `70683d1` pushed to `origin/r12-live-verify`.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
