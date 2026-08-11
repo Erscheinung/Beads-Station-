@@ -581,6 +581,21 @@ The scheduler RV4.0 was missing. `src-tauri/src/conductor.rs` (`Code-wvl`) — a
 
 ---
 
+## RV2 + RV3 live-verify — the leaves close (2026-08-11)
+
+The RV2/RV3 leaves were code-complete since R12 but sat `in_progress` owing only a live pass. Wrote the three missing Playwright + mockIPC specs; live suite now **15/15** (was 8). All selectors were derived from the real components (no test-hook additions needed):
+
+- `tests/live/agent-render.spec.ts` (`Code-d3p`): emits real `claude_event:<bridge>` frames into a spawned agent pane. Asserts a tool_use + matching tool_result render as ONE collapsible ToolPair (`.bs-tool`), an Edit renders a DiffPair (`.bs-tool.bs-diff`) with a +/- delta toggling unified (`.bs-diff-body`) ↔ side-by-side (`.bs-diff-split`), a Task frame nests `parent_tool_use_id` children into a recursive TaskChain (`.bs-task`).
+- `tests/live/filenav.spec.ts` (`Code-8ro`): leader-e spawns a filenav pane (`activeIsFileNav`), j/k move the cursor (`.bs-tree-row--active`), open shows a read-only `.bs-filepreview` (no editable).
+- `tests/live/nav-to-agent.spec.ts` (`Code-ia4`): with an agent pane present, selecting a file row + `s` fires `claude_send` to the target agent bridge with the path (asserted via the invoke log).
+- `mockIpc.ts`: added `list_dir`/`read_file` fixtures (a small deterministic tree + file preview) — before, both returned null so a filenav pane rendered empty.
+
+**Harness gotchas found:** (1) the filetree is rooted at the project dir, so row 0 is `beads-station` (root), then `src`/`README.md`/`package.json` — nav counts must include the root row. (2) keyboard nav (`j`/`k`/`s`) only reaches the FileTree window keymap when the pane is active AND `vim.focused === 'terminal'`; with a second (agent) pane present, a raw blur is not enough — **clicking the target row** focuses the tree reliably and is the robust user-action path. (3) a stale vite dev server on :1420 makes Playwright serve a non-mock build and every spec fails at `__bsMockReady` — kill `lsof -ti:1420` before a run.
+
+**Closed:** `Code-d3p`, `Code-8ro`, `Code-ia4` (RV3 leaves), `Code-ab4` (RV3 epic), `Code-fpc` (RV2). This clears ONE of RV4.0's two dependencies. **Only Phase 7 (`Code-ky4.7`, Obsidian daily writer) now gates the entire RV4/RV5 conductor chain** — it is the single next unblock for closing `Code-90j` (RV4.0) and `Code-wvl` (RV4.1). Gates: live 15/15, vitest 44/44, tsc clean. Commit `03e1604` pushed.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
