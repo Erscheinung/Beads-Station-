@@ -596,6 +596,28 @@ The RV2/RV3 leaves were code-complete since R12 but sat `in_progress` owing only
 
 ---
 
+## Bug-bash from screenshots (2026-08-11)
+
+Ronit ran the app and flagged 8 issues. Triaged into bugs (fixed) + features (3 shipped, 1 design fork, 1 deferred).
+
+**THE big one — ask-claude sends nothing, cost always $0 (`Code-f1u`, fixed):** root cause was the **stale repo `.env` clobbering the live Gateway environment**. The `.env` (dated Jun 15) had `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL=http://localhost:6655` (no `/anthropic/` path); Gateway now uses `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL=http://localhost:6655/anthropic/` (source of truth = `~/.claude/settings.json`). `envloader::install_into_process_env` forced the `.env` into the process env via `set_var`, OVERRIDING the correct inherited values, so claude spawned against a dead endpoint, produced no stream-json frames, and cost never moved. Fixes: (1) envloader now SKIPS any var already present in the environment (live env wins; `.env` only fills gaps — unit-tested `install_does_not_clobber_existing_env`); (2) the machine-local gitignored `.env` was rewritten from `~/.claude/settings.json`; (3) `ClaudeChat.send()` no longer swallows the `claude_send` error in a bare try/finally — a failed send now shows a stderr frame. **Lesson: when claude produces no output + cost stays $0, suspect ANTHROPIC_BASE_URL/AUTH_TOKEN, not the send path — and check that the `.env` matches Gateway's current settings.**
+
+**Cost meter (`Code-9d8`, core fixed):** cost was $0 ONLY because send was broken — `claudeUsage.ts` already accumulates `total_cost_usd` + tokens from claude `result` frames, and CostMeter renders it. With send fixed, per-session cost/in/out/cache populate live. The Gateway AGGREGATE view (today/month totals like the popover) is deferred — the `localhost:6655` proxy exposes no discoverable usage API (probed /usage /stats /metrics /anthropic/usage; all 404/401; root says "Local gateway Proxy is running").
+
+**Sidebar header clipped (`Code-4k5`, fixed):** `.bs-issuelist-header` had no CSS rule at all, so "BEADS · ALL (16)" sat flush against the window edge. Added a rule matching the tree-row inset.
+
+**Stray template steps on board/sidebar (`Code-m7u`, fixed):** a persisted bd formula proto leaves an uninstantiated template epic + step children ("Triage {{bead_id}}") that bd surfaces in `bd ready`. `bdCache.applySnapshot` now filters template artifacts once for all consumers (drops issues labeled `template` or with an uninstantiated `{{var}}` in the title).
+
+**Shipped features:** Shift-Tab / Ctrl-Shift-Tab project cycling (`Code-eu0`); sidebar collapsible (leader-\\) + drag-resizable 180-640px, width persisted (`Code-kr9`).
+
+**Design fork (`Code-x8p`, reclassified bug→feature P1):** "switching project loses everything" — the board/sidebar DO swap correctly; the terminal shows the old project's shell because the pane surface is NOT keyed by project (RV1 persistence design). Ronit chose **per-project shells (CMUX-like)**: key the pane tree by projectId, persist a per-project pane-tree map, restore on switch. Not yet built.
+
+**Deferred (`Code-3yn`):** terminal resize hotkeys + embed neovim. Full writeup in `Documents/Beads/Implementation Prompts/2026-08-11 Terminal resize + neovim embed (deferred).md`. Recommendation: ship resize (mirror the sidebar-resize pattern + existing `pty_resize`) + Option A (run nvim in the existing xterm PTY, add a file-nav→nvim open); defer nvim --embed; reject Monaco.
+
+**Gates for the bug-bash batch:** tsc clean, vite build ok, cargo 24/24 (+1 envloader test), vitest 44/44, Playwright live 15/15. Commits `92d4a74` (3 bugs) + `42b9ae0` (2 features) pushed.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
