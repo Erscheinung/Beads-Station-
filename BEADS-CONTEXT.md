@@ -547,6 +547,24 @@ The root cause of "Beads Station just doesn't work" was diagnosed as a missing *
 
 ---
 
+## RV4.0 + DU1 + DU2 — vibecode Formula + Designer UI skin (2026-08-11)
+
+Three tracks, orchestrated as one ultracode workflow (opus for schema/graph, sonnet for the mechanical theme, verify pass adversarial). shell-ui (`DAS/shell-ui`) was evaluated as a Designer-UI base and rejected as **reference only**: it's work's engagement-layer micro-frontend shell (pnpm monorepo, node 24, runtime ES-module composition) — adopting it wholesale would wrap Beads-Station as a micro-frontend, contradicting the Tauri single-app design and the DU plan's own "React skin, don't fork" recommendation.
+
+**RV4.0 (`Code-90j`, in_progress — pilot done, deps still open):** the vibecode loop authored as a bd Formula, zero app code. `.beads/formulas/vibecode.formula.json` cooks to a 5-step DAG (triage → build → review → human-gate → close) with a `gate:{type:human}` on the gate step. Verified for real: poured molecule `Code-mol-iuk` against a live bead, the human gate was confirmed OPEN and blocking the close step, `bd ready` surfaced only triage. Ephemeral test mol/wisp burned; proto + formula file kept. Left `in_progress` because its declared deps `Code-ab4` (RV3 epic) + `Code-ky4.7` (Phase 7 daily writer) are still open — the formula was authored ahead as a pilot (prompt §8 allows this). Do NOT `--force` close; it closes when the deps land.
+
+**bd formula schema quirks (bd 1.0.4, learned empirically — no example on disk):** top-level name key is `formula` NOT `name`; `type` must be `workflow|expansion|aspect` (`molecule` rejected); `gate` is a step-level object, only `{type}` is honored (extra subfields silently dropped); the declared `variables` block is decorative — bd auto-detects vars by scanning `{{...}}` in steps, and runtime mode still demands `--var` (defaults not honored); `depends_on` = array of step `id`s; `phase:"vapor"` is correct for an operational loop (wisp-friendly). A vapor **wisp** collapses to a single 0/0 root with no live per-instance gate — you must **pour** (persistent) to observe the gate blocking; that's why the acceptance test poured.
+
+**DU1 (`Code-abe`, closed):** light designer theme + shell behind `?ui=designer`, strictly additive (default terminal/tokyonight path untouched). `src/theme/designer-light.css` token set (white surfaces, `#f5f5f7` bg, orange accent, blue/green/amber/red status — no purple, no AI-gradient). `src/components/designer/DesignerShell.tsx`: top bar + wordmark + Everyday/Heavy tier toggle, WORKSPACE sidebar + ACTIVE TIER card, CSS-grid calm layout.
+
+**DU2 (`Code-3pk`, closed):** `src/components/designer/BeadGraph.tsx` — hand-rolled left-to-right dependency DAG (no dagre/elkjs), status-colored rounded nodes, count strip + legend, next-pickable highlight from `bd_ready`.
+
+**Verify P1 caught + fixed (the reason to run the adversarial pass):** BeadGraph first drew edges from `Issue.parent`, which is **empty in real bd data** (0 parents; 14 blocker edges live). The centerpiece rendered a disconnected list, not a DAG. Root cause: the wire `Issue` only carried scalar `dependency_count`/`dependent_count`; bd's `--json` actually emits a full `dependencies` edge array (`{issue_id, depends_on_id, type}`) that the Rust `Issue` struct was dropping. Fix threaded it through: added a `Dependency` struct + `dependencies` field to `src-tauri/src/bd.rs` and the TS `Issue` (`src/types/issue.ts`); BeadGraph now derives columns + edges from `dependencies` (`depends_on_id` blocks `issue_id`). Live data renders 23 nodes / 14 edges.
+
+**Gates:** tsc clean, vite build ok, cargo check clean, vitest 44/44, Playwright live-verify 8/8. Commit `3325d1d` pushed to `origin/r12-live-verify`.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
