@@ -25,6 +25,13 @@ export default function App() {
   const { projects, activeId, setActive, refresh, loaded } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
+  // Sidebar is collapsible + drag-resizable (was a fixed 320px). Width persists
+  // in localStorage; collapse toggles via leader-b. Clamped to a sane range.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('beads-station.sidebarWidth'))
+    return saved >= 180 && saved <= 640 ? saved : 320
+  })
   // Phase 6 — track which projectId the user has already confirmed THIS day.
   // Persisted state lives in localStorage (see MorningConfirm.tsx); the
   // in-memory copy here is a per-render shortcut so React knows when to
@@ -45,19 +52,50 @@ export default function App() {
     if (active) setDefaultCwd(active.path)
   }, [active])
 
-  // <leader>p — cycle to the next project. Wraps at end. The custom
-  // event is dispatched by the global vim keymap; this keeps
-  // useVimNav decoupled from project state.
+  // <leader>p and Shift-Tab / Ctrl-Shift-Tab — cycle projects. Wraps both ways.
+  // The custom event carries an optional direction (default +1) so the same
+  // handler serves forward (leader-p) and backward (Shift-Tab) cycling. This
+  // keeps useVimNav decoupled from project state.
   useEffect(() => {
-    const onCycle = () => {
+    const onCycle = (e: Event) => {
       if (projects.length === 0) return
+      const dir = (e as CustomEvent<{ dir?: number }>).detail?.dir ?? 1
       const idx = projects.findIndex(p => p.id === activeId)
-      const next = projects[(idx + 1) % projects.length]
+      const n = projects.length
+      const next = projects[((idx + dir) % n + n) % n]
       if (next) setActive(next.id)
     }
     window.addEventListener('project:cycle', onCycle)
     return () => window.removeEventListener('project:cycle', onCycle)
   }, [projects, activeId, setActive])
+
+  // Sidebar collapse toggle (leader-b, dispatched by the vim keymap) + width
+  // persistence. Drag-resize is handled inline on the divider (startResize).
+  useEffect(() => {
+    const onToggle = () => setSidebarCollapsed(c => !c)
+    window.addEventListener('sidebar:toggle', onToggle)
+    return () => window.removeEventListener('sidebar:toggle', onToggle)
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem('beads-station.sidebarWidth', String(sidebarWidth))
+  }, [sidebarWidth])
+
+  const startSidebarResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = sidebarWidth
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.min(640, Math.max(180, startW + (ev.clientX - startX)))
+      setSidebarWidth(next)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [sidebarWidth])
 
   // RV2 — <leader>a spawns a new agent pane on the active project. useVimNav
   // dispatches 'agent:spawn' (decoupled from project state); we resolve the
@@ -162,11 +200,17 @@ export default function App() {
 
   return (
     <BdLiveProvider>
-    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
-      <aside style={{ background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
+    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: `${sidebarCollapsed ? 0 : sidebarWidth}px 1fr`, gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
+      <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: sidebarCollapsed ? 'none' : 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
         </div>
+        {/* Drag handle on the sidebar's right edge (leader-b toggles collapse). */}
+        <div
+          onMouseDown={startSidebarResize}
+          title="Drag to resize sidebar"
+          style={{ position: 'absolute', top: 0, right: 0, width: 4, height: '100%', cursor: 'col-resize', zIndex: 5 }}
+        />
       </aside>
       <main style={{ background: 'var(--bs-bg)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <TabBar projects={projects} activeId={activeId} onSelect={setActive} />

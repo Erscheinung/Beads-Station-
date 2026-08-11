@@ -171,6 +171,17 @@ export function useVimNav(): void {
         return
       }
 
+      // Shift-Tab / Ctrl-Shift-Tab — cycle project tabs from ANY focus (insert,
+      // board, terminal). Shift-Tab goes forward, Ctrl-Shift-Tab backward. Runs
+      // before the board's plain-Tab column-nav so plain Tab is unaffected.
+      // preventDefault stops the browser's own focus traversal.
+      if (event.key === 'Tab' && event.shiftKey && !event.altKey) {
+        const dir = event.ctrlKey || event.metaKey ? -1 : 1
+        window.dispatchEvent(new CustomEvent('project:cycle', { detail: { dir } }))
+        event.preventDefault()
+        return
+      }
+
       if (termFocused) {
         const insert = !!termMirror?.insert
         // Insert mode: keystrokes belong to the shell. Only Esc is ours.
@@ -418,6 +429,11 @@ export function useVimNav(): void {
         switch (key) {
           case 'p':
             window.dispatchEvent(new CustomEvent('project:cycle'))
+            event.preventDefault()
+            return
+          case '\\':
+            // leader-\ toggles the sidebar collapse (App owns the state).
+            window.dispatchEvent(new CustomEvent('sidebar:toggle'))
             event.preventDefault()
             return
           case 'b':
