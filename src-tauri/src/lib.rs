@@ -7,6 +7,7 @@
 mod bd;
 mod binresolve;
 mod claude;
+mod conductor;
 mod envloader;
 mod fs;
 mod projects;
@@ -119,6 +120,8 @@ pub fn run() {
             claude::claude_send,
             claude::claude_set_permission_mode,
             claude::claude_start,
+            conductor::conductor_start,
+            conductor::conductor_stop,
             fs::list_dir,
             fs::read_file,
             projects::projects_get,

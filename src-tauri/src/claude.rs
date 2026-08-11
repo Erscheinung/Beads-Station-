@@ -34,13 +34,13 @@ use tokio::sync::Mutex;
 // binresolve so we still find claude when it's been installed somewhere
 // else (e.g. /opt/homebrew/bin) and only fall back to the literal when
 // the resolver comes up empty.
-const CLAUDE_BIN_FALLBACK: &str = "~/.local/bin/claude";
+pub(crate) const CLAUDE_BIN_FALLBACK: &str = "~/.local/bin/claude";
 
 /// Build a colon-joined PATH that prepends the canonical install dirs to
 /// whatever PATH the GUI app inherited. Deduped while preserving order so
 /// child processes (claude itself, and anything claude shells out to like
 /// git) can find their tools even when launchd handed us an empty PATH.
-fn augmented_path() -> String {
+pub(crate) fn augmented_path() -> String {
     let canonical = ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
     let inherited = std::env::var("PATH").unwrap_or_default();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();

@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-const ACTOR: &str = "Beads Station";
+pub(crate) const ACTOR: &str = "Beads Station";
 
 /// RV3.1 — global cap on concurrent `bd` subprocess spawns from this app.
 /// bd is a ~130MB Go binary that forks git/dolt of its own; the app fires
@@ -187,6 +187,15 @@ async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
 /// stderr on non-zero exit (or spawn failure).
 async fn run_bd_write(repo_path: &str, args: &[&str]) -> Result<(), String> {
     run_bd(repo_path, args).await.map(|_| ())
+}
+
+/// RV4.1 — crate-internal escape hatch for the conductor to run bd verbs that
+/// have no `#[tauri::command]` wrapper (doctor / defer / remember / mol) while
+/// still sharing `BD_SEMAPHORE` + the EAGAIN-retry loop. The conductor must NOT
+/// spawn `bd` itself — that would bypass the RV3.1 fork-storm guard. Returns
+/// stdout bytes; `NoDatabase` collapses to an `Err` like `run_bd`.
+pub(crate) async fn run_bd_verb(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    run_bd(repo_path, args).await
 }
 
 fn require_nonempty(field: &str, value: &str) -> Result<(), String> {
