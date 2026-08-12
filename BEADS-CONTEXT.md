@@ -618,6 +618,28 @@ Ronit ran the app and flagged 8 issues. Triaged into bugs (fixed) + features (3 
 
 ---
 
+## Phase 7 + RV4 arc complete — Obsidian writer, epic fanout, token tiers (2026-08-12)
+
+Ultracode autonomous session. Landed the single blocker (Phase 7) that gated the whole conductor chain, then drove RV4.2 + RV4.3 to close. RV4 arc (4.0/4.1/4.2/4.3) now fully shipped; only RV5.0 (cockpit gate view) + RV5.1 (sensors) remain.
+
+**Phase 7 (`Code-ky4.7`, closed) — Obsidian daily writer.** `src-tauri/src/daily.rs`: an append-only, local-wall-clock (chrono::Local) writer at `~/Documents/Beads/Daily/{YYYY-MM-DD}.md`. H1 `# {date} — Beads Update` written once; `## HH:MM — <title>` subsections appended in arrival order. **Append-only via `OpenOptions().append(true)`** (never read-modify-`fs::write`) so a concurrent pulse/FE call can never clobber a section — a 16-thread test proves zero section loss. `has_header` dedup recognizes BOTH the spec H1 and the older bare `# {date}` form so it never stacks a second header onto a human-started file. `daily_append(title, body, dir_override?)` command + `src/lib/dailyBridge.ts` wrapper + mockIpc route. Was the ONE blocker for the RV4/RV5 chain (its dep `Code-ky4.3` was already closed). 6 unit tests. `chrono 0.4` (clock only) added.
+
+**RV4.0 (`Code-90j`) + RV4.1 (`Code-wvl`) closed.** Both were code-complete/pilot-verified but pinned `in_progress` on the RV3 + Phase 7 dep chain. With Phase 7 landed, that chain is fully closed → both closed. RV4.1's remaining item (live-app short-interval smoke + mid-step-kill idempotency + FE footer wiring) is inherently manual — WKWebView is undriveable headless on macOS — and moves to a live-smoke follow-up, NOT a code gap.
+
+**RV4.2 (`Code-jlt`, closed) — epic fanout via bd swarm + merge-slot.** The pulse now branches on `issue_type == "epic"`: `fanout_pulse` ensures a swarm molecule (`bd swarm create`, idempotent best-effort), reads `bd swarm status <epic> --json` → ready children, and spawns up to `MAX_FANOUT=3` concurrent builder pulses. Conflict resolution is delegated to bd's OWN `bd merge-slot` primitive — the builder prompt tells claude to `acquire`/`release` around shared-file edits; **the Rust scheduler invents no locking** (locked principle #1). `bd.rs` gained `swarm_status`/`swarm_create` + `SwarmStatus`/`SwarmNode` (share BD_SEMAPHORE + EAGAIN retry). `futures_join_all` spawns builders on the tauri runtime; **each result carries its own bead id inside the tuple** (never positional) so a dropped task never mislabels a survivor, and a `lost` count keeps `ok+failed+lost == n` honest. VERIFIED live at the bd level: scratch epic + 3 independent children → `swarm status.ready = 3`; `merge-slot acquire(A)` / refuse(B) `✗ Slot held by: builderA` / `release(A)` serialization confirmed no-clobber. 3 unit tests.
+
+**RV4.3 (`Code-6zv`, closed) — token tiers (size → model).** `resolve_tier(labels)` reads a `size:S|M|L` label (also `sz:` / `size-` / long forms, case-insensitive) → `[S]` Haiku / `[M]` Sonnet / `[L]` Opus. Unlabeled → `[S]` (cheap-by-default, principle #4). A `model:<name>` label OVERRIDES the tier outright (per-bead override wins). `run_pulse_claude` now takes an explicit model arg; the single pulse resolves the top bead's tier, the fanout resolves each child's tier via a per-child `bd show` (semaphore-bounded). Removed the now-dead `PULSE_MODEL` const (`MODEL_SMALL` carries the same value). **Ceremony encoded DECLARATIVELY in `.beads/formulas/vibecode.formula.json`** per the plan: triage assigns a size label if unset; build/review rigor scales by tier; the human-gate step notes the `[L]` mandatory gate before+after. VERIFIED: `size:S/M/L` labels round-trip live (resolve_tier reads exactly what bd emits); formula still cooks to the 5-step DAG with the human gate. 6 unit tests (mapping, override precedence, distinct cost-ordered models, `[L]` gate+adversarial ceremony).
+
+**Model IDs used (per §Environment):** `claude-haiku-4-5-20251001` / `claude-sonnet-5` / `claude-opus-5`.
+
+**bd verb quirks confirmed this session:** `bd close` needs each id as a SEPARATE arg — a single quoted `"$IDS"` word fails to resolve. `bd merge-slot` is lazily created (`bd merge-slot create`); slot is a `<prefix>-merge-slot` bead labeled `gt:slot`. `bd swarm status --json` top keys: `epic_id, ready[], ready_count, active_count, blocked_count, completed[], blocked[]` — the fanout reads `.ready`.
+
+**Gates (all three phases):** cargo **36/36** (24→30 Phase 7, →33 RV4.2, →36 RV4.3), tsc+vite+emoji clean, vitest **44/44**, Playwright live **15/15**. Commits `29515c5` (Phase 7), `ed9392c` (RV4.2), `cce0f92` (RV4.3) + `64a0fa1` (bd export) pushed to `origin/r12-live-verify`.
+
+**Newly ready / next up:** `Code-ew0` (RV5.0 — cockpit gate view: list open `human` gates in-app, approve = close gate, reject = reopen step w/ note) is the next §8 phase and a FRONTEND track (fresh context recommended). `Code-qqa` (RV5.1 — sensors, Obsidian first) follows. The RV4 backend's live-app smoke (conductor short-interval tick, mid-step-kill idempotency, DU footer status wiring) is the outstanding manual verification across the arc.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
