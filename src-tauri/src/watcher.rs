@@ -53,6 +53,13 @@ struct WatcherState {
 
 static WATCHER: Lazy<Mutex<Option<WatcherState>>> = Lazy::new(|| Mutex::new(None));
 
+/// RV5.1 — separate slot for the Obsidian sensor watcher. Kept distinct from the
+/// bd `WATCHER` so the two lifecycles are independent (the bd watcher is keyed
+/// to the active repo; the sensor watcher tracks vault folders that don't move
+/// with the repo). Holds all per-dir watchers alive for the app's lifetime.
+static SENSE_WATCHER: Lazy<Mutex<Option<Vec<RecommendedWatcher>>>> =
+    Lazy::new(|| Mutex::new(None));
+
 #[derive(Serialize, Clone)]
 struct BdChangedPayload {
     path: String,
@@ -175,6 +182,103 @@ pub async fn watcher_stop() -> Result<(), String> {
     Ok(())
 }
 
+/// RV5.1 — true for a path the sensor cares about: a markdown file. Editor swap
+/// files, `.DS_Store`, and directory events must NOT fire `sense_changed` or the
+/// FE would rescan on churn. (Unlike the bd watcher there's no Dolt-internals
+/// loop to guard against here; the `.md` gate is the whole filter.)
+fn is_sensed_md(p: &Path) -> bool {
+    p.extension()
+        .map(|e| e.eq_ignore_ascii_case("md"))
+        .unwrap_or(false)
+}
+
+/// Start watching the Obsidian sensor folders and emit a static `sense_changed`
+/// event whenever a debounced `.md` change fires. The FE responds by running
+/// `sense_scan` then `sense_list`.
+///
+/// `dirs` empty -> defaults to `sense::watched_dirs()` (the vault Implementation
+/// Prompts/ + Daily/ folders); the FE normally passes nothing and lets Rust own
+/// the vault path (single-sourced with daily.rs). Non-recursive: the sensed
+/// folders are flat. Missing folders are skipped (not an error — the vault may
+/// not have created them yet). A second call replaces the previous watchers.
+#[tauri::command]
+pub async fn sense_watch_start(window: Window, dirs: Vec<String>) -> Result<(), String> {
+    let dirs: Vec<PathBuf> = if dirs.is_empty() {
+        crate::sense::watched_dirs()
+    } else {
+        dirs.into_iter().map(PathBuf::from).collect()
+    };
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<PathBuf>();
+
+    let mut watchers: Vec<RecommendedWatcher> = Vec::new();
+    for dir_path in &dirs {
+        if !dir_path.exists() {
+            continue;
+        }
+        let tx = tx.clone();
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    if let Some(p) = event.paths.into_iter().next() {
+                        if is_sensed_md(&p) {
+                            let _ = tx.send(p);
+                        }
+                    }
+                }
+            })
+            .map_err(|e| format!("create sense watcher: {e}"))?;
+        watcher
+            .watch(dir_path, RecursiveMode::NonRecursive)
+            .map_err(|e| format!("watch {}: {e}", dir_path.display()))?;
+        watchers.push(watcher);
+    }
+
+    {
+        let mut guard = SENSE_WATCHER
+            .lock()
+            .map_err(|e| format!("sense watcher lock: {e}"))?;
+        *guard = Some(watchers);
+    }
+
+    // Same 250ms debounce/coalesce shape as the bd watcher, but emits a static
+    // `sense_changed` name (sensors are global, not per-repo).
+    tokio::spawn(async move {
+        loop {
+            let _first = match rx.recv().await {
+                Some(p) => p,
+                None => break,
+            };
+            let burst_started = Instant::now();
+            loop {
+                let elapsed = burst_started.elapsed();
+                if elapsed >= Duration::from_millis(DEBOUNCE_MS) {
+                    break;
+                }
+                let remaining = Duration::from_millis(DEBOUNCE_MS) - elapsed;
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return,
+                    Err(_) => break,
+                }
+            }
+            let _ = window.emit("sense_changed", ());
+        }
+    });
+
+    Ok(())
+}
+
+/// Drop the sensor watchers. Idempotent.
+#[tauri::command]
+pub async fn sense_watch_stop() -> Result<(), String> {
+    let mut guard = SENSE_WATCHER
+        .lock()
+        .map_err(|e| format!("sense watcher lock: {e}"))?;
+    *guard = None;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +305,14 @@ mod tests {
         assert!(!is_dolt_internal(Path::new("/repo/.beads/config.yaml")));
         assert!(!is_dolt_internal(Path::new("/repo/.beads/interactions.jsonl")));
         assert!(!is_dolt_internal(Path::new("/repo/.beads/last-touched")));
+    }
+
+    #[test]
+    fn sensed_md_filter() {
+        assert!(is_sensed_md(Path::new("/vault/Daily/2026-08-12.md")));
+        assert!(is_sensed_md(Path::new("/vault/Implementation Prompts/rv51.MD")));
+        assert!(!is_sensed_md(Path::new("/vault/Daily/.DS_Store")));
+        assert!(!is_sensed_md(Path::new("/vault/Daily/note.txt")));
+        assert!(!is_sensed_md(Path::new("/vault/Daily/note.md.swp")));
     }
 }

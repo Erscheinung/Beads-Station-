@@ -81,6 +81,11 @@ pub struct Issue {
     pub comment_count: i32,
     #[serde(default)]
     pub labels: Option<Vec<String>>,
+    /// RV5.1 — true for ephemeral wisps (bd `--ephemeral`). bd omits this on
+    /// permanent beads (serde default = false). Wisps live only in the Sensors
+    /// panel; the board/ready/counts views filter them out (see `drop_wisps`).
+    #[serde(default)]
+    pub ephemeral: bool,
     #[serde(default)]
     pub parent: Option<String>,
     // bd's `--json` emits the full dependency edge list here. We keep only the
@@ -221,12 +226,21 @@ fn validate_status(status: &str) -> Result<(), String> {
 
 // ---------- reads ----------
 
+/// RV5.1 — strip ephemeral wisps from a board/ready result. Wisps carry
+/// `ephemeral: true` and leak into `bd ready`/`bd list`; they belong only in the
+/// Sensors panel (see sense.rs), never in the board columns or the counts. Pure
+/// so it's unit-testable without a live bd.
+pub(crate) fn drop_wisps(issues: Vec<Issue>) -> Vec<Issue> {
+    issues.into_iter().filter(|i| !i.ephemeral).collect()
+}
+
 /// `bd ready --json` — issues that have no open blockers.
 #[tauri::command]
 pub async fn bd_ready(repo_path: String) -> Result<Vec<Issue>, String> {
     match run_bd_classified(&repo_path, &["ready", "--json", "--actor", ACTOR]).await? {
         BdOutcome::NoDatabase => Ok(vec![]),
         BdOutcome::Ok(stdout) => serde_json::from_slice::<Vec<Issue>>(&stdout)
+            .map(drop_wisps)
             .map_err(|e| format!("failed to parse bd ready JSON: {e}")),
     }
 }
@@ -253,6 +267,7 @@ pub async fn bd_list(
     match run_bd_classified(&repo_path, &args).await? {
         BdOutcome::NoDatabase => Ok(vec![]),
         BdOutcome::Ok(stdout) => serde_json::from_slice::<Vec<Issue>>(&stdout)
+            .map(drop_wisps)
             .map_err(|e| format!("failed to parse bd list JSON: {e}")),
     }
 }
@@ -512,7 +527,7 @@ fn parse_read(outcome: BdOutcome, what: &str) -> Result<(Vec<Issue>, bool), Stri
     match outcome {
         BdOutcome::NoDatabase => Ok((vec![], true)),
         BdOutcome::Ok(stdout) => serde_json::from_slice::<Vec<Issue>>(&stdout)
-            .map(|v| (v, false))
+            .map(|v| (drop_wisps(v), false))
             .map_err(|e| format!("failed to parse bd {what} JSON: {e}")),
     }
 }

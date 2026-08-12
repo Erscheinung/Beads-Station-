@@ -95,6 +95,23 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
         },
       ]
 
+    // --- RV5.1 (Code-qqa): sensors panel. sense_scan reports how many wisps it
+    //     minted; sense_list returns one open wisp so a test can assert the card
+    //     + promote/dismiss render. sense_promote/dismiss/watch_* are void. ---
+    case 'sense_scan':
+      return 0
+    case 'sense_list':
+      return [
+        {
+          id: 'Code-wisp-abc',
+          title: 'rv51-smoke',
+          description: 'Sensed from Implementation Prompts/rv51-smoke.md',
+          status: 'open',
+          created_at: '2026-08-12T16:30:00Z',
+          source: 'Implementation Prompts/rv51-smoke.md',
+        },
+      ]
+
     // --- Phase 7 (Code-ky4.7): daily writer returns a DailyWrite shape so a
     //     "Save Update" call in a test gets a real path/date/created back. ---
     case 'daily_append': {

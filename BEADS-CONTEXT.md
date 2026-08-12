@@ -656,6 +656,28 @@ Same autonomous session as the RV4 arc. Built the FIRST piece of RV5: an in-app 
 
 ---
 
+## RV5.1 — Obsidian sensors via bd wisp verbs (2026-08-12)
+
+Closed the RV5 arc. Sensors watch the Obsidian vault folders (`Implementation Prompts/`, `Daily/`); a new `.md` file is minted as an ephemeral bd **wisp**, surfaced in a new Sensors panel, and **promoted** into a permanent bead on approval.
+
+**Ground-truth correction to the ticket:** the ticket said "native propose->admit". Those verbs **do not exist** in bd. Verified real flow (probed live): `bd create "<title>" --ephemeral --labels sense:src=<rel> --json` -> `{id: "Code-wisp-*", ephemeral: true}`; `bd promote <id> --reason "..."` copies the wisp into the permanent issues table preserving id + links; `bd list --json` emits wisps with `ephemeral:true` + `labels:[...]` and a promoted bead simply drops `ephemeral`. There is **no `proposed` status** (only open/in_progress/blocked/deferred/closed/pinned/hooked) and **no `bd wisp` subcommand**.
+
+**Backend (`sense.rs`, new):** `sense_scan` (the tick) reads the two vault folders, diffs `.md` files against the `sense:src=<relpath>` labels of existing open wisps, and mints one wisp per unseen file — **dedup by source-path label** (survives app restart, unlike an in-memory seen-set; re-saving a file never double-mints). `sense_list` = `bd list --json` filtered to open ephemerals, projected to a `Wisp {id,title,description,status,created_at,source}` (source parsed from the label). `sense_promote` = `bd promote` (APPROVE). `sense_dismiss` = `bd close` (the wisp then TTL-collapses; the honest "not tracked" state). All route through `bd::run_bd_verb` so they share the RV3.1 fork-storm semaphore — never a raw bd spawn. Vault root resolved off `$HOME` the same way `daily.rs::default_daily_dir()` does (single-sourced fallback).
+
+**Watcher (`watcher.rs`):** a SECOND global slot `SENSE_WATCHER` (kept distinct from the bd `.beads/` watcher — different lifecycle, folders don't move with the repo). `sense_watch_start` watches the folders non-recursively with a `.md`-only filter (no Dolt-internals loop to guard here; the `.md` gate is the whole filter), reuses the same 250ms debounce/coalesce, and emits a **static** `sense_changed` event (sensors are global, not per-repo). `dirs` empty -> defaults to `sense::watched_dirs()` so the FE passes nothing and Rust owns the vault path.
+
+**Wisp leak fix (`bd.rs`):** wisps carry `ephemeral:true` and leak into `bd ready`/`bd list`. Added `ephemeral: bool` (`#[serde(default)]`) to `Issue` + a pure `drop_wisps` filter applied in `bd_ready`, `bd_list`, and `bd_snapshot`'s `parse_read`. Wisps now appear ONLY in the Sensors panel, never in the board columns or counts.
+
+**Frontend:** `src/lib/senseBridge.ts` (typed wrappers, snake_case fields, `senseWatchStart` passes `dirs:[]`) + `src/components/designer/SensorsPanel.tsx` — a "SENSED · WISPS" card mounted in DesignerShell right rail directly under `GateCockpit`, same tokens/shape (Promote green / Dismiss red, busyId lock, error line). Each card shows title + id + source relpath. Live: on mount scan+list+`senseWatchStart`, then re-scan+list on every `sense_changed`; `senseWatchStop` on unmount. Listener key is the static `sense_changed` (NOT `bd_changed:<repo>` like GateCockpit) since sensors are global.
+
+**Verified E2E (live bd):** dropped `Implementation Prompts/rv51-smoke.md` -> minted `Code-wisp-*` with the source label; `sense_list` shape confirmed; re-scan skipped it (dedup hit); `bd promote` made it permanent (`ephemeral` gone, id preserved, no open wisp leak); dismiss path closed a 2nd wisp without promoting. Probe beads + smoke files cleaned.
+
+**Gates:** cargo **42/42** (+7: source-label parse, md filter, ephemeral filter, sensed-md filter), tsc+vite+emoji clean, vitest **54/54** (+10: 6 senseBridge, 4 SensorsPanel), Playwright live **18/18** (no new spec — existing gate-cockpit right-rail coverage exercises the same mount path; no regression). No WKWebView live test for the sensor watcher (macOS has no WebKitWebDriver).
+
+**RV5 arc COMPLETE.** RV4.0-4.3 + RV5.0 + RV5.1 all closed. Next up: `Code-9ud` (RV4/RV5 Intelligent Conductor, P1) or Phase 9 (`Code-ky4.9`, command palette + vim keybindings). The RV4 conductor's live-app smoke remains the outstanding manual verification.
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.

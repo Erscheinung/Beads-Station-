@@ -13,6 +13,7 @@ mod envloader;
 mod fs;
 mod projects;
 mod pty;
+mod sense;
 mod telemetry;
 mod watcher;
 
@@ -135,6 +136,12 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_spawn,
             pty::pty_write,
+            sense::sense_dismiss,
+            sense::sense_list,
+            sense::sense_promote,
+            sense::sense_scan,
+            watcher::sense_watch_start,
+            watcher::sense_watch_stop,
             watcher::watcher_start,
             watcher::watcher_stop,
         ])

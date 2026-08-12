@@ -2,6 +2,7 @@ import { useState } from 'react'
 import '../../theme/designer-light.css'
 import { BeadGraph } from './BeadGraph'
 import { GateCockpit } from './GateCockpit'
+import { SensorsPanel } from './SensorsPanel'
 
 type Tier = 'everyday' | 'heavy'
 type NavItem = 'board' | 'graph' | 'agents' | 'timeline'
@@ -82,9 +83,11 @@ export function DesignerShell() {
           <CenterView nav={nav} />
         </main>
 
-        {/* Right — gate cockpit (RV5.0) + agents panel placeholder (DU3) */}
+        {/* Right — gate cockpit (RV5.0) + sensors (RV5.1) + agents placeholder (DU3) */}
         <aside style={styles.rightPanel}>
           <GateCockpit />
+          <div style={styles.panelDivider} />
+          <SensorsPanel />
           <div style={styles.panelDivider} />
           <p style={styles.panelLabel}>ACTIVE AGENTS</p>
           <div id="du-agents-panel" style={styles.panelPlaceholder}>
