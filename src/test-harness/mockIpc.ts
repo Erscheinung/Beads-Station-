@@ -79,6 +79,13 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       }
     }
 
+    // --- Phase 7 (Code-ky4.7): daily writer returns a DailyWrite shape so a
+    //     "Save Update" call in a test gets a real path/date/created back. ---
+    case 'daily_append': {
+      const title = (args?.title as string) ?? ''
+      return { path: `/tmp/beads-daily/2026-08-12.md`, date: '2026-08-12', created: title === 'first' }
+    }
+
     // --- everything else is fire-and-forget void (claude_*, watcher_start,
     //     bd mutations, pty_write/resize/kill, set_status, etc.) ---
     default:

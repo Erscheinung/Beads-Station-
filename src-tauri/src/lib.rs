@@ -8,6 +8,7 @@ mod bd;
 mod binresolve;
 mod claude;
 mod conductor;
+mod daily;
 mod envloader;
 mod fs;
 mod projects;
@@ -122,6 +123,7 @@ pub fn run() {
             claude::claude_start,
             conductor::conductor_start,
             conductor::conductor_stop,
+            daily::daily_append,
             fs::list_dir,
             fs::read_file,
             projects::projects_get,

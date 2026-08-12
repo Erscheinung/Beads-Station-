@@ -36,6 +36,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # RV3-B (Code-8ro): gitignore-aware directory listing for the file-nav pane.
 # Same engine as ripgrep — respects .gitignore/.ignore, supports bounded depth.
 ignore = "0.4"
+# Phase 7 (Code-ky4.7): local date/time for the Obsidian daily writer. clock =
+# local-timezone Local::now (the daily filename + HH:MM stamp must be wall-clock
+# local, not UTC); default-features off drops the unused oldtime/serde weight.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
