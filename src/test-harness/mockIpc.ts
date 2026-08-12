@@ -79,6 +79,22 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       }
     }
 
+    // --- RV5.0 (Code-ew0): cockpit gate view. bd_gate_list returns one open
+    //     human gate so a test can assert the card + approve/reject render;
+    //     bd_gate_resolve is fire-and-forget void. ---
+    case 'bd_gate_list':
+      return [
+        {
+          id: 'Code-mol-gate1',
+          title: 'Gate: human',
+          description: 'Async gate for step human-gate',
+          status: 'open',
+          await_type: 'human',
+          is_template: false,
+          created_at: '2026-08-12T16:00:00Z',
+        },
+      ]
+
     // --- Phase 7 (Code-ky4.7): daily writer returns a DailyWrite shape so a
     //     "Save Update" call in a test gets a real path/date/created back. ---
     case 'daily_append': {

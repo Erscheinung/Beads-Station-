@@ -364,6 +364,67 @@ pub async fn bd_note(
     .await
 }
 
+// ---------- RV5.0: cockpit gate view ----------
+
+/// A bd gate issue (issue_type == "gate"). Gates are async wait conditions that
+/// block a workflow step; a `human` gate is closed manually to let the step
+/// proceed. Mirrors `bd gate list --json` — bd emits snake_case, so this struct
+/// stays snake_case (no camelCase rename) and the TS bridge reads the same
+/// field names. Only the fields the cockpit renders are kept.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct Gate {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    /// bd's gate kind: "human" | "timer" | "gh:run" | "gh:pr" | "bead".
+    #[serde(default)]
+    pub await_type: String,
+    /// True for the uninstantiated formula-proto gate (a template artifact, not
+    /// a live gate). The cockpit filters these out.
+    #[serde(default)]
+    pub is_template: bool,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// Pure filter: the gates a human can act on in the cockpit — open, human-type,
+/// and not a formula-proto template artifact. Split out so it's unit-testable
+/// without a live bd.
+fn actionable_human_gates(all: Vec<Gate>) -> Vec<Gate> {
+    all.into_iter()
+        .filter(|g| !g.is_template && g.status == "open" && g.await_type == "human")
+        .collect()
+}
+
+/// `bd gate list --json` — open HUMAN gates only, template artifacts filtered
+/// out. These are the gates a human resolves in the cockpit; timer/gh/bead
+/// gates resolve themselves and aren't actionable here. NoDatabase -> empty.
+#[tauri::command]
+pub async fn bd_gate_list(repo_path: String) -> Result<Vec<Gate>, String> {
+    match run_bd_classified(&repo_path, &["gate", "list", "--json"]).await? {
+        BdOutcome::NoDatabase => Ok(vec![]),
+        BdOutcome::Ok(stdout) => {
+            let all: Vec<Gate> = serde_json::from_slice(&stdout)
+                .map_err(|e| format!("failed to parse bd gate list JSON: {e}"))?;
+            Ok(actionable_human_gates(all))
+        }
+    }
+}
+
+/// `bd gate resolve <id>` — the APPROVE action: manually close a human gate so
+/// its blocked step proceeds. (Distinct from `bd close`: gates have their own
+/// resolve verb that also re-evaluates the blocked step.)
+#[tauri::command]
+pub async fn bd_gate_resolve(repo_path: String, id: String) -> Result<(), String> {
+    require_nonempty("id", &id)?;
+    run_bd_write(&repo_path, &["gate", "resolve", &id]).await
+}
+
 // ---------- Phase 4: statusline helpers ----------
 
 /// `git -C <repo_path> rev-parse --abbrev-ref HEAD` — returns
@@ -580,6 +641,22 @@ mod tests {
     fn other_errors_are_not_missing_db() {
         assert!(!is_no_database("Error: some other failure"));
         assert!(!is_no_database(""));
+    }
+
+    #[test]
+    fn actionable_human_gates_filters_correctly() {
+        // RV5.0 — the cockpit lists only open, human, non-template gates.
+        let raw = br#"[
+            {"id":"g1","title":"Gate: human","status":"open","await_type":"human","is_template":false},
+            {"id":"g-tmpl","title":"Gate: human","status":"open","await_type":"human","is_template":true},
+            {"id":"g-closed","title":"Gate: human","status":"closed","await_type":"human","is_template":false},
+            {"id":"g-timer","title":"Gate: timer","status":"open","await_type":"timer","is_template":false}
+        ]"#;
+        let all: Vec<Gate> = serde_json::from_slice(raw).unwrap();
+        let out = actionable_human_gates(all);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "g1");
+        assert_eq!(out[0].await_type, "human");
     }
 
     #[test]

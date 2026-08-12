@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import '../../theme/designer-light.css'
 import { BeadGraph } from './BeadGraph'
+import { GateCockpit } from './GateCockpit'
 
 type Tier = 'everyday' | 'heavy'
 type NavItem = 'board' | 'graph' | 'agents' | 'timeline'
@@ -81,8 +82,10 @@ export function DesignerShell() {
           <CenterView nav={nav} />
         </main>
 
-        {/* Right — agents panel placeholder (DU3 fills live data) */}
+        {/* Right — gate cockpit (RV5.0) + agents panel placeholder (DU3) */}
         <aside style={styles.rightPanel}>
+          <GateCockpit />
+          <div style={styles.panelDivider} />
           <p style={styles.panelLabel}>ACTIVE AGENTS</p>
           <div id="du-agents-panel" style={styles.panelPlaceholder}>
             {/* DU3 mounts ActiveAgents here */}
@@ -304,7 +307,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
-    overflow: 'hidden',
+    overflow: 'auto',
+  },
+  panelDivider: {
+    height: 1,
+    background: 'var(--bs-border)',
+    margin: '4px 0',
+    flexShrink: 0,
   },
   panelLabel: {
     margin: 0,
