@@ -43,6 +43,12 @@ const JITTER_MAX_SECS: u64 = 45;
 const PULSE_TIMEOUT: Duration = Duration::from_secs(600);
 /// Cheap model for the mechanical one-step pulse.
 const PULSE_MODEL: &str = "claude-haiku-4-5-20251001";
+/// RV4.2 — max concurrent builder pulses fanned out across an epic's swarm in
+/// a single tick. Bounded so a wide epic can't spawn an unbounded claude burst
+/// (each builder is a full claude run); excess ready children wait for the next
+/// tick. Kept small — the BD_SEMAPHORE (3) already serializes the bd verbs the
+/// builders share, and merge-slot serializes their conflicting writes.
+const MAX_FANOUT: usize = 3;
 
 struct ConductorState {
     repo_path: String,
@@ -143,6 +149,33 @@ bd holds the source of truth; if you are interrupted, the next pulse re-derives 
     )
 }
 
+/// RV4.2 builder prompt: one parallel worker inside an epic's swarm. Same
+/// one-step idempotency contract as the single pulse, PLUS the merge-slot
+/// discipline — a builder MUST acquire the shared `<prefix>-merge-slot` before
+/// any edit that could conflict, and release it after. This is bd's OWN
+/// serialization primitive (`bd merge-slot`), not a lock we invented: the Rust
+/// side never locks, it only tells each builder to cooperate through bd.
+fn build_builder_prompt(primer: &str, epic_id: &str, id: &str, title: &str) -> String {
+    format!(
+        "<system-reminder>{primer}</system-reminder>\n\
+You are ONE builder in the Beads Station conductor swarm for epic {epic_id}.\n\
+You own exactly one child bead; other builders run in parallel on sibling beads.\n\n\
+Your bead: {id} — {title}\n\n\
+Instructions:\n\
+1. Context is already loaded above (bd prime).\n\
+2. Work ONE ready step of your bead's molecule, then close that step: `bd close <step-id>`.\n\
+3. BEFORE any edit that could touch a file another builder might touch, acquire\n\
+   the shared merge slot: `bd merge-slot acquire`. Do the edit. Then\n\
+   `bd merge-slot release`. Never hold the slot across unrelated work — this is\n\
+   how sibling builders avoid clobbering each other. If the slot is held, wait\n\
+   your turn (bd queues you); do NOT bypass it.\n\
+4. Record what you did: `bd note {id} \"<one line>\"`.\n\
+5. If you cannot make progress, run `bd defer {id}` and stop. Do NOT fake progress.\n\
+6. Exactly ONE step this pulse, on YOUR bead only. Do NOT touch sibling beads.\n\
+bd holds the source of truth; a killed builder costs one retried step, next pulse resumes."
+    )
+}
+
 /// Run a bd verb through the shared semaphore, mapping failure to a logged
 /// warning + `Err`. Thin helper so pulse steps read cleanly.
 async fn bd_verb(repo: &str, args: &[String]) -> Result<Vec<u8>, String> {
@@ -215,6 +248,14 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
     };
 
     // 4. One-shot claude run that advances one molecule step.
+    //    RV4.2: if the top bead is an EPIC, fan out N parallel builders across
+    //    its swarm's ready children instead of running a single builder. Each
+    //    builder serializes conflicting writes through `bd merge-slot`.
+    if top.issue_type == "epic" {
+        fanout_pulse(app, repo, dry_run, interval_secs, &top, &primer).await;
+        return;
+    }
+
     let prompt = build_prompt(
         &primer,
         &top.id,
@@ -235,6 +276,149 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
 
     // 6. Awake.
     status("awake", Some(top.id), None);
+}
+
+/// RV4.2 — epic fanout. Ensures a swarm molecule exists for the epic, reads its
+/// ready children via `bd swarm status`, and spawns up to `MAX_FANOUT` builder
+/// pulses concurrently. Each builder cooperates through `bd merge-slot` (bd's
+/// own serialization primitive) — the conductor invents no locking of its own.
+///
+/// Best-effort + idempotent like the single pulse: a builder that dies costs at
+/// most one retried step, and the next tick re-derives the ready set from bd.
+/// Emits `awake` with a detail summarizing how many builders ran, `idle` when
+/// the epic has no ready children this tick.
+async fn fanout_pulse(
+    app: &AppHandle,
+    repo: &str,
+    dry_run: bool,
+    interval_secs: u64,
+    epic: &bd::Issue,
+    primer: &str,
+) {
+    let emit = |state: &'static str, detail: Option<String>| {
+        emit_status(
+            app,
+            ConductorStatus {
+                state,
+                bead_id: Some(epic.id.clone()),
+                detail,
+                last_pulse_ms: Some(now_ms()),
+                interval_secs,
+                repo_path: repo.to_string(),
+            },
+        );
+    };
+
+    // Ensure the swarm molecule exists (best-effort — status is computed from
+    // beads regardless, so a create failure on an existing swarm is harmless).
+    let _ = bd::swarm_create(repo, &epic.id).await;
+
+    let swarm = match bd::swarm_status(repo, &epic.id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("conductor: swarm status failed for {}: {e}", epic.id);
+            emit("error", Some(format!("swarm status: {e}")));
+            return;
+        }
+    };
+
+    // Ready children only, capped. bd's swarm status already excludes
+    // in_progress/blocked and emits `ready` in its own (priority) order; we
+    // preserve that order and take the top MAX_FANOUT so a wide epic doesn't
+    // spawn an unbounded claude burst. The remaining ready children are not
+    // dropped — they run on subsequent ticks (bd re-derives the ready set each
+    // tick), so nothing starves; the batch is just this tick's slice.
+    let batch: Vec<bd::SwarmNode> = swarm.ready.into_iter().take(MAX_FANOUT).collect();
+    if batch.is_empty() {
+        emit("idle", Some(format!("epic {} has no ready children", epic.id)));
+        return;
+    }
+
+    let mode = if dry_run { "plan" } else { "acceptEdits" };
+    let n = batch.len();
+    emit("waking", Some(format!("fanning out {n} builder(s) for {}", epic.id)));
+
+    // Spawn all builders concurrently; each is a full claude run. join_all waits
+    // for the whole batch so the tick doesn't overlap the next (PULSE_TIMEOUT
+    // bounds each). Merge-slot serialization happens INSIDE the builders (in bd),
+    // not here — the Rust side only fans out.
+    let mut handles = Vec::with_capacity(n);
+    for child in batch {
+        let prompt = build_builder_prompt(primer, &epic.id, &child.id, &child.title);
+        let repo_owned = repo.to_string();
+        let mode_owned = mode.to_string();
+        handles.push(async move {
+            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned).await;
+            (child.id, r)
+        });
+    }
+    let results = futures_join_all(handles).await;
+
+    // Each result carries its own bead id (the id rides INSIDE the tuple, not by
+    // positional index) so a dropped task never mislabels a survivor. `lost` =
+    // builders whose task vanished before returning (a join error — near-
+    // impossible since run_pulse_claude never panics, but counted honestly so
+    // ok+failed+lost always == n and the status line can't silently undercount).
+    let mut ok = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    for (id, r) in &results {
+        match r {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                tracing::warn!("conductor: builder {id} failed: {e}");
+                failed.push(id.clone());
+            }
+        }
+    }
+    let lost = n.saturating_sub(results.len());
+
+    // Heartbeat once for the whole fanout tick. Non-fatal on error.
+    if let Err(e) = bd_verb(repo, &heartbeat_args(&now_rfc3339_ish())).await {
+        tracing::warn!("conductor: heartbeat failed: {e}");
+    }
+
+    if failed.is_empty() && lost == 0 {
+        emit("awake", Some(format!("{ok} builder(s) advanced for {}", epic.id)));
+    } else {
+        emit(
+            "error",
+            Some(format!(
+                "{ok} ok, {} failed ({}){}",
+                failed.len(),
+                failed.join(","),
+                if lost > 0 { format!(", {lost} lost") } else { String::new() }
+            )),
+        );
+    }
+}
+
+/// Minimal concurrent-join over a set of futures without pulling the `futures`
+/// crate: spawn each on the tauri runtime and await the handles in order. Order
+/// of the returned Vec matches input order. A join error (task panic) maps to
+/// the future's own Err path via the closures above returning owned results, so
+/// this only needs to surface the JoinHandle result.
+async fn futures_join_all<F, T>(futs: Vec<F>) -> Vec<T>
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let handles: Vec<_> = futs
+        .into_iter()
+        .map(tauri::async_runtime::spawn)
+        .collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles {
+        match h.await {
+            Ok(v) => out.push(v),
+            Err(e) => {
+                // A spawned builder task panicked/aborted. We can't reconstruct
+                // T, so this is unreachable in practice (run_pulse_claude never
+                // panics), but we must not unwrap. Log + skip.
+                tracing::error!("conductor: builder task join error: {e}");
+            }
+        }
+    }
+    out
 }
 
 /// Fire a single one-shot `claude -p` run (owned output, reaped by `.output()`).
@@ -418,5 +602,28 @@ mod tests {
         assert!(p.contains("ONE step") || p.contains("ONE unit of work"));
         assert!(p.contains("next pulse resumes") || p.contains("next pulse re-derives"));
         assert!(p.contains("Do NOT fake progress"));
+    }
+
+    #[test]
+    fn builder_prompt_locks_merge_slot_contract() {
+        // RV4.2 — a builder MUST be told to serialize through bd merge-slot and
+        // stay on its own bead. Pin those clauses so a prompt edit can't quietly
+        // drop the "no monkey knife fights" discipline.
+        let p = build_builder_prompt("PRIMER", "Code-epic", "Code-child", "Child title");
+        assert!(p.contains("Code-epic"));
+        assert!(p.contains("Code-child"));
+        assert!(p.contains("bd merge-slot acquire"));
+        assert!(p.contains("bd merge-slot release"));
+        assert!(p.contains("do NOT bypass it") || p.contains("do NOT bypass"));
+        assert!(p.contains("Do NOT touch sibling beads"));
+        assert!(p.contains("Do NOT fake progress"));
+        assert!(p.contains("ONE step"));
+    }
+
+    #[test]
+    fn fanout_cap_is_bounded() {
+        // The batch is `ready.take(MAX_FANOUT)` — assert the cap is a small,
+        // positive bound so a wide epic never spawns an unbounded claude burst.
+        assert!(MAX_FANOUT >= 1 && MAX_FANOUT <= 8, "MAX_FANOUT {MAX_FANOUT} out of sane range");
     }
 }

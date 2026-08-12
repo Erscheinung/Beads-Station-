@@ -515,6 +515,58 @@ pub async fn bd_prime(repo_path: String) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// A single node in a swarm status listing (a child of the epic). bd's
+/// `swarm status --json` emits richer per-state objects, but the conductor
+/// only needs id + title to fan out a builder pulse per ready child.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct SwarmNode {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+}
+
+/// Parsed `bd swarm status <epic> --json`. Only the fields the RV4.2 fanout
+/// reads are kept; serde drops the rest (active/blocked/completed detail,
+/// progress_percent, schema_version). `ready` = open children with all deps
+/// satisfied — the set the pulse can safely run in parallel.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct SwarmStatus {
+    #[serde(default)]
+    pub epic_id: String,
+    #[serde(default)]
+    pub ready: Vec<SwarmNode>,
+    #[serde(default)]
+    pub ready_count: i32,
+    #[serde(default)]
+    pub active_count: i32,
+    #[serde(default)]
+    pub blocked_count: i32,
+}
+
+/// RV4.2 — `bd swarm status <epic> --json`, parsed. Crate-internal (the
+/// conductor's fanout reads it; no FE surface yet). Shares the semaphore +
+/// EAGAIN retry via run_bd_classified. NoDatabase collapses to an empty status.
+pub(crate) async fn swarm_status(repo_path: &str, epic_id: &str) -> Result<SwarmStatus, String> {
+    match run_bd_classified(repo_path, &["swarm", "status", epic_id, "--json"]).await? {
+        BdOutcome::NoDatabase => Ok(SwarmStatus::default()),
+        BdOutcome::Ok(stdout) => serde_json::from_slice::<SwarmStatus>(&stdout)
+            .map_err(|e| format!("failed to parse bd swarm status JSON: {e}")),
+    }
+}
+
+/// RV4.2 — ensure a swarm molecule exists for `epic_id` before the fanout reads
+/// its status. `bd swarm create` is idempotent enough for our use: if a swarm
+/// molecule already links the epic, a second create is a cheap no-op/expected
+/// error we swallow (the fanout only needs the DAG, which `swarm status`
+/// computes from beads regardless of whether a molecule row exists). Best-effort.
+pub(crate) async fn swarm_create(repo_path: &str, epic_id: &str) -> Result<(), String> {
+    // create can legitimately "fail" if a swarm already exists — treat any
+    // error as non-fatal since status is computed from beads, not the molecule.
+    let _ = run_bd_verb(repo_path, &["swarm", "create", epic_id]).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,6 +580,35 @@ mod tests {
     fn other_errors_are_not_missing_db() {
         assert!(!is_no_database("Error: some other failure"));
         assert!(!is_no_database(""));
+    }
+
+    #[test]
+    fn parse_swarm_status_json() {
+        // RV4.2 — the fanout reads .ready off `bd swarm status --json`. Pin the
+        // shape (epic_id + ready[].id/title + counts); extra keys are dropped.
+        let raw = br#"{
+            "epic_id": "Code-ky4",
+            "epic_title": "Epic",
+            "progress_percent": 70,
+            "schema_version": 1,
+            "total_issues": 10,
+            "active": [], "active_count": 0,
+            "blocked": [{"id":"Code-ky4.10","title":"P10","blocked_by":["Code-ky4.9"]}],
+            "blocked_count": 1,
+            "completed": [{"id":"Code-ky4.1","title":"P1","closed_at":"2026-06-12"}],
+            "ready": [
+                {"id":"Code-ky4.8","title":"Phase 8"},
+                {"id":"Code-ky4.9","title":"Phase 9"}
+            ],
+            "ready_count": 2
+        }"#;
+        let s: SwarmStatus = serde_json::from_slice(raw).unwrap();
+        assert_eq!(s.epic_id, "Code-ky4");
+        assert_eq!(s.ready_count, 2);
+        assert_eq!(s.blocked_count, 1);
+        assert_eq!(s.ready.len(), 2);
+        assert_eq!(s.ready[0].id, "Code-ky4.8");
+        assert_eq!(s.ready[1].title, "Phase 9");
     }
 
     #[test]
