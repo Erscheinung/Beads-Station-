@@ -640,6 +640,22 @@ Ultracode autonomous session. Landed the single blocker (Phase 7) that gated the
 
 ---
 
+## RV5.0 — cockpit gate view (2026-08-12)
+
+Same autonomous session as the RV4 arc. Built the FIRST piece of RV5: an in-app view of bd's human gates with approve/reject. The gate model is **bd-native** (confirmed by probing: `issue_type == "gate"`, `await_type == "human"`, `status == "open"`, plus an `is_template` flag on the uninstantiated formula-proto gate) — so this phase is the VIEW only, no new gate model.
+
+**Backend (`bd.rs`):** `bd_gate_list` parses `bd gate list --json` and returns only actionable gates via the pure `actionable_human_gates` filter (`!is_template && status=="open" && await_type=="human"` — drops the proto template, closed gates, and timer/gh/bead gates that self-resolve). `bd_gate_resolve` = the APPROVE action (`bd gate resolve <id>`, which closes the gate AND re-evaluates its blocked step — distinct from `bd close`). The `Gate` struct is **snake_case (NO camelCase rename)** because bd emits snake_case; the TS bridge reads the same field names. (A camelCase rename here was the first-cut bug — serde applies one rename to both directions, so `await_type`/`is_template` failed to deserialize and the filter returned 0. Caught by the unit test.)
+
+**Frontend:** `src/lib/gateBridge.ts` (typed wrappers, snake_case fields) + `src/components/designer/GateCockpit.tsx` — a "NEXT UP · GATES" card mounted in the DesignerShell right panel (above the ACTIVE AGENTS placeholder). Approve = `gateResolve`; **Reject = `bdNote` the gate + leave it OPEN** (the honest "not approved" state: the step stays blocked pending changes; we never force-close). Live refresh is **self-contained** (initial fetch + a `bd_changed:<repo>` listen via `safeListen` + `AbortController`) — deliberately NOT `BdLiveProvider`, because `DesignerShell` returns from `App.tsx` BEFORE the provider wrap AND gates aren't in the bd snapshot (`useBdSnapshot` filters non-issue types). `repoPath` comes from `useProjects()` inside the component. On repo switch it resets `error` + `busyId` so a stale error/button-lock never bleeds across projects (review-caught).
+
+**Verified:** bd-level approve flow proven live — poured a molecule from the vibecode formula, its `human` gate showed open + blocking, `bd gate resolve` closed it and the open-gate count dropped to 0. FE: 3 new Playwright specs (`tests/live/gate-cockpit.spec.ts`) — the card renders the mock gate, Approve fires `bd_gate_resolve` with the gate id, Reject fires `bd_note` without resolving. Designer specs use a lighter boot (`?ui=designer` + wait for `__bsMockReady`) since the shell's `__bsVim`/`__bsTerm` mirrors don't exist in the designer skin. Scratch molecule burned (`bd mol burn --force` — the bare verb prompts y/N and blocks agents).
+
+**Gates:** cargo **37/37** (+1 gate filter test), tsc+vite+emoji clean, vitest 44/44, Playwright live **18/18** (was 15). Commit `22e78b2` pushed to `origin/r12-live-verify`.
+
+**Conductor arc status:** RV4.0/4.1/4.2/4.3 + RV5.0 all closed. **Only RV5.1 (`Code-qqa`, sensors — Obsidian first) remains** — a sense-pulse watching `Implementation Prompts/` + `Daily/`, creating a bd **wisp** on a new prompt, surfacing it at the gate, `bd promote` on approval. Then Jira/Notion/mail via bd's native sync verbs. Outstanding manual verification across the whole arc: the RV4 conductor's live-app smoke (short-interval tick, mid-step-kill idempotency, DU footer `conductor_status` wiring) — all need the running app (WKWebView undriveable headless).
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
