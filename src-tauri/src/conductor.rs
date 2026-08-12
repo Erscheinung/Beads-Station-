@@ -41,8 +41,89 @@ const JITTER_MAX_SECS: u64 = 45;
 /// Hard cap on a single pulse. Kept well under the default interval so ticks
 /// never overlap (paired with MissedTickBehavior::Skip).
 const PULSE_TIMEOUT: Duration = Duration::from_secs(600);
-/// Cheap model for the mechanical one-step pulse.
-const PULSE_MODEL: &str = "claude-haiku-4-5-20251001";
+// ---- RV4.3: token tiers (size -> model) ----
+
+/// Model tier for the WORK a pulse performs, chosen from a bead's size. The
+/// pulse ORCHESTRATION (prime/doctor/ready in Rust) costs nothing extra; this
+/// is the model claude uses for the actual build/review step, escalating cost
+/// only with the work's size. Unlabeled beads default to [S] (Haiku) — the
+/// cheap-by-default posture (safety principle #4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tier {
+    /// [S] — cheap, auto-proceed, light review. Also the default when a bead
+    /// carries no size label (cheap-by-default, safety principle #4).
+    Small,
+    /// [M] — mid model, one review, gate if the work touches shared files.
+    Medium,
+    /// [L] — top model, plan-first + adversarial, mandatory gate before+after.
+    Large,
+}
+
+const MODEL_SMALL: &str = "claude-haiku-4-5-20251001";
+const MODEL_MEDIUM: &str = "claude-sonnet-5";
+const MODEL_LARGE: &str = "claude-opus-5";
+
+impl Tier {
+    fn model(self) -> &'static str {
+        match self {
+            Tier::Small => MODEL_SMALL,
+            Tier::Medium => MODEL_MEDIUM,
+            Tier::Large => MODEL_LARGE,
+        }
+    }
+
+    /// One-line ceremony descriptor relayed into the work prompt so claude runs
+    /// the right rigor. Mirrors the formula's declarative ceremony.
+    fn ceremony(self) -> &'static str {
+        match self {
+            Tier::Small => "light review, auto-proceed",
+            Tier::Medium => "one review pass; gate if the change touches shared files",
+            Tier::Large => "plan first, adversarial self-review, MANDATORY human gate before and after",
+        }
+    }
+
+    fn tag(self) -> &'static str {
+        match self {
+            Tier::Small => "S",
+            Tier::Medium => "M",
+            Tier::Large => "L",
+        }
+    }
+}
+
+/// Resolve the work tier from a bead's labels. Precedence:
+///   1. An explicit `model:<name>` label — per-bead override wins outright
+///      (returns None for the tier but Some(model) so the caller uses it raw).
+///   2. A size label `size:S|M|L` (or the short `sz:` / bare `[S]`-style
+///      `size-l`) → the matching tier.
+///   3. No size hint → Small (cheap-by-default).
+/// Returns (tier, explicit_model_override). `explicit_model_override` is
+/// `Some(name)` only for case 1; otherwise `None` and the tier's model is used.
+fn resolve_tier(labels: &[String]) -> (Tier, Option<String>) {
+    let mut override_model: Option<String> = None;
+    let mut tier = Tier::Small;
+    for raw in labels {
+        let l = raw.trim().to_ascii_lowercase();
+        if let Some(m) = l.strip_prefix("model:") {
+            if !m.is_empty() {
+                override_model = Some(m.to_string());
+            }
+        } else if let Some(sz) = l
+            .strip_prefix("size:")
+            .or_else(|| l.strip_prefix("sz:"))
+            .or_else(|| l.strip_prefix("size-"))
+        {
+            tier = match sz {
+                "s" | "small" => Tier::Small,
+                "m" | "medium" | "med" => Tier::Medium,
+                "l" | "large" | "xl" => Tier::Large,
+                _ => tier,
+            };
+        }
+    }
+    (tier, override_model)
+}
+
 /// RV4.2 — max concurrent builder pulses fanned out across an epic's swarm in
 /// a single tick. Bounded so a wide epic can't spawn an unbounded claude burst
 /// (each builder is a full claude run); excess ready children wait for the next
@@ -127,21 +208,31 @@ fn note_args(id: &str, note: &str) -> Vec<String> {
 
 /// The pulse prompt: a single autonomous heartbeat that advances exactly one
 /// molecule step. Encodes idempotency ("ONE step", "next pulse resumes") so a
-/// killed mid-step pulse is safe.
-fn build_prompt(primer: &str, id: &str, title: &str, description: &str) -> String {
+/// killed mid-step pulse is safe. RV4.3: `tier_tag` + `ceremony` relay the
+/// size tier's rigor (declarative in the formula; echoed here so the work run
+/// applies the right review depth).
+fn build_prompt(
+    primer: &str,
+    id: &str,
+    title: &str,
+    description: &str,
+    tier_tag: &str,
+    ceremony: &str,
+) -> String {
     format!(
         "<system-reminder>{primer}</system-reminder>\n\
 You are the Beads Station conductor pulse — a single autonomous heartbeat.\n\
 Do exactly ONE unit of work against bd, then exit.\n\n\
 Target bead: {id} — {title}\n\
 {description}\n\n\
+Size tier: [{tier_tag}] — {ceremony}.\n\n\
 Instructions:\n\
 1. Context is already loaded above (bd prime).\n\
 2. Find this bead's molecule and its single ready step:\n\
    `bd mol show {id} --parallel` (or locate the molecule this bead belongs to).\n\
-3. Work that ONE ready step, then close it: `bd close <step-id>`.\n\
-   Closing the step unblocks the next one — do NOT skip ahead, and do NOT\n\
-   close the whole bead unless the molecule is fully complete.\n\
+3. Work that ONE ready step at the [{tier_tag}] ceremony above, then close it:\n\
+   `bd close <step-id>`. Closing the step unblocks the next one — do NOT skip\n\
+   ahead, and do NOT close the whole bead unless the molecule is fully complete.\n\
 4. Record what you did: `bd note {id} \"<one line>\"`.\n\
 5. If you cannot make progress, run `bd defer {id}` and stop. Do NOT fake progress.\n\
 6. Exactly ONE step this pulse. Then stop — the next pulse resumes from bd state.\n\
@@ -155,15 +246,24 @@ bd holds the source of truth; if you are interrupted, the next pulse re-derives 
 /// any edit that could conflict, and release it after. This is bd's OWN
 /// serialization primitive (`bd merge-slot`), not a lock we invented: the Rust
 /// side never locks, it only tells each builder to cooperate through bd.
-fn build_builder_prompt(primer: &str, epic_id: &str, id: &str, title: &str) -> String {
+fn build_builder_prompt(
+    primer: &str,
+    epic_id: &str,
+    id: &str,
+    title: &str,
+    tier_tag: &str,
+    ceremony: &str,
+) -> String {
     format!(
         "<system-reminder>{primer}</system-reminder>\n\
 You are ONE builder in the Beads Station conductor swarm for epic {epic_id}.\n\
 You own exactly one child bead; other builders run in parallel on sibling beads.\n\n\
-Your bead: {id} — {title}\n\n\
+Your bead: {id} — {title}\n\
+Size tier: [{tier_tag}] — {ceremony}.\n\n\
 Instructions:\n\
 1. Context is already loaded above (bd prime).\n\
-2. Work ONE ready step of your bead's molecule, then close that step: `bd close <step-id>`.\n\
+2. Work ONE ready step of your bead's molecule at the [{tier_tag}] ceremony\n\
+   above, then close that step: `bd close <step-id>`.\n\
 3. BEFORE any edit that could touch a file another builder might touch, acquire\n\
    the shared merge slot: `bd merge-slot acquire`. Do the edit. Then\n\
    `bd merge-slot release`. Never hold the slot across unrelated work — this is\n\
@@ -256,14 +356,23 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
         return;
     }
 
+    // RV4.3: pick the WORK model from the bead's size tier. The pulse
+    // orchestration is Haiku; the work escalates only with size. A `model:`
+    // label overrides the tier outright (per-bead override wins).
+    let labels = top.labels.clone().unwrap_or_default();
+    let (tier, override_model) = resolve_tier(&labels);
+    let work_model = override_model.as_deref().unwrap_or_else(|| tier.model());
+
     let prompt = build_prompt(
         &primer,
         &top.id,
         &top.title,
         top.description.as_deref().unwrap_or(""),
+        tier.tag(),
+        tier.ceremony(),
     );
     let mode = if dry_run { "plan" } else { "acceptEdits" };
-    if let Err(e) = run_pulse_claude(repo, &prompt, mode).await {
+    if let Err(e) = run_pulse_claude(repo, &prompt, mode, work_model).await {
         tracing::warn!("conductor: claude pulse failed: {e}");
         status("error", Some(top.id.clone()), Some(format!("claude: {e}")));
         return;
@@ -344,11 +453,23 @@ async fn fanout_pulse(
     // not here — the Rust side only fans out.
     let mut handles = Vec::with_capacity(n);
     for child in batch {
-        let prompt = build_builder_prompt(primer, &epic.id, &child.id, &child.title);
+        // RV4.3: resolve each child's work tier from its own labels (a `bd show`
+        // read, semaphore-bounded). Fanout children default to [S] like any
+        // unlabeled bead; a `size:`/`model:` label on the child escalates it.
+        let (tier, override_model) = match bd::bd_show(repo.to_string(), child.id.clone()).await {
+            Ok(issue) => resolve_tier(&issue.labels.unwrap_or_default()),
+            Err(e) => {
+                tracing::warn!("conductor: bd show {} for tier failed: {e}; defaulting [S]", child.id);
+                (Tier::Small, None)
+            }
+        };
+        let work_model = override_model.unwrap_or_else(|| tier.model().to_string());
+        let prompt =
+            build_builder_prompt(primer, &epic.id, &child.id, &child.title, tier.tag(), tier.ceremony());
         let repo_owned = repo.to_string();
         let mode_owned = mode.to_string();
         handles.push(async move {
-            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned).await;
+            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &work_model).await;
             (child.id, r)
         });
     }
@@ -423,8 +544,14 @@ where
 
 /// Fire a single one-shot `claude -p` run (owned output, reaped by `.output()`).
 /// Reuses claude.rs's binary resolution + augmented PATH + ANTHROPIC env
-/// forwarding, but NOT its persistent stream-json session shape.
-async fn run_pulse_claude(repo: &str, prompt: &str, permission_mode: &str) -> Result<(), String> {
+/// forwarding, but NOT its persistent stream-json session shape. `model` is the
+/// RV4.3 size-tier work model (MODEL_SMALL/Haiku for [S]/default; escalates for [M]/[L]).
+async fn run_pulse_claude(
+    repo: &str,
+    prompt: &str,
+    permission_mode: &str,
+    model: &str,
+) -> Result<(), String> {
     let claude_path =
         binresolve::resolve_bin_or_default("claude", claude::CLAUDE_BIN_FALLBACK)?;
     let mut cmd = tokio::process::Command::new(&claude_path);
@@ -432,7 +559,7 @@ async fn run_pulse_claude(repo: &str, prompt: &str, permission_mode: &str) -> Re
         .arg("-p")
         .arg(prompt)
         .arg("--model")
-        .arg(PULSE_MODEL)
+        .arg(model)
         .arg("--permission-mode")
         .arg(permission_mode)
         .env("PATH", claude::augmented_path());
@@ -596,9 +723,11 @@ mod tests {
 
     #[test]
     fn prompt_locks_the_safety_contract() {
-        let p = build_prompt("PRIMER", "Code-xyz", "Do a thing", "the description");
+        let p = build_prompt("PRIMER", "Code-xyz", "Do a thing", "the description", "M", "one review pass");
         assert!(p.contains("Code-xyz"));
         assert!(p.contains("PRIMER"));
+        assert!(p.contains("[M]"));
+        assert!(p.contains("one review pass"));
         assert!(p.contains("ONE step") || p.contains("ONE unit of work"));
         assert!(p.contains("next pulse resumes") || p.contains("next pulse re-derives"));
         assert!(p.contains("Do NOT fake progress"));
@@ -609,15 +738,53 @@ mod tests {
         // RV4.2 — a builder MUST be told to serialize through bd merge-slot and
         // stay on its own bead. Pin those clauses so a prompt edit can't quietly
         // drop the "no monkey knife fights" discipline.
-        let p = build_builder_prompt("PRIMER", "Code-epic", "Code-child", "Child title");
+        let p = build_builder_prompt("PRIMER", "Code-epic", "Code-child", "Child title", "S", "light review, auto-proceed");
         assert!(p.contains("Code-epic"));
         assert!(p.contains("Code-child"));
+        assert!(p.contains("[S]"));
         assert!(p.contains("bd merge-slot acquire"));
         assert!(p.contains("bd merge-slot release"));
         assert!(p.contains("do NOT bypass it") || p.contains("do NOT bypass"));
         assert!(p.contains("Do NOT touch sibling beads"));
         assert!(p.contains("Do NOT fake progress"));
         assert!(p.contains("ONE step"));
+    }
+
+    #[test]
+    fn resolve_tier_maps_size_labels() {
+        // Default (no size hint) -> Small (cheap-by-default).
+        let (t, o) = resolve_tier(&["Beads-Station".into(), "perf".into()]);
+        assert_eq!(t, Tier::Small);
+        assert!(o.is_none());
+        // size:S/M/L and short/long forms.
+        assert_eq!(resolve_tier(&["size:s".into()]).0, Tier::Small);
+        assert_eq!(resolve_tier(&["size:M".into()]).0, Tier::Medium);
+        assert_eq!(resolve_tier(&["size:large".into()]).0, Tier::Large);
+        assert_eq!(resolve_tier(&["sz:l".into()]).0, Tier::Large);
+        assert_eq!(resolve_tier(&["size-m".into()]).0, Tier::Medium);
+        // Case-insensitive.
+        assert_eq!(resolve_tier(&["SIZE:L".into()]).0, Tier::Large);
+    }
+
+    #[test]
+    fn resolve_tier_model_override_wins() {
+        // A model: label overrides outright; the returned override string is
+        // used raw by the caller regardless of any size label.
+        let (t, o) = resolve_tier(&["size:s".into(), "model:claude-opus-5".into()]);
+        assert_eq!(t, Tier::Small); // tier still parsed from size
+        assert_eq!(o.as_deref(), Some("claude-opus-5")); // but override present
+    }
+
+    #[test]
+    fn tier_models_are_distinct_and_ordered_by_cost() {
+        assert_eq!(Tier::Small.model(), MODEL_SMALL);
+        assert_eq!(Tier::Medium.model(), MODEL_MEDIUM);
+        assert_eq!(Tier::Large.model(), MODEL_LARGE);
+        assert_ne!(Tier::Small.model(), Tier::Medium.model());
+        assert_ne!(Tier::Medium.model(), Tier::Large.model());
+        // [L] ceremony must carry the mandatory-gate contract.
+        assert!(Tier::Large.ceremony().to_lowercase().contains("gate"));
+        assert!(Tier::Large.ceremony().to_lowercase().contains("adversarial"));
     }
 
     #[test]
