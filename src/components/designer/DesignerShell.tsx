@@ -3,6 +3,8 @@ import '../../theme/designer-light.css'
 import { BeadGraph } from './BeadGraph'
 import { GateCockpit } from './GateCockpit'
 import { SensorsPanel } from './SensorsPanel'
+import { ConductorControl } from './ConductorControl'
+import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
 
 type Tier = 'everyday' | 'heavy'
 type NavItem = 'board' | 'graph' | 'agents' | 'timeline'
@@ -83,11 +85,13 @@ export function DesignerShell() {
           <CenterView nav={nav} />
         </main>
 
-        {/* Right — gate cockpit (RV5.0) + sensors (RV5.1) + agents placeholder (DU3) */}
+        {/* Right — gate cockpit (RV5.0) + sensors (RV5.1) + conductor (Code-9ud) + agents placeholder (DU3) */}
         <aside style={styles.rightPanel}>
           <GateCockpit />
           <div style={styles.panelDivider} />
           <SensorsPanel />
+          <div style={styles.panelDivider} />
+          <ConductorControl />
           <div style={styles.panelDivider} />
           <p style={styles.panelLabel}>ACTIVE AGENTS</p>
           <div id="du-agents-panel" style={styles.panelPlaceholder}>
@@ -96,12 +100,22 @@ export function DesignerShell() {
         </aside>
       </div>
 
-      {/* ── Footer ── */}
-      <footer style={styles.footer}>
-        <span style={styles.footerDot} />
-        <span style={styles.footerText}>Claude is awake</span>
-      </footer>
+      {/* ── Footer — live conductor status (Code-9ud) ── */}
+      <ConductorFooter />
     </div>
+  )
+}
+
+// Footer driven by the shared conductor_status subscription — one source of
+// truth with ConductorControl (both read useConductorStatus).
+function ConductorFooter() {
+  const status = useConductorStatus()
+  const pres = statusPresentation(status)
+  return (
+    <footer style={styles.footer}>
+      <span style={{ ...styles.footerDot, background: pres.dot }} />
+      <span style={styles.footerText}>{pres.text}</span>
+    </footer>
   )
 }
 

@@ -119,6 +119,14 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return { path: `/tmp/beads-daily/2026-08-12.md`, date: '2026-08-12', created: title === 'first' }
     }
 
+    // --- Code-9ud: Intelligent Conductor. conductor_start/stop are
+    //     fire-and-forget void; live status is pushed via __bsMockEmit
+    //     ('conductor_status', …) in the spec, flowing to the app's listen()
+    //     handlers (shouldMockEvents:true). ---
+    case 'conductor_start':
+    case 'conductor_stop':
+      return null
+
     // --- everything else is fire-and-forget void (claude_*, watcher_start,
     //     bd mutations, pty_write/resize/kill, set_status, etc.) ---
     default:

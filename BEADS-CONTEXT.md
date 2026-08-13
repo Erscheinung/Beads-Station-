@@ -678,6 +678,26 @@ Closed the RV5 arc. Sensors watch the Obsidian vault folders (`Implementation Pr
 
 ---
 
+## Code-9ud — Intelligent Conductor: frontend wiring (2026-08-13, CLOSED)
+
+The umbrella P1 for the whole RV4/RV5 arc. Its 6 phase tickets + Phase 7 were already closed and the backend conductor (`src-tauri/src/conductor.rs`: `conductor_start`/`conductor_stop`, emits `conductor_status`) fully built — but nothing in the frontend was wired to it. The DesignerShell footer hardcoded a green dot + "Claude is awake"; no Start/Stop control; no listener. This phase built the operator surface.
+
+**`conductor_status` wire contract** (from `conductor.rs`): `state` ("waking"|"awake"|"idle"|"deferred"|"error"|"stopped") · `bead_id` · `detail` · `last_pulse_ms` (u128 epoch-ms) · `interval_secs` · `repo_path`. All snake_case (Rust struct un-renamed), so the TS bridge stays snake_case — same discipline that bit RV5.0.
+
+**Frontend:** `src/lib/conductorBridge.ts` (typed `ConductorStatus` + `conductorStart`/`conductorStop` invoke wrappers; camelCase arg keys `repoPath`/`intervalSecs`/`dryRun`; **`dryRun` defaults true** so a UI toggle never fires real claude pulses until opted in — matches backend default). `src/lib/useConductorStatus.ts` — a SHARED hook (one `safeListen('conductor_status')` under an AbortController) + `statusPresentation()` (dot color + text map), consumed by BOTH the control card and the footer so there is one listener and one source of truth. `src/components/designer/ConductorControl.tsx` — a "CONDUCTOR" right-rail card (Start/Stop toggle, live state/bead/detail/interval + humanized last-pulse), mounted under SensorsPanel. `DesignerShell.tsx` footer replaced with a live `<ConductorFooter>` reading the shared hook.
+
+**Mock harness:** `mockIpc.ts` gained explicit `conductor_start`/`conductor_stop` void cases; status is pushed in-spec via the existing `__bsMockEmit('conductor_status', …)` hook.
+
+**Verified (Playwright live, 4 new specs in `tests/live/conductor-control.spec.ts`):** card + Start render, footer starts "Conductor stopped"; Start fires `conductor_start` with `repoPath` + `dryRun:true`; an emitted `awake` status drives footer + card (and flips the toggle to Stop); Stop fires `conductor_stop` and a `stopped` status returns the footer. (Gotcha: `getByText('CONDUCTOR')` substring-matches "Conductor stopped" — use `{exact:true}`; shared text appears in both card + footer — use `.first()`.)
+
+**Gates:** build clean (tsc+vite+emoji), vitest **54/54**, Playwright live **22/22** (+4), cargo OK (backend untouched).
+
+**Deferred to `Code-m8x` (P2):** manual WKWebView smoke of the real conductor loop — short-interval live tick, mid-step-kill idempotency (kill app mid-pulse, bd state intact + next tick resumes), real backend Start/Stop from the card. Needs the running Tauri app; no WebKitWebDriver on macOS. Blocks nothing.
+
+**Whole RV4/RV5 Intelligent Conductor arc now CLOSED.** Next: Phase 9 (`Code-ky4.9`, command palette + vim keybindings, P3).
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.
