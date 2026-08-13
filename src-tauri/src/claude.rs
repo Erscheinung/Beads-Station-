@@ -45,9 +45,17 @@ pub(crate) fn augmented_path() -> String {
     let inherited = std::env::var("PATH").unwrap_or_default();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
-    for entry in canonical.iter().map(|s| s.to_string()).chain(
-        inherited.split(':').filter(|s| !s.is_empty()).map(|s| s.to_string()),
-    ) {
+    // nvm node bin dirs first: an nvm-managed claude/node/git-helpers won't be
+    // on the GUI app's launchd PATH otherwise (same gap binresolve closes).
+    let nvm_dirs: Vec<String> = crate::binresolve::nvm_node_bin_dirs()
+        .into_iter()
+        .filter_map(|p| p.to_str().map(String::from))
+        .collect();
+    for entry in nvm_dirs
+        .into_iter()
+        .chain(canonical.iter().map(|s| s.to_string()))
+        .chain(inherited.split(':').filter(|s| !s.is_empty()).map(|s| s.to_string()))
+    {
         if seen.insert(entry.clone()) {
             out.push(entry);
         }
