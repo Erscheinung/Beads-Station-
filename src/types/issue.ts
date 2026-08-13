@@ -108,6 +108,20 @@ export async function bdClaim(repoPath: string, id: string): Promise<void> {
   await safeInvoke<void>('bd_claim', { repoPath, id }, { rethrow: true });
 }
 
+/** `bd create <title> -t task -p <priority>` — Phase 9 palette "New issue".
+ *  Returns the new issue id. `priority` defaults to "2" backend-side. */
+export async function bdCreate(
+  repoPath: string,
+  title: string,
+  priority?: string,
+): Promise<string> {
+  return (await safeInvoke<string>(
+    'bd_create',
+    { repoPath, title, priority: priority ?? null },
+    { rethrow: true },
+  ))!;
+}
+
 /** `bd update <id> --status <status>` — set the issue status to one of open/in_progress/blocked/closed. */
 export async function bdSetStatus(
   repoPath: string,

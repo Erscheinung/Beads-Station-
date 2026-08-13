@@ -1,0 +1,89 @@
+/* Phase 9 (Code-ky4.9) — command palette styling.
+ * cmdk is headless; these rules dress its <Command.Dialog> with the app's
+ * --bs-* tokens. Dark by default; inherits the light layer automatically when
+ * the shell root carries .du-theme (no purple, per house style). */
+
+.bs-palette-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1000;
+}
+
+.bs-palette-content {
+  position: fixed;
+  top: 18vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(640px, 92vw);
+  z-index: 1001;
+}
+
+.bs-palette {
+  background: var(--bs-bg-elev);
+  border: 1px solid var(--bs-border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  font-family: var(--du-font-sans, inherit);
+  color: var(--bs-fg);
+}
+
+.bs-palette [cmdk-input] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid var(--bs-border);
+  background: transparent;
+  color: var(--bs-fg);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+}
+
+.bs-palette [cmdk-input]::placeholder {
+  color: var(--bs-fg-faint);
+}
+
+.bs-palette [cmdk-list] {
+  max-height: 340px;
+  overflow: auto;
+  padding: 6px;
+}
+
+.bs-palette [cmdk-group-heading] {
+  padding: 8px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--bs-fg-faint);
+}
+
+.bs-palette [cmdk-item] {
+  display: flex;
+  align-items: center;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--bs-fg);
+  cursor: pointer;
+  user-select: none;
+}
+
+.bs-palette [cmdk-item][data-selected='true'] {
+  background: color-mix(in srgb, var(--bs-blue) 18%, var(--bs-bg-elev));
+}
+
+.bs-palette [cmdk-item][data-disabled='true'] {
+  color: var(--bs-fg-faint);
+  cursor: not-allowed;
+}
+
+.bs-palette [cmdk-empty] {
+  padding: 16px 10px;
+  font-size: 13px;
+  color: var(--bs-fg-muted);
+  text-align: center;
+}

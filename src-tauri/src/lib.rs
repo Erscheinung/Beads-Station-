@@ -105,6 +105,7 @@ pub fn run() {
             bd::bd_claim,
             bd::bd_close,
             bd::bd_counts,
+            bd::bd_create,
             bd::bd_gate_list,
             bd::bd_gate_resolve,
             bd::bd_git_branch,

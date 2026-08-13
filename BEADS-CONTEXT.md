@@ -698,6 +698,24 @@ The umbrella P1 for the whole RV4/RV5 arc. Its 6 phase tickets + Phase 7 were al
 
 ---
 
+## Phase 9 — Command palette + vim keybindings (2026-08-13, CLOSED)
+
+The vim keymap was **already shipped** (Phase 4, `src/hooks/useVimNav.ts`): j/k/Enter/o in the sidebar issue list + h/l, gg/G, zR/zM, leader chords, all window-event driven and unit-tested. Phase 9's vim half was verify-and-note, not a rebuild. The real work was the command palette.
+
+**Palette (new).** Added `cmdk`. `src/state/palette.ts` — open/close external store (mirror of `vim.ts`; also flips the previously-unused vim `'command'` mode, mirrored on `window.__bsPalette`). `src/components/CommandPalette.tsx` + `.css` — a `cmdk` `<Command.Dialog>` styled with `--bs-*` tokens (dark; auto-light when the shell root carries `.du-theme`; no purple). Six commands: switch project (`useProjects().setActive`), new issue (see backend below), claim ready (`bdClaim` over `snap.ready`), grep issues (cmdk fuzzy over `snap.all`, select dispatches `issue:open` — same seam vim Enter/o uses), open Obsidian update (`dailyAppend('Manual note','')`, v1 = titled placeholder), toggle theme.
+
+**Opener — the Cmd+P landmine.** `Cmd+P` was already bound (arms the vim leader escape-hatch, tested + documented in `WhichKey`). Rather than rewrite it, the palette opens on **Cmd/Ctrl+K** (cmdk convention) + **leader-k** (`useVimNav.ts`, near the existing Cmd-P handler + in the leader switch). While the palette is open, `useVimNav` early-returns (reads `window.__bsPalette.open`) so nav keys don't leak behind the modal; cmdk owns arrows/Enter/Esc.
+
+**Theme toggle (new).** `src/state/theme.ts` — runtime light/dark: toggles the `.du-theme` class (which already carries the light token layer, `designer-light.css`) on the primary shell root in `App.tsx`, persisted to `localStorage['beads-station.theme']`. Before Phase 9 the light layer was reachable only via the `?ui=designer` skin.
+
+**New-issue backend (new).** No create flow existed. `bd_create(repo_path, title, priority?)` in `bd.rs` (`bd create <title> -t task -p 2 --json --actor`, parses the new id from JSON; routes through `run_bd`/the fork-storm semaphore) + registered in `lib.rs` + `bdCreate` FE wrapper in `types/issue.ts` + `bd_create` mock case.
+
+**Scope note.** The palette lives in the primary shell only — the `?ui=designer` skin has no vim/project wiring. "Open Obsidian update" is a titled placeholder in v1 (richer body editor deferred to Phase 10 polish).
+
+**Gates.** build clean (tsc+vite+emoji), vitest **63/63** (+9: palette 3, theme 3, vim-palette 3), Playwright live **27/27** (+5), cargo OK. Closing `Code-ky4.9` unblocked `Code-ky4.10` (Phase 10 — polish + signed dmg).
+
+---
+
 ## When to update this file
 
 - After every phase closes: append a one-liner to the phase table above.

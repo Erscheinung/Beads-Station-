@@ -26,6 +26,7 @@
     "@vscode/codicons": "^0.0.45",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
+    "cmdk": "^1.1.1",
     "diff": "^9.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

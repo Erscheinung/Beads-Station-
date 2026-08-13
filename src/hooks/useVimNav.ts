@@ -38,6 +38,7 @@
 import { useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { setFocused, setLeaderActive } from '../state/vim'
+import { openPalette } from '../state/palette'
 import {
   splitActive,
   closeActivePane,
@@ -131,6 +132,26 @@ export function useVimNav(): void {
     let leaderChordActive = false
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // ----- Phase 9: command palette -----
+      // Cmd/Ctrl+K opens the palette from ANY focus (blur editable first so the
+      // command lands cleanly, same idiom as the Cmd-P leader hatch below). We
+      // deliberately keep the palette OFF Cmd-P: that chord already arms the vim
+      // leader (a tested, documented binding) — Cmd+K is the cmdk convention.
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')
+          && !event.altKey && !event.shiftKey) {
+        const el = document.activeElement as HTMLElement | null
+        el?.blur?.()
+        openPalette()
+        event.preventDefault()
+        return
+      }
+      // While the palette is open, cmdk owns the keyboard (arrows/Enter/Esc +
+      // its own input). Stand down so no nav key leaks to the shell behind the
+      // modal. cmdk closes via onOpenChange, which flips this back.
+      if ((window as unknown as { __bsPalette?: { open: boolean } }).__bsPalette?.open) {
+        return
+      }
+
       // ----- RV1: terminal pane management (runs BEFORE the editable-target
       // bypass, so Esc can leave insert mode even while xterm has focus). -----
       const termMirror = (window as unknown as {
@@ -429,6 +450,12 @@ export function useVimNav(): void {
         switch (key) {
           case 'p':
             window.dispatchEvent(new CustomEvent('project:cycle'))
+            event.preventDefault()
+            return
+          case 'k':
+            // Phase 9 — leader-k opens the command palette (mnemonic with the
+            // Cmd+K chord). project:cycle stays on leader-p / Shift-Tab.
+            openPalette()
             event.preventDefault()
             return
           case '\\':

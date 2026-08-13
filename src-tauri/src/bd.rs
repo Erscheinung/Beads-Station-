@@ -274,6 +274,35 @@ pub async fn bd_list(
 
 // ---------- writes (Phase 3) ----------
 
+/// `bd create <title> -t task -p <priority> --json --actor "Beads Station"` —
+/// creates a new task and returns its parsed id. Phase 9 (Code-ky4.9): the
+/// command palette's "New issue" command. `priority` defaults to "2" (medium)
+/// when None; bd accepts "0"-"4" or "P0"-"P4". Returns the new issue id so the
+/// FE can surface it / refresh.
+#[tauri::command]
+pub async fn bd_create(
+    repo_path: String,
+    title: String,
+    priority: Option<String>,
+) -> Result<String, String> {
+    require_nonempty("title", &title)?;
+    let prio = priority.unwrap_or_else(|| "2".to_string());
+    let stdout = run_bd(
+        &repo_path,
+        &[
+            "create", &title, "-t", "task", "-p", &prio, "--json", "--actor", ACTOR,
+        ],
+    )
+    .await?;
+    // `bd create --json` emits a single issue object; pull its id.
+    let v: serde_json::Value = serde_json::from_slice(&stdout)
+        .map_err(|e| format!("failed to parse bd create JSON: {e}"))?;
+    v.get("id")
+        .and_then(|id| id.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "bd create JSON missing 'id'".to_string())
+}
+
 /// `bd update <id> --claim --actor "Beads Station"` — atomically sets
 /// assignee=Beads Station and status=in_progress. Idempotent if the
 /// issue is already claimed by us.

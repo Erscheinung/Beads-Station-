@@ -119,6 +119,12 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return { path: `/tmp/beads-daily/2026-08-12.md`, date: '2026-08-12', created: title === 'first' }
     }
 
+    // --- Phase 9 (Code-ky4.9): command palette. bd_create returns the new
+    //     issue id (string); bd_claim + daily_append already covered (claim
+    //     falls through to void, daily_append has a case above). ---
+    case 'bd_create':
+      return 'Code-new1'
+
     // --- Code-9ud: Intelligent Conductor. conductor_start/stop are
     //     fire-and-forget void; live status is pushed via __bsMockEmit
     //     ('conductor_status', …) in the spec, flowing to the app's listen()

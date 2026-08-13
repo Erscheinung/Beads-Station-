@@ -33,6 +33,7 @@ vi.mock('../components/TerminalPanes', () => ({
 
 import { useVimNav } from './useVimNav'
 import { setFocused, setLeaderActive } from '../state/vim'
+import { closePalette } from '../state/palette'
 
 function Harness() {
   useVimNav()
@@ -92,5 +93,55 @@ describe('useVimNav — RV3.4 Cmd-P leader escape hatch', () => {
     press('b')
     expect(vimMirror().focused).toBe('board')
     expect(vimMirror().leaderActive).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Phase 9 (Code-ky4.9) — command palette open bindings.
+//   Cmd/Ctrl+K opens from any focus; leader-k opens via the leader switch.
+//   Cmd+P must still arm the leader (NOT open the palette) — no regression.
+// ---------------------------------------------------------------------------
+interface PaletteMirror {
+  open: boolean
+}
+function paletteMirror(): PaletteMirror {
+  return (window as unknown as { __bsPalette: PaletteMirror }).__bsPalette
+}
+
+describe('useVimNav — Phase 9 palette open', () => {
+  beforeEach(() => {
+    setLeaderActive(false)
+    setFocused('board')
+    closePalette()
+  })
+  afterEach(() => {
+    closePalette()
+    setLeaderActive(false)
+  })
+
+  it('Cmd+K opens the palette even while an input holds focus', () => {
+    const { getByTestId } = render(<Harness />)
+    const input = getByTestId('chat-input') as HTMLInputElement
+    input.focus()
+    expect(paletteMirror().open).toBe(false)
+    press('k', { metaKey: true })
+    expect(paletteMirror().open).toBe(true)
+    expect(document.activeElement).not.toBe(input)
+  })
+
+  it('leader-k opens the palette', () => {
+    render(<Harness />)
+    press(' ') // arm leader (board focus, bare Space arms)
+    expect(vimMirror().leaderActive).toBe(true)
+    press('k')
+    expect(paletteMirror().open).toBe(true)
+    expect(vimMirror().leaderActive).toBe(false)
+  })
+
+  it('Cmd+P still arms leader and does NOT open the palette', () => {
+    render(<Harness />)
+    press('p', { metaKey: true })
+    expect(vimMirror().leaderActive).toBe(true)
+    expect(paletteMirror().open).toBe(false)
   })
 })

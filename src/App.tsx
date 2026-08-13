@@ -12,8 +12,10 @@ import { Dashboard } from './components/Dashboard'
 import { WhichKey } from './components/WhichKey'
 import { DebugOverlay } from './components/DebugOverlay'
 import { MorningConfirm, shouldConfirm, recordConfirmation } from './components/MorningConfirm'
+import { CommandPalette } from './components/CommandPalette'
 import { useProjects } from './state/projects'
 import { useVim, setFocused } from './state/vim'
+import { useTheme } from './state/theme'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
@@ -22,6 +24,7 @@ import { DesignerShell } from './components/designer/DesignerShell'
 export default function App() {
   useVimNav()
   const vim = useVim()
+  const theme = useTheme()
   const { projects, activeId, setActive, refresh, loaded } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
@@ -200,7 +203,7 @@ export default function App() {
 
   return (
     <BdLiveProvider>
-    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: `${sidebarCollapsed ? 0 : sidebarWidth}px 1fr`, gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
+    <div className={`bs-grid-1px${theme === 'light' ? ' du-theme' : ''}`} style={{ display: 'grid', gridTemplateColumns: `${sidebarCollapsed ? 0 : sidebarWidth}px 1fr`, gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
       <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: sidebarCollapsed ? 'none' : 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
@@ -279,6 +282,7 @@ export default function App() {
       </div>
       <WhichKey />
       <IssueDetail repoPath={active.path} />
+      <CommandPalette repoPath={active.path} />
       {import.meta.env.DEV && <DebugOverlay />}
       {!needsConfirm && <PermissionModePicker projectId={active.id} />}
       {needsConfirm && (
