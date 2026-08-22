@@ -138,6 +138,9 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<StartStatus>('pending')
   const [stderrCount, setStderrCount] = useState(0)
+  // Respawn attempt counter — resets to 0 on a successful frame (session live).
+  // Capped at 3 so a persistent exit loop (bad auth, wrong cwd) stops after 3.
+  const respawnAttemptsRef = useRef(0)
   const vim = useVim()
   const inputRef = useRef<HTMLInputElement | null>(null)
 
@@ -198,6 +201,8 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       // (startup diagnostic, initial stderr, session-id) are lost to the race.
       await safeListen<Frame>(`claude_event:${bridge}`, e => {
         const frame = e.payload
+        // Session is alive — reset the respawn counter.
+        respawnAttemptsRef.current = 0
         // Always feed the usage accumulator; it ignores frames it can't use.
         accumulateUsage(bridge, frame)
         if (isHookFrame(frame)) {
@@ -218,16 +223,34 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
         setStderrCount(c => c + 1)
       }, signal)
       // Code-key: listen for child-exit status to trigger respawn.
+      // Use the resumeKey from the outer scope so respawn goes through the
+      // same persisted-id logic as the initial mount (not a stale closure).
+      const resumeKey = `bs.claude.session:${bridge}`
       await safeListen<string>(`claude_status:${bridge}`, e => {
         if (e.payload === 'exited') {
+          respawnAttemptsRef.current += 1
+          if (respawnAttemptsRef.current > 3) {
+            appendFrame({ _kind: 'stderr', line: '[session exited — too many respawn attempts, giving up]' })
+            setStderrCount(c => c + 1)
+            setStatus('failed')
+            return
+          }
           setStatus('failed')
           appendFrame({ _kind: 'stderr', line: '[session exited — respawning…]' })
           setStderrCount(c => c + 1)
-          invoke('claude_start', {
-            projectId: bridge, cwd,
-            sessionId: sessionId || undefined,
-            permissionMode: permissionMode ?? 'acceptEdits',
-          }).catch(err => console.error('[ClaudeChat] auto-respawn failed', err))
+          // Clear any persisted session id before respawn: if the exit was
+          // caused by "Session ID already in use" (another terminal owns it),
+          // re-passing the same id would loop forever.
+          localStorage.removeItem(resumeKey)
+          const delay = Math.min(500 * respawnAttemptsRef.current, 2000)
+          setTimeout(() => {
+            invoke('claude_start', {
+              projectId: bridge, cwd,
+              sessionId: '',
+              permissionMode: permissionMode ?? 'acceptEdits',
+              resume: false,
+            }).catch(err => console.error('[ClaudeChat] auto-respawn failed', err))
+          }, delay)
         }
       }, signal)
       // Code-lbi: replay scrollback ring so frames emitted before listener
@@ -245,7 +268,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
 
       if (signal.aborted) return
       // Code-4je: check for a persisted CLI-assigned session_id to resume.
-      const resumeKey = `bs.claude.session:${bridge}`
+      // resumeKey declared above (shared with the exit-monitor listener).
       const persistedSid = localStorage.getItem(resumeKey)
       const useResume = !!persistedSid
       const startSid = persistedSid ?? sid
