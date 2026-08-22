@@ -40,3 +40,17 @@ export function conductorStart(
 export function conductorStop(): Promise<void> {
   return invoke<void>('conductor_stop');
 }
+
+/** DU3 (Code-d7j) — the Designer-UI tier modes. Everyday = Sonnet/medium
+ *  default, Heavy = Opus/xhigh default. */
+export type ConductorTier = 'everyday' | 'heavy';
+
+/**
+ * Set the conductor's DEFAULT tier ceiling (the tier an unlabeled bead gets).
+ * A per-bead `size:`/`model:` label still overrides this. A running loop picks
+ * up the new floor on its next tick — no restart. Returns the resolved tier tag
+ * ("S" | "M" | "L").
+ */
+export function conductorSetDefaultTier(tier: ConductorTier): Promise<string> {
+  return invoke<string>('conductor_set_default_tier', { tier });
+}

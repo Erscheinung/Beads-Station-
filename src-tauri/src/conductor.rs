@@ -91,17 +91,53 @@ impl Tier {
     }
 }
 
+/// DU3 (Code-d7j) — the operator's default tier ceiling, set by the Designer-UI
+/// Everyday/Heavy toggle. This is the tier a bead gets when it carries NO size
+/// label; a per-bead `size:`/`model:` label still wins over it (safety
+/// principle: explicit-per-bead beats global default). Default `Small`
+/// preserves the pre-DU3 cheap-by-default posture until an operator opts in.
+///
+///   Everyday -> Medium (Sonnet)  ·  Heavy -> Large (Opus/xhigh)
+///
+/// Stored as an atomic so the tokio pulse loop reads it without a lock. Set via
+/// the `conductor_set_default_tier` command; the running loop picks up the new
+/// floor on its next tick (no restart needed).
+static DEFAULT_TIER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+impl Tier {
+    fn from_u8(v: u8) -> Tier {
+        match v {
+            1 => Tier::Medium,
+            2 => Tier::Large,
+            _ => Tier::Small,
+        }
+    }
+    fn as_u8(self) -> u8 {
+        match self {
+            Tier::Small => 0,
+            Tier::Medium => 1,
+            Tier::Large => 2,
+        }
+    }
+}
+
+/// The current operator default tier (loaded from DEFAULT_TIER).
+fn default_tier() -> Tier {
+    Tier::from_u8(DEFAULT_TIER.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Resolve the work tier from a bead's labels. Precedence:
 ///   1. An explicit `model:<name>` label — per-bead override wins outright
 ///      (returns None for the tier but Some(model) so the caller uses it raw).
 ///   2. A size label `size:S|M|L` (or the short `sz:` / bare `[S]`-style
 ///      `size-l`) → the matching tier.
-///   3. No size hint → Small (cheap-by-default).
+///   3. No size hint → the operator's DEFAULT_TIER floor (DU3 Everyday/Heavy
+///      toggle; itself defaults to Small = cheap-by-default).
 /// Returns (tier, explicit_model_override). `explicit_model_override` is
 /// `Some(name)` only for case 1; otherwise `None` and the tier's model is used.
 fn resolve_tier(labels: &[String]) -> (Tier, Option<String>) {
     let mut override_model: Option<String> = None;
-    let mut tier = Tier::Small;
+    let mut tier: Option<Tier> = None;
     for raw in labels {
         let l = raw.trim().to_ascii_lowercase();
         if let Some(m) = l.strip_prefix("model:") {
@@ -113,15 +149,16 @@ fn resolve_tier(labels: &[String]) -> (Tier, Option<String>) {
             .or_else(|| l.strip_prefix("sz:"))
             .or_else(|| l.strip_prefix("size-"))
         {
-            tier = match sz {
+            tier = Some(match sz {
                 "s" | "small" => Tier::Small,
                 "m" | "medium" | "med" => Tier::Medium,
                 "l" | "large" | "xl" => Tier::Large,
-                _ => tier,
-            };
+                _ => tier.unwrap_or_else(default_tier),
+            });
         }
     }
-    (tier, override_model)
+    // No explicit size label -> fall to the operator default tier.
+    (tier.unwrap_or_else(default_tier), override_model)
 }
 
 /// RV4.2 — max concurrent builder pulses fanned out across an epic's swarm in
@@ -687,13 +724,35 @@ pub async fn conductor_stop(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// DU3 (Code-d7j) — set the operator's default tier ceiling from the
+/// Everyday/Heavy toggle. `tier` is one of "everyday" | "heavy" (the UI's two
+/// modes) or the raw tier names "small" | "medium" | "large". Everyday maps to
+/// Medium (Sonnet), Heavy to Large (Opus). A running conductor loop picks up the
+/// new floor on its NEXT tick — no restart. Per-bead `size:`/`model:` labels
+/// still override this default outright.
+#[tauri::command]
+pub fn conductor_set_default_tier(tier: String) -> Result<String, String> {
+    let t = match tier.trim().to_ascii_lowercase().as_str() {
+        "everyday" | "medium" | "med" | "m" => Tier::Medium,
+        "heavy" | "large" | "l" | "xl" => Tier::Large,
+        "small" | "s" => Tier::Small,
+        other => return Err(format!("unknown tier: {other}")),
+    };
+    DEFAULT_TIER.store(t.as_u8(), std::sync::atomic::Ordering::Relaxed);
+    Ok(t.tag().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // The two tests below both mutate the process-global DEFAULT_TIER atomic.
+    // Rust runs tests concurrently, so guard them with a shared mutex to stop
+    // one test's default from leaking into the other's resolve_tier reads.
+    static TIER_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
-    fn resolve_interval_defaults_and_floors() {
-        assert_eq!(resolve_interval(None), DEFAULT_INTERVAL_SECS);
+    fn resolve_interval_defaults_and_floors() {        assert_eq!(resolve_interval(None), DEFAULT_INTERVAL_SECS);
         assert_eq!(resolve_interval(Some(0)), MIN_INTERVAL_SECS);
         assert_eq!(resolve_interval(Some(5)), MIN_INTERVAL_SECS);
         assert_eq!(resolve_interval(Some(60)), 60);
@@ -752,7 +811,12 @@ mod tests {
 
     #[test]
     fn resolve_tier_maps_size_labels() {
-        // Default (no size hint) -> Small (cheap-by-default).
+        let _g = TIER_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        // Explicit size labels are absolute — independent of the operator
+        // default tier. (The default-tier fallback is exercised separately in
+        // default_tier_toggle_moves_the_unlabeled_floor.)
+        conductor_set_default_tier("small".into()).unwrap();
+        // Default (no size hint) -> the Small operator default we just set.
         let (t, o) = resolve_tier(&["Beads-Station".into(), "perf".into()]);
         assert_eq!(t, Tier::Small);
         assert!(o.is_none());
@@ -764,6 +828,31 @@ mod tests {
         assert_eq!(resolve_tier(&["size-m".into()]).0, Tier::Medium);
         // Case-insensitive.
         assert_eq!(resolve_tier(&["SIZE:L".into()]).0, Tier::Large);
+    }
+
+    #[test]
+    fn default_tier_toggle_moves_the_unlabeled_floor() {
+        let _g = TIER_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        // DU3: Everyday=Medium, Heavy=Large. An UNLABELED bead follows the
+        // default; an explicitly-sized bead ignores it.
+        conductor_set_default_tier("everyday".into()).unwrap();
+        assert_eq!(resolve_tier(&["perf".into()]).0, Tier::Medium);
+        assert_eq!(resolve_tier(&["size:s".into()]).0, Tier::Small); // explicit wins
+
+        conductor_set_default_tier("heavy".into()).unwrap();
+        assert_eq!(resolve_tier(&["perf".into()]).0, Tier::Large);
+        assert_eq!(resolve_tier(&["size:m".into()]).0, Tier::Medium); // explicit wins
+
+        // A model: override still wins outright regardless of the default.
+        let (_, o) = resolve_tier(&["model:claude-opus-5".into()]);
+        assert_eq!(o.as_deref(), Some("claude-opus-5"));
+
+        // Reset so process-shared tests that assume Small aren't perturbed by
+        // ordering.
+        conductor_set_default_tier("small".into()).unwrap();
+
+        // Bad input rejected.
+        assert!(conductor_set_default_tier("bogus".into()).is_err());
     }
 
     #[test]

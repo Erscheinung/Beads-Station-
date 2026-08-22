@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import type { Issue } from '../../types/issue'
 import { BdLiveProvider } from '../../lib/BdLiveProvider'
 import { useBdSnapshot } from '../../lib/bdCache'
@@ -230,14 +230,24 @@ function GraphInner({ repoPath }: { repoPath: string }) {
 
 function Node({ node }: { node: Placed }) {
   const { issue, state, next, x, y } = node
+  const [hover, setHover] = useState(false)
   return (
     <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       style={{
         ...styles.node,
         left: x,
         top: y,
-        borderColor: next ? 'var(--bs-orange)' : 'var(--bs-border)',
-        boxShadow: next ? '0 0 0 2px color-mix(in srgb, var(--bs-orange) 35%, transparent)' : 'var(--bs-shadow-card)',
+        borderColor: next || hover ? 'var(--bs-orange)' : 'var(--bs-border)',
+        boxShadow: next
+          ? '0 0 0 2px color-mix(in srgb, var(--bs-orange) 35%, transparent)'
+          : hover
+            ? '0 4px 14px color-mix(in srgb, var(--bs-orange) 22%, transparent)'
+            : 'var(--bs-shadow-card)',
+        transform: hover ? 'translateY(-2px)' : 'translateY(0)',
+        // DU4 motion polish — lift + accent on hover; keeps the NEXT ring.
+        transition: 'transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease',
       }}
       title={issue.title}
     >

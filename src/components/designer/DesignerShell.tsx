@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import '../../theme/designer-light.css'
 import { BeadGraph } from './BeadGraph'
 import { GateCockpit } from './GateCockpit'
 import { SensorsPanel } from './SensorsPanel'
 import { ConductorControl } from './ConductorControl'
+import { ActiveAgents } from './ActiveAgents'
+import { Timeline } from './Timeline'
+import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
 
 type Tier = 'everyday' | 'heavy'
@@ -27,6 +30,16 @@ export function DesignerShell() {
 
   const meta = TIER_META[tier]
 
+  // DU3 (Code-d7j) — the toggle drives BOTH the ACTIVE TIER card (local state)
+  // AND the conductor's default tier ceiling (Everyday=Sonnet/medium,
+  // Heavy=Opus/xhigh). Per-bead size/model labels still override the default.
+  // Fire-and-forget: the setting is a cheap atomic write on the Rust side, and
+  // a failure (e.g. no backend in the vite mock) must not block the UI toggle.
+  const selectTier = useCallback((next: Tier) => {
+    setTier(next)
+    void conductorSetDefaultTier(next).catch(() => {})
+  }, [])
+
   return (
     <div className="du-theme" style={styles.root}>
       {/* ── Top bar ── */}
@@ -38,13 +51,13 @@ export function DesignerShell() {
         <div style={styles.tierToggle} role="group" aria-label="Workflow tier">
           <button
             style={{ ...styles.tierBtn, ...(tier === 'everyday' ? styles.tierBtnActive : {}) }}
-            onClick={() => setTier('everyday')}
+            onClick={() => selectTier('everyday')}
           >
             Everyday
           </button>
           <button
             style={{ ...styles.tierBtn, ...(tier === 'heavy' ? styles.tierBtnActive : {}) }}
-            onClick={() => setTier('heavy')}
+            onClick={() => selectTier('heavy')}
           >
             Heavy
           </button>
@@ -95,7 +108,7 @@ export function DesignerShell() {
           <div style={styles.panelDivider} />
           <p style={styles.panelLabel}>ACTIVE AGENTS</p>
           <div id="du-agents-panel" style={styles.panelPlaceholder}>
-            {/* DU3 mounts ActiveAgents here */}
+            <ActiveAgents />
           </div>
         </aside>
       </div>
@@ -108,13 +121,49 @@ export function DesignerShell() {
 
 // Footer driven by the shared conductor_status subscription — one source of
 // truth with ConductorControl (both read useConductorStatus).
+//
+// DU4 (Code-kp4) — the "Claude is awake" heartbeat. The dot goes green while a
+// pulse landed recently (< HEARTBEAT_FRESH_MS ago) and dims once the loop is
+// stopped or has gone quiet, so a glance at the footer tells you whether Claude
+// is still breathing. A 1s tick re-evaluates freshness even between pulses (the
+// status event only fires on a pulse, so without the tick a fresh dot would
+// never decay to dim on its own).
+const HEARTBEAT_FRESH_MS = 120_000
+
 function ConductorFooter() {
   const status = useConductorStatus()
+  const [now, setNow] = useState(() => Date.now())
+
+  const stopped = status == null || status.state === 'stopped'
+
+  useEffect(() => {
+    if (stopped) return
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [stopped])
+
   const pres = statusPresentation(status)
+  const lastPulse = status?.last_pulse_ms ?? null
+  const fresh = lastPulse != null && now - lastPulse < HEARTBEAT_FRESH_MS && !stopped
+
+  const dot = fresh ? 'var(--bs-green)' : 'var(--bs-fg-faint)'
+  const text = stopped
+    ? pres.text
+    : fresh
+      ? `Claude is awake · ${pres.text}`
+      : `${pres.text} · resting`
+
   return (
     <footer style={styles.footer}>
-      <span style={{ ...styles.footerDot, background: pres.dot }} />
-      <span style={styles.footerText}>{pres.text}</span>
+      <span
+        style={{
+          ...styles.footerDot,
+          background: dot,
+          // Soft breathing pulse only while genuinely fresh.
+          animation: fresh ? 'du-heartbeat 1.8s ease-in-out infinite' : 'none',
+        }}
+      />
+      <span style={styles.footerText}>{text}</span>
     </footer>
   )
 }
@@ -124,6 +173,13 @@ function CenterView({ nav }: { nav: NavItem }) {
     return (
       <div id="du-bead-graph" style={styles.graphSlot}>
         <BeadGraph />
+      </div>
+    )
+  }
+  if (nav === 'timeline') {
+    return (
+      <div id="du-timeline" style={styles.graphSlot}>
+        <Timeline />
       </div>
     )
   }

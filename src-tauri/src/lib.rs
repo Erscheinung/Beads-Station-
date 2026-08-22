@@ -129,6 +129,7 @@ pub fn run() {
             claude::claude_start,
             conductor::conductor_start,
             conductor::conductor_stop,
+            conductor::conductor_set_default_tier,
             daily::daily_append,
             fs::list_dir,
             fs::read_file,

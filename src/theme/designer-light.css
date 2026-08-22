@@ -54,3 +54,10 @@
 .du-theme * {
   box-sizing: border-box;
 }
+
+/* DU4 (Code-kp4) — footer heartbeat pulse. Applied inline only while a pulse
+ * is fresh; a soft breathe on the "Claude is awake" dot. */
+@keyframes du-heartbeat {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(0.82); }
+}
