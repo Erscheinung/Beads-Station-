@@ -716,7 +716,27 @@ The vim keymap was **already shipped** (Phase 4, `src/hooks/useVimNav.ts`): j/k/
 
 ---
 
-## When to update this file
+## Track A — Chat / backend stability (2026-08-22, CLOSED)
+
+Six P0/P1 bugs in the claude session bridge, all closed in commit `68f2abd`.
+
+**Code-lbi (P0) — listener race + scrollback buffer.** `claude_event`/`raw`/`stderr` listeners were registered AFTER `claude_start` in `ClaudeChat.tsx`, losing early frames (startup diagnostic, session preamble). Fix: all three `safeListen` calls moved before `claude_start`. Rust side: added `SCROLLBACK: HashMap<String, VecDeque<Value>>` (64-frame ring per bridge) in `claude.rs`; stdout reader pushes each parsed frame in; new `claude_get_scrollback` Tauri command lets a late/remounting listener replay missed frames.
+
+**Code-raa (P0) — reconcile reaps legacy session.** `claude_reconcile` called with only `allAgentBridges()` — never including the legacy bottom-chat bridge (== `active.id`). The legacy session was reaped ~500ms after mount; next send got "session not started". Fix: `App.tsx` now builds `liveBridges` as `[...allAgentBridges(), active?.id]` (non-null) before calling reconcile.
+
+**Code-60n (P1) — chat pane end-to-end.** Resolved by lbi + raa.
+
+**Code-key (P1) — child-exit monitor.** Stdout EOF and read-errors now evict the session from `SESSIONS` and emit `claude_status:<pid> = 'exited'`. `ClaudeChat.tsx` listens for `claude_status` and auto-respawns on `'exited'`. `send()` respawn guard broadened from `msg.includes('session dead')` to also cover `'session not started'` (reconcile-evicted sessions).
+
+**Code-4je (P1) — deterministic resume.** CLI ignores passed `--session-id`; emits its own in the `system/init` frame. Rust stdout reader now captures `session_id` from that frame and overwrites `ClaudeSession.session_id`. New `claude_get_session_id` command lets the FE read it back. `claude_start` gains a `resume: Option<bool>` param — when `true`, passes `--resume <id>` instead of `--session-id`. FE persists the CLI-assigned id to `localStorage` keyed by bridge and uses `resume:true` on subsequent mounts.
+
+**Code-1bw (P1) — fake-claude harness.** `scripts/fake-claude.sh` — executable stub emitting a 2-turn scripted stream-json session (init, assistant, result, repeat) then EOF. `mockIpc.ts` gains explicit routes for all `claude_*` commands; `claude_get_scrollback` returns `[]`; `claude_get_session_id` returns `null`. `fixtures.ts` gains `fakeClaudioFrames()` helper. 5 new Playwright specs in `tests/live/claude-harness.spec.ts`: streaming renders, two turns, exit-monitor respawn, agent-pane isolation, stderr render.
+
+**Gates.** build clean (tsc+vite+emoji), cargo clean, vitest **63/63**, Playwright live **32/32** (+5). Pushed to `origin/r12-live-verify`.
+
+**Next ready work:** Track B (designer UI polish) or `Code-m8x` (manual WKWebView smoke of real claude session).
+
+
 
 - After every phase closes: append a one-liner to the phase table above.
 - When a hardcode is removed or a configurable replaces a literal: update the "What's already on disk" hardcodes block.
