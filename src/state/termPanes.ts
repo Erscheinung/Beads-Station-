@@ -258,6 +258,14 @@ export function allAgentBridges(): string[] {
   return out
 }
 
+/** Return the ptyId of the active shell pane, or null if active pane is an agent/filenav. */
+export function resolveActiveShellPtyId(): number | null {
+  const tab = activeTab(state)
+  const active = findLeaf(tab.root, tab.activePaneId)
+  if (active == null || active.agent != null || active.fileNav != null) return null
+  return active.ptyId ?? null
+}
+
 function findLeaf(node: Node, paneId: string): Leaf | null {
   if (node.kind === 'leaf') return node.paneId === paneId ? node : null
   return findLeaf(node.a, paneId) ?? findLeaf(node.b, paneId)

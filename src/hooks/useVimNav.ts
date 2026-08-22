@@ -246,6 +246,32 @@ export function useVimNav(): void {
               event.preventDefault()
               return
             }
+            // C-w + / - / = / _ — grow/shrink/reset/maximize terminal height.
+            // Mirrors LazyVim/tmux muscle memory; App.tsx owns the state.
+            if (k === '+') {
+              window.dispatchEvent(new CustomEvent('terminal:resize', { detail: { delta: 1 } }))
+              pendingCw = false
+              event.preventDefault()
+              return
+            }
+            if (k === '-') {
+              window.dispatchEvent(new CustomEvent('terminal:resize', { detail: { delta: -1 } }))
+              pendingCw = false
+              event.preventDefault()
+              return
+            }
+            if (k === '=') {
+              window.dispatchEvent(new CustomEvent('terminal:resize', { detail: { delta: 'reset' } }))
+              pendingCw = false
+              event.preventDefault()
+              return
+            }
+            if (k === '_') {
+              window.dispatchEvent(new CustomEvent('terminal:resize', { detail: { delta: 'max' } }))
+              pendingCw = false
+              event.preventDefault()
+              return
+            }
           }
           pendingCw = false // expired / unmatched; fall through
         }
@@ -263,7 +289,7 @@ export function useVimNav(): void {
         if (termMirror?.activeIsFileNav && !ctrl) {
           const leaderArmed = !!(window as unknown as { __bsVim?: { leaderActive: boolean } })
             .__bsVim?.leaderActive
-          const navKeys = ['j', 'k', 'h', 'l', 'g', 'G', 'Enter', 's', 'y']
+          const navKeys = ['j', 'k', 'h', 'l', 'g', 'G', 'Enter', 's', 'y', 'n']
           if (!leaderArmed && k !== ' ' && k !== 'Escape' && navKeys.includes(k)) {
             return // do not preventDefault — the FileTree's handler consumes it
           }

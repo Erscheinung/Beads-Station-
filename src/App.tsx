@@ -28,6 +28,10 @@ export default function App() {
   const { projects, activeId, setActive, refresh, loaded } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
+  const [terminalHeight, setTerminalHeight] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('beads-station.terminalHeight'))
+    return saved >= 80 && saved <= 700 ? saved : 280
+  })
   // Sidebar is collapsible + drag-resizable (was a fixed 320px). Width persists
   // in localStorage; collapse toggles via leader-b. Clamped to a sane range.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -80,9 +84,29 @@ export default function App() {
     return () => window.removeEventListener('sidebar:toggle', onToggle)
   }, [])
 
+  // C-w +/-/=/_  hotkeys dispatch terminal:resize {delta} from useVimNav.
+  useEffect(() => {
+    const STEP = 40
+    const DEFAULT_H = 280
+    const onResize = (e: Event) => {
+      const delta = (e as CustomEvent<{ delta: number | 'reset' | 'max' }>).detail?.delta
+      if (delta === 'reset') { setTerminalHeight(DEFAULT_H); return }
+      if (delta === 'max') { setTerminalHeight(700); return }
+      if (typeof delta === 'number') {
+        setTerminalHeight(h => Math.min(700, Math.max(80, h + delta * STEP)))
+      }
+    }
+    window.addEventListener('terminal:resize', onResize)
+    return () => window.removeEventListener('terminal:resize', onResize)
+  }, [])
+
   useEffect(() => {
     localStorage.setItem('beads-station.sidebarWidth', String(sidebarWidth))
   }, [sidebarWidth])
+
+  useEffect(() => {
+    localStorage.setItem('beads-station.terminalHeight', String(terminalHeight))
+  }, [terminalHeight])
 
   const startSidebarResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -99,6 +123,23 @@ export default function App() {
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }, [sidebarWidth])
+
+  const startTerminalResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startY = e.clientY
+    const startH = terminalHeight
+    const onMove = (ev: MouseEvent) => {
+      // Dragging up (negative delta) grows the terminal.
+      const next = Math.min(700, Math.max(80, startH - (ev.clientY - startY)))
+      setTerminalHeight(next)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [terminalHeight])
 
   // RV2 — <leader>a spawns a new agent pane on the active project. useVimNav
   // dispatches 'agent:spawn' (decoupled from project state); we resolve the
@@ -194,7 +235,7 @@ export default function App() {
     return <Dashboard />
   }
 
-  const terminalHeight = terminalCollapsed ? 24 : 280
+  const activeTerminalHeight = terminalCollapsed ? 24 : terminalHeight
 
   // Show MorningConfirm at most once per app launch: the first unconfirmed
   // project prompts, and confirming it seeds confirmedFor with every project
@@ -203,7 +244,7 @@ export default function App() {
 
   return (
     <BdLiveProvider>
-    <div className={`bs-grid-1px${theme === 'light' ? ' du-theme' : ''}`} style={{ display: 'grid', gridTemplateColumns: `${sidebarCollapsed ? 0 : sidebarWidth}px 1fr`, gridTemplateRows: '1fr 280px 22px', height: '100vh' }}>
+    <div className={`bs-grid-1px${theme === 'light' ? ' du-theme' : ''}`} style={{ display: 'grid', gridTemplateColumns: `${sidebarCollapsed ? 0 : sidebarWidth}px 1fr`, gridTemplateRows: `1fr ${activeTerminalHeight}px 22px`, height: '100vh' }}>
       <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: sidebarCollapsed ? 'none' : 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
@@ -223,14 +264,23 @@ export default function App() {
           </div>
           <div
             style={{
-              height: terminalHeight,
+              height: activeTerminalHeight,
               borderTop: '1px solid var(--bs-border)',
               display: 'flex',
               flexDirection: 'column',
               flexShrink: 0,
               transition: 'height 120ms ease',
+              position: 'relative',
             }}
           >
+            {/* Drag handle on the terminal's top border — mirrors sidebar resize. */}
+            {!terminalCollapsed && (
+              <div
+                onMouseDown={startTerminalResize}
+                title="Drag to resize terminal (C-w +/- to step)"
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 4, cursor: 'row-resize', zIndex: 5 }}
+              />
+            )}
             <button
               onClick={() => setTerminalCollapsed(c => !c)}
               style={{

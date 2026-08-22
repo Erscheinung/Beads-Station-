@@ -11,7 +11,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { flattenVisible, type FlatRow } from '../state/tree';
-import { resolveTargetAgentBridge } from '../state/termPanes';
+import { resolveTargetAgentBridge, resolveActiveShellPtyId } from '../state/termPanes';
 import { buildFileTree, isLoadingPlaceholder, type DirCache } from '../lib/fileTree';
 import { listDir, readFile, type FsFilePreview } from '../lib/fsBridge';
 
@@ -143,6 +143,22 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
     [],
   );
 
+  // Code-3yn — open the cursor path in nvim running in the active shell PTY.
+  const openInNvim = useCallback(
+    (path: string) => {
+      const ptyId = resolveActiveShellPtyId();
+      if (ptyId == null) {
+        setHint('no shell pane focused (switch to a terminal pane first)');
+        return;
+      }
+      // Send "nvim <path>\r" — same as typing the command in the shell.
+      invoke('pty_write', { id: ptyId, data: `nvim ${path}\r` })
+        .then(() => setHint(`nvim ${path.split('/').pop()}`))
+        .catch((e) => setHint(`nvim failed: ${String(e)}`));
+    },
+    [],
+  );
+
   // Activate the cursor row: dirs toggle, files preview.
   const activateCursor = useCallback(() => {
     const row = rows[cursor];
@@ -210,12 +226,20 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
           }
           break;
         }
+        case 'n': {
+          // Code-3yn — open cursor path in nvim in the active shell PTY.
+          e.preventDefault();
+          if (row && !isLoadingPlaceholder(row.node) && row.node.kind === 'file') {
+            openInNvim(row.node.id);
+          }
+          break;
+        }
       }
     };
     const el = parentRef.current;
     el?.addEventListener('keydown', onKey);
     return () => el?.removeEventListener('keydown', onKey);
-  }, [active, rows, cursor, expanded, activateCursor, toggleDir, sendToAgent]);
+  }, [active, rows, cursor, expanded, activateCursor, toggleDir, sendToAgent, openInNvim]);
 
   return (
     <div className="bs-filetree-wrap" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -296,7 +320,7 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
       )}
       {/* RV3-C — transient action hint + a discoverability footer for s/y. */}
       <div className="bs-filetree-foot">
-        {hint ?? 'l/Enter open · s send to agent · y yank path'}
+        {hint ?? 'l/Enter open · s send to agent · n nvim · y yank path'}
       </div>
     </div>
   );
