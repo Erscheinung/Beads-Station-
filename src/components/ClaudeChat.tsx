@@ -193,14 +193,81 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
         }
       }
       if (signal.aborted) return
+
+      // Code-lbi: register ALL listeners BEFORE claude_start so no early frames
+      // (startup diagnostic, initial stderr, session-id) are lost to the race.
+      await safeListen<Frame>(`claude_event:${bridge}`, e => {
+        const frame = e.payload
+        // Always feed the usage accumulator; it ignores frames it can't use.
+        accumulateUsage(bridge, frame)
+        if (isHookFrame(frame)) {
+          const hev = frameToHookEvent(frame)
+          if (hev) setHookEvents(h => [...h, hev].slice(-200))
+          // Don't push hook frames into the main scroll.
+          setStatus(s => (s === 'failed' ? s : 'frame'))
+          return
+        }
+        appendFrame(frame)
+        setStatus(s => (s === 'failed' ? s : 'frame'))
+      }, signal)
+      await safeListen<string>(`claude_event_raw:${bridge}`, e => {
+        appendFrame({ _kind: 'raw', line: String(e.payload) })
+      }, signal)
+      await safeListen<string>(`claude_stderr:${bridge}`, e => {
+        appendFrame({ _kind: 'stderr', line: String(e.payload) })
+        setStderrCount(c => c + 1)
+      }, signal)
+      // Code-key: listen for child-exit status to trigger respawn.
+      await safeListen<string>(`claude_status:${bridge}`, e => {
+        if (e.payload === 'exited') {
+          setStatus('failed')
+          appendFrame({ _kind: 'stderr', line: '[session exited — respawning…]' })
+          setStderrCount(c => c + 1)
+          invoke('claude_start', {
+            projectId: bridge, cwd,
+            sessionId: sessionId || undefined,
+            permissionMode: permissionMode ?? 'acceptEdits',
+          }).catch(err => console.error('[ClaudeChat] auto-respawn failed', err))
+        }
+      }, signal)
+      // Code-lbi: replay scrollback ring so frames emitted before listener
+      // registration (startup diagnostic, session preamble) are not lost.
+      try {
+        const buffered = await invoke<Frame[]>('claude_get_scrollback', { projectId: bridge })
+        if (!signal.aborted && buffered.length > 0) {
+          for (const frame of buffered) {
+            accumulateUsage(bridge, frame)
+            if (!isHookFrame(frame)) appendFrame(frame)
+          }
+          setStatus(s => (s === 'pending' ? 'frame' : s))
+        }
+      } catch (_) { /* non-fatal */ }
+
+      if (signal.aborted) return
+      // Code-4je: check for a persisted CLI-assigned session_id to resume.
+      const resumeKey = `bs.claude.session:${bridge}`
+      const persistedSid = localStorage.getItem(resumeKey)
+      const useResume = !!persistedSid
+      const startSid = persistedSid ?? sid
       try {
         await invoke('claude_start', {
           projectId: bridge,
           cwd,
-          sessionId: sid,
+          sessionId: startSid,
           permissionMode: permissionMode ?? 'acceptEdits',
+          resume: useResume,
         })
         if (!signal.aborted) setStatus('started')
+        // After start, give the init frame a moment to arrive then capture
+        // the CLI-assigned session_id and persist it for resume.
+        if (!signal.aborted && !useResume) {
+          setTimeout(async () => {
+            try {
+              const cliSid = await invoke<string | null>('claude_get_session_id', { projectId: bridge })
+              if (cliSid) localStorage.setItem(resumeKey, cliSid)
+            } catch (_) { /* non-fatal */ }
+          }, 2000)
+        }
       } catch (e) {
         console.error('claude_start failed', e)
         if (!signal.aborted) {
@@ -234,28 +301,6 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       } catch (e) {
         console.warn('[ClaudeChat] bd_prime failed (non-fatal)', e)
       }
-
-      await safeListen<Frame>(`claude_event:${bridge}`, e => {
-        const frame = e.payload
-        // Always feed the usage accumulator; it ignores frames it can't use.
-        accumulateUsage(bridge, frame)
-        if (isHookFrame(frame)) {
-          const hev = frameToHookEvent(frame)
-          if (hev) setHookEvents(h => [...h, hev].slice(-200))
-          // Don't push hook frames into the main scroll.
-          setStatus(s => (s === 'failed' ? s : 'frame'))
-          return
-        }
-        appendFrame(frame)
-        setStatus(s => (s === 'failed' ? s : 'frame'))
-      }, signal)
-      await safeListen<string>(`claude_event_raw:${bridge}`, e => {
-        appendFrame({ _kind: 'raw', line: String(e.payload) })
-      }, signal)
-      await safeListen<string>(`claude_stderr:${bridge}`, e => {
-        appendFrame({ _kind: 'stderr', line: String(e.payload) })
-        setStderrCount(c => c + 1)
-      }, signal)
     })()
     return () => {
       ac.abort()
@@ -399,10 +444,9 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       await invoke('claude_send', { projectId: bridge, text })
     } catch (e) {
       const msg = String(e)
-      // A dead session (child exited on a bad endpoint since it was started)
-      // surfaces as "session dead: ..." — the backend has already evicted it.
-      // Respawn once and retry the send so the user doesn't have to reload.
-      if (msg.includes('session dead')) {
+      // Code-key: broaden respawn trigger — "session dead" (broken pipe) OR
+      // "session not started" (reconcile evicted it) both mean we need to respawn.
+      if (msg.includes('session dead') || msg.includes('session not started')) {
         try {
           await invoke('claude_start', {
             projectId: bridge,

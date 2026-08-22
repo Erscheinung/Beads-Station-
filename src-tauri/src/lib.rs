@@ -119,6 +119,8 @@ pub fn run() {
             bd::bd_snapshot,
             claude::claude_approve,
             claude::claude_deny,
+            claude::claude_get_scrollback,
+            claude::claude_get_session_id,
             claude::claude_kill,
             claude::claude_kill_all,
             claude::claude_reconcile,

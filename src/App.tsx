@@ -182,10 +182,17 @@ export default function App() {
   const termState = useTermPanes()
   useEffect(() => {
     const t = window.setTimeout(() => {
-      invoke('claude_reconcile', { liveBridges: allAgentBridges() }).catch(() => {})
+      // Code-raa: include the legacy bottom-chat bridge (== active project id)
+      // so reconcile never reaps it. allAgentBridges() only covers agent panes.
+      const agentBridges = allAgentBridges()
+      const legacyBridge = active?.id
+      const liveBridges = legacyBridge
+        ? [...agentBridges, legacyBridge]
+        : agentBridges
+      invoke('claude_reconcile', { liveBridges }).catch(() => {})
     }, 500)
     return () => window.clearTimeout(t)
-  }, [termState])
+  }, [termState, active])
 
   // Memoized so their identity is stable across renders. Declared BEFORE the
   // early returns below (Rules of Hooks — a useCallback after a conditional

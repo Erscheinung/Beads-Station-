@@ -19,6 +19,7 @@
 // value in the existing `projectId` arg slot); only its meaning widened.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -28,6 +29,14 @@ use tauri::{Emitter, Window};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
+
+const SCROLLBACK_CAP: usize = 64;
+
+/// Per-bridge scrollback ring buffer. Stores the last SCROLLBACK_CAP parsed
+/// JSON frames so a late-mounting or re-mounting listener can replay them via
+/// claude_get_scrollback without losing the session preamble (Code-lbi).
+static SCROLLBACK: Lazy<Mutex<HashMap<String, VecDeque<Value>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 // Phase 2 still hardcodes the claude binary path. Phase 6 will make this
 // configurable via settings. Phase 2.5 routes the literal through
@@ -110,6 +119,8 @@ pub async fn claude_start(
     cwd: String,
     session_id: String,
     permission_mode: Option<String>,
+    // Code-4je: when true, pass --resume instead of --session-id.
+    resume: Option<bool>,
 ) -> Result<String, String> {
     // Code-urn fix: hold SESSIONS only for the O(1) idempotency check, then
     // DROP it before the child `.spawn()`. Holding the lock across the fork
@@ -178,8 +189,16 @@ pub async fn claude_start(
         .arg("--output-format=stream-json")
         .arg("--include-partial-messages")
         .arg("--include-hook-events")
-        .arg("--session-id")
-        .arg(&session_id)
+        // Code-4je: --resume replays transcript; --session-id is ignored by the
+        // CLI (it assigns its own). Only pass --resume when the caller confirmed
+        // the id came from the CLI (resume=true).
+        .args(if resume.unwrap_or(false) && !session_id.is_empty() {
+            vec!["--resume".to_string(), session_id.clone()]
+        } else if !session_id.is_empty() {
+            vec!["--session-id".to_string(), session_id.clone()]
+        } else {
+            vec![]
+        })
         .arg("--permission-mode")
         .arg(&mode)
         .arg("--add-dir")
@@ -268,8 +287,32 @@ pub async fn claude_start(
                                         "result" => {
                                             let _ = win.emit(&status_event_name, "awaiting-input");
                                         }
+                                        // Code-4je: the CLI emits its own session_id in
+                                        // the first system/init frame, ignoring our
+                                        // --session-id arg. Capture and overwrite so the
+                                        // FE can persist the CLI-assigned id and use
+                                        // --resume on the next mount.
+                                        "system" => {
+                                            if value.get("subtype").and_then(Value::as_str) == Some("init") {
+                                                if let Some(cli_sid) = value.get("session_id").and_then(Value::as_str) {
+                                                    let mut guard = SESSIONS.lock().await;
+                                                    if let Some(session) = guard.get_mut(&pid) {
+                                                        session.session_id = cli_sid.to_string();
+                                                    }
+                                                }
+                                            }
+                                        }
                                         _ => {}
                                     }
+                                }
+                                // Code-lbi: push to scrollback ring buffer.
+                                {
+                                    let mut sb = SCROLLBACK.lock().await;
+                                    let ring = sb.entry(pid.clone()).or_default();
+                                    if ring.len() >= SCROLLBACK_CAP {
+                                        ring.pop_front();
+                                    }
+                                    ring.push_back(value.clone());
                                 }
                                 let _ = win.emit(&event_name, value);
                             }
@@ -280,9 +323,17 @@ pub async fn claude_start(
                             }
                         }
                     }
-                    Ok(None) => break, // EOF
+                    Ok(None) => {
+                        // Code-key: PTY/stdout EOF means child exited. Evict from
+                        // SESSIONS and notify the FE so it can offer respawn.
+                        SESSIONS.lock().await.remove(&pid);
+                        let _ = win.emit(&status_event_name, "exited");
+                        break;
+                    }
                     Err(e) => {
                         let _ = win.emit(&raw_event_name, format!("[stdout read error] {e}"));
+                        SESSIONS.lock().await.remove(&pid);
+                        let _ = win.emit(&status_event_name, "exited");
                         break;
                     }
                 }
@@ -406,6 +457,7 @@ pub async fn claude_kill(project_id: String) -> Result<(), String> {
         let _ = session.child.start_kill();
         let _ = session.child.wait().await;
     }
+    SCROLLBACK.lock().await.remove(&project_id);
     Ok(())
 }
 
@@ -418,11 +470,33 @@ pub async fn kill_all_sessions() -> usize {
     let mut guard = SESSIONS.lock().await;
     let drained: Vec<ClaudeSession> = guard.drain().map(|(_, s)| s).collect();
     let n = drained.len();
+    drop(guard);
+    SCROLLBACK.lock().await.clear();
     for mut session in drained {
         let _ = session.child.start_kill();
         let _ = session.child.wait().await;
     }
     n
+}
+
+/// Code-4je — return the CLI-assigned session_id for a running bridge. The
+/// FE calls this after the first frame arrives (or after mount) to get the
+/// id it should persist and pass back as --resume on the next mount.
+#[tauri::command]
+pub async fn claude_get_session_id(project_id: String) -> Result<Option<String>, String> {
+    let guard = SESSIONS.lock().await;
+    Ok(guard.get(&project_id).map(|s| s.session_id.clone()))
+}
+
+/// Code-lbi — replay buffered frames to a late-mounting listener. Returns
+/// the last up-to-SCROLLBACK_CAP parsed JSON frames emitted for this bridge
+/// since it was started. The FE calls this immediately after registering its
+/// claude_event listener; replaying the ring closes the race between listener
+/// registration and early frames emitted during process startup.
+#[tauri::command]
+pub async fn claude_get_scrollback(project_id: String) -> Result<Vec<Value>, String> {
+    let sb = SCROLLBACK.lock().await;
+    Ok(sb.get(&project_id).map(|ring| ring.iter().cloned().collect()).unwrap_or_default())
 }
 
 #[tauri::command]
@@ -443,7 +517,7 @@ pub async fn claude_kill_all() -> Result<usize, String> {
 #[tauri::command]
 pub async fn claude_reconcile(live_bridges: Vec<String>) -> Result<usize, String> {
     let live: std::collections::HashSet<String> = live_bridges.into_iter().collect();
-    let stale: Vec<ClaudeSession> = {
+    let stale: Vec<(String, ClaudeSession)> = {
         let mut guard = SESSIONS.lock().await;
         let stale_keys: Vec<String> = guard
             .keys()
@@ -452,11 +526,15 @@ pub async fn claude_reconcile(live_bridges: Vec<String>) -> Result<usize, String
             .collect();
         stale_keys
             .into_iter()
-            .filter_map(|k| guard.remove(&k))
+            .filter_map(|k| guard.remove(&k).map(|s| (k, s)))
             .collect()
     };
     let n = stale.len();
-    for mut session in stale {
+    if n > 0 {
+        let mut sb = SCROLLBACK.lock().await;
+        for (k, _) in &stale { sb.remove(k); }
+    }
+    for (_, mut session) in stale {
         let _ = session.child.start_kill();
         let _ = session.child.wait().await;
     }

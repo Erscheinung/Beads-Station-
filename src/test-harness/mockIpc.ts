@@ -133,7 +133,26 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
     case 'conductor_stop':
       return null
 
-    // --- everything else is fire-and-forget void (claude_*, watcher_start,
+    // --- Code-1bw: claude bridge commands. claude_start/send/kill/kill_all/
+    //     reconcile/set_permission_mode are fire-and-forget void (the test
+    //     controls frame delivery via __bsMockEmit). claude_get_scrollback
+    //     and claude_get_session_id return empty/null so the app doesn't crash
+    //     on mount; tests push frames directly via __bsMockEmit. ---
+    case 'claude_start':
+    case 'claude_send':
+    case 'claude_kill':
+    case 'claude_kill_all':
+    case 'claude_reconcile':
+    case 'claude_set_permission_mode':
+    case 'claude_approve':
+    case 'claude_deny':
+      return null
+    case 'claude_get_scrollback':
+      return []
+    case 'claude_get_session_id':
+      return null
+
+    // --- everything else is fire-and-forget void (watcher_start,
     //     bd mutations, pty_write/resize/kill, set_status, etc.) ---
     default:
       return null
