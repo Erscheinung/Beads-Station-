@@ -738,6 +738,28 @@ Six P0/P1 bugs in the claude session bridge, all closed in commit `68f2abd`.
 
 
 
+## Track C — Cost / gate / pane polish (2026-08-23, CLOSED)
+
+Six tickets, commit `db2e957` on `r12-live-verify`. Gates: tsc clean, vitest (+3 x8p), build+audit-emoji clean, cargo check clean, Playwright live **33/33** (+1 x8p).
+
+**Code-ete (P2) — primer once per session.** `bd_prime` was re-injected as a `<system-reminder>` user message on every `ClaudeChat` mount (deps `[projectId,bridge,cwd,sessionId,permissionMode]`) = duplicated hidden context + cost. Fix in `ClaudeChat.tsx`: skip when `useResume` (a persisted CLI session id means the session already saw the rules) and guard the fresh path with a per-session-id `bs.claude.primed:<id>` localStorage flag (set for `startSid` immediately, and for the CLI-minted id once it lands via `resumeKey`).
+
+**Code-nfs (P2) — gate ApprovalCard on real gates.** `extractApproval` treated every assistant `tool_use` as a pending approval regardless of mode. Now takes `treatToolUseAsApproval` (= `permissionMode === 'default'`, the only mode where the CLI pauses); acceptEdits/plan/bypass auto-run so no card. Real `permission_request` frames still gate unconditionally. Threaded via a `gateToolUse` const through the 4 call sites (appendFrame GC, topmostPending, resolveApproval, render map).
+
+**Code-x5l (P3) — resolved variant renders.** The render map returned null the instant an approval left `pending`, so the `[ok] approved`/`[x] denied` line (ApprovalCard.tsx:38-51) was dead code. Added `isPermissionFrame` to `PendingApproval`: permission_request cards stay mounted through the resolved state (they have no rich-tree pair to fall back to); tool_use cards still unmount on resolve (they re-enter the tree as a paired item).
+
+**Code-u7b (P2) — stop skipping spaced repos.** Removed both `name.contains(' ')` skip guards in `projects.rs` (`scan_projects` pass 1 + pass 2). The Phase-2.5 "CLI mis-encodes spaced cwd" rationale was stale — `~/.claude/projects/` already holds valid encoded dirs for spaced repos (spaces become `-`), and the app launches with an explicit `--session-id` UUID so the transcript filename never depends on cwd spelling. Each inclusion is `tracing::info!`-logged.
+
+**Code-9d8 (P2) — Gateway spend aggregate.** New `src-tauri/src/spending.rs` -> `gateway_spending` Tauri command reads the cached Bearer JWT at `~/.config/gateway/spending-plugin-token.json` (exp-checked, 60s guard) and GETs `gateway.example.com` `/llm-proxy/client-api/v1/me/costs` + `/caps` via `ureq` (rustls + native-certs). Per the locked decision, OIDC/keychain refresh is NOT reimplemented — it relies on the `gateway-spending-plugin` statusline refreshing the cache out-of-band; returns `available:false` (row omitted) when the token is missing/expired/offline. `CostMeter.tsx` adds a right-aligned `day X/50 · mo Y/500 EUR` row polling every 5 min (the API self-declares a 3600s refresh interval). New `ureq` dep in `Cargo.toml`.
+
+**Code-x8p (P1, scoped) — per-project pane surface.** Reversed the RV1 "shells survive project switch" design. `termPanes.ts` now holds `PROJECTS: Map<projectId, TermPanesState>` + `activeProjectId`; new `setActiveProject(id, cwd)` stashes the outgoing surface and restores/lazily-creates the incoming one (the pristine boot surface is adopted for the first project). `allAgentBridges()` now walks ALL projects' states, not just the active tab, so a switch never makes `claude_reconcile` reap a hidden project's sessions. `App.tsx` swaps `setDefaultCwd` -> `setActiveProject` on active-project change. 3 unit tests + 1 live test (hidden-on-switch, restored-on-return).
+
+**Deferred (not this batch):** `Code-2a3` (scrollback replay verify), `Code-m8x` (WKWebView manual smoke), `Code-r7q` (overlay soak) — all display/runtime-bound, undriveable headless. `Code-ky4.8` (bracket->label migration).
+
+**Next ready work:** the manual/soak tail above, or Track B designer polish.
+
+
+
 - After every phase closes: append a one-liner to the phase table above.
 - When a hardcode is removed or a configurable replaces a literal: update the "What's already on disk" hardcodes block.
 - When a new locked decision is made: add a row to the decisions table.
