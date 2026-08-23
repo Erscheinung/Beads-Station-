@@ -210,15 +210,16 @@ fn scan_projects(app: &AppHandle) -> Result<Vec<Project>, String> {
         if is_blocklisted(&name) {
             continue;
         }
-        // Phase 2.5: Claude CLI's session-id transcript path encoding
-        // misbehaves on dirs with spaces — skip them until Phase 6 wires
-        // the JSONL replay path. This drops 'All Doors',
-        // 'AllDoors - May', 'AllDoors - May 12', 'Claude Code May Session',
-        // 'Dev Tools for UX Designers', 'Intelligent Apps SAC',
-        // 'Introductory Claude Session', 'UX Design Basics' from the tab list.
-        // 'GitHub-Org-UE' has no space and is kept.
+        // Code-u7b: previously skipped any dir whose name contained a space,
+        // on the Phase-2.5 assumption that the Claude CLI's cwd→transcript-path
+        // encoding broke on spaces. That assumption is stale: the CLI encodes a
+        // spaced cwd fine (spaces become '-', e.g. ~/.claude/projects/
+        // -Users-...-Dev-Tools-for-UX-Designers exists and resolves), and the
+        // app anyway launches with an explicit --session-id UUID, so the
+        // transcript filename never depends on the cwd spelling. Keep spaced
+        // repos; trace them so the inclusion is visible if the CLI ever regresses.
         if name.contains(' ') {
-            continue;
+            tracing::info!(repo = %name, "scan: including space-in-path repo (Code-u7b)");
         }
         if !has_git(&path) {
             continue;
@@ -256,11 +257,10 @@ fn scan_projects(app: &AppHandle) -> Result<Vec<Project>, String> {
         if is_blocklisted(&id) {
             continue;
         }
-        // Phase 2.5: also skip space-bearing additional repos. The
-        // session-id transcript-path quirk is the same regardless of
-        // whether the repo lives under ~/Code or elsewhere.
+        // Code-u7b: same rationale as pass 1 — the space-in-path skip was based
+        // on a stale CLI-encoding assumption. Keep the repo; trace inclusion.
         if id.contains(' ') {
-            continue;
+            tracing::info!(repo = %id, "scan: including space-in-path additional repo (Code-u7b)");
         }
         // additional → has_beads is implicitly true.
         let project = build_project(app, id, canon, true)?;

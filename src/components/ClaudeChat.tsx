@@ -61,6 +61,12 @@ interface PendingApproval {
   toolName: string
   input: unknown
   status: ApprovalStatus
+  // Code-x5l: true when this came from a real permission_request frame (path 1),
+  // false when synthesized from an assistant tool_use (path 2). Path-1 approvals
+  // have no tool_use↔tool_result pair to fall back to, so on resolve they must
+  // render the resolved ApprovalCard variant rather than unmounting. Path-2
+  // resolves flip into the rich render tree as a pair, so their card unmounts.
+  isPermissionFrame: boolean
 }
 
 // Pull a request_id out of a permission_request frame — defensively across
@@ -70,7 +76,15 @@ interface PendingApproval {
 //   3. { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } }
 // Returns null if no permission shape can be extracted, in which case the
 // frame falls through to the default render path.
-function extractApproval(frame: any): PendingApproval | null {
+//
+// Code-nfs: shapes 1-2 are REAL permission gates from the CLI and always yield
+// an approval. Shape 3 (a plain assistant tool_use) is only a gate when the CLI
+// is actually going to pause for it — i.e. permissionMode === 'default'. In
+// acceptEdits / bypassPermissions / plan modes the CLI runs tools without
+// asking, so surfacing an ApprovalCard for every tool_use was wrong (it dangled
+// a pending card the user had to dismiss for a tool that already ran). Callers
+// pass `treatToolUseAsApproval = permissionMode === 'default'`.
+function extractApproval(frame: any, treatToolUseAsApproval = true): PendingApproval | null {
   if (!frame || typeof frame !== 'object') return null
   if (frame.type === 'permission_request' || frame.subtype === 'permission_request') {
     const requestId =
@@ -85,13 +99,12 @@ function extractApproval(frame: any): PendingApproval | null {
       toolName: String(frame.tool_name ?? frame.tool ?? 'unknown'),
       input: frame.input ?? frame.tool_input ?? null,
       status: 'pending',
+      isPermissionFrame: true,
     }
   }
-  // Tool-use shape — only treat as a request when permission mode is default
-  // and the parent transcript is going to gate on it. We surface the card
-  // unconditionally; if the CLI proceeds without waiting, the user can
-  // still resolve it manually and the BE round-trip is a no-op.
-  if (frame.type === 'assistant' && frame.message?.content) {
+  // Tool-use shape — only a real gate when permissionMode === 'default'. Other
+  // modes auto-run the tool, so we must NOT surface an approval card for it.
+  if (treatToolUseAsApproval && frame.type === 'assistant' && frame.message?.content) {
     const parts = Array.isArray(frame.message.content) ? frame.message.content : []
     const tu = parts.find((p: any) => p?.type === 'tool_use' && typeof p?.id === 'string')
     if (tu) {
@@ -100,6 +113,7 @@ function extractApproval(frame: any): PendingApproval | null {
         toolName: String(tu.name ?? 'unknown'),
         input: tu.input ?? null,
         status: 'pending',
+        isPermissionFrame: false,
       }
     }
   }
@@ -130,6 +144,11 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
   // RPCs, header portal id) uses `bridge`. The REAL projectId is kept only for
   // project-scoped RPCs (projects_get) and the header label.
   const bridge = bridgeId ?? projectId
+  // Code-nfs: a plain assistant tool_use is only a real approval gate when the
+  // CLI will actually pause for it — permissionMode === 'default'. In other
+  // modes tools auto-run, so tool_use frames must not spawn ApprovalCards.
+  // Real permission_request frames are always honored regardless of mode.
+  const gateToolUse = (permissionMode ?? 'acceptEdits') === 'default'
   const [frames, setFrames] = useState<Frame[]>([])
   const [hookEvents, setHookEvents] = useState<HookEvent[]>([])
   const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalStatus>>({})
@@ -167,7 +186,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
         // GC approvalStates: keep only keys whose requestId still appears.
         const live = new Set<string>()
         for (const f of trimmed) {
-          const a = extractApproval(f)
+          const a = extractApproval(f, gateToolUse)
           if (a) live.add(a.requestId)
         }
         setApprovalStates(s => {
@@ -308,21 +327,46 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       // toast on every failure — which spams once per agent pane / per project
       // switch when bd is slow or queued behind the bd-spawn guard (RV2 made
       // this visible: N panes = N ClaudeChat mounts = N bd_prime calls).
-      try {
-        const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
-        if (!signal.aborted && bdPrimeOut && bdPrimeOut.trim()) {
-          const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
-          appendFrame({ _kind: 'system-reminder', text: bdPrimeOut })
-          // Send the reminder text as a user message so the running session
-          // sees the rules. Wrapped in <system-reminder> tags by convention.
-          try {
-            await invoke('claude_send', { projectId: bridge, text: reminder })
-          } catch (e) {
-            console.warn('[ClaudeChat] bd-prime claude_send failed (non-fatal)', e)
+      //
+      // Code-ete: prime ONCE per CLI session, not per mount. The primer is
+      // hidden context + cost; re-sending on every remount/resume duplicates it
+      // in the running session's history. Two guards:
+      //   1. `useResume` — a persisted CLI session id means this exact session
+      //      was primed on its first (fresh) start; it already has the rules in
+      //      its conversation, so resuming must not re-send.
+      //   2. `primedKey` — a per-session-id localStorage flag covers the fresh
+      //      start path: if the same startSid was already primed (e.g. a fast
+      //      unmount/remount before the CLI id was captured), skip.
+      const primedKeyFor = (id: string | null | undefined) =>
+        id ? `bs.claude.primed:${id}` : null
+      const alreadyPrimed =
+        useResume || (!!startSid && localStorage.getItem(primedKeyFor(startSid)!) === '1')
+      if (!alreadyPrimed) {
+        try {
+          const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
+          if (!signal.aborted && bdPrimeOut && bdPrimeOut.trim()) {
+            const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
+            appendFrame({ _kind: 'system-reminder', text: bdPrimeOut })
+            // Send the reminder text as a user message so the running session
+            // sees the rules. Wrapped in <system-reminder> tags by convention.
+            try {
+              await invoke('claude_send', { projectId: bridge, text: reminder })
+              // Mark primed against whatever id we started with, and — since the
+              // CLI mints its own id on a fresh start — also against the captured
+              // CLI id once it lands (resumeKey holds it), so the next mount
+              // resumes without re-priming.
+              if (startSid) localStorage.setItem(primedKeyFor(startSid)!, '1')
+              setTimeout(() => {
+                const cliSid = localStorage.getItem(resumeKey)
+                if (cliSid) localStorage.setItem(primedKeyFor(cliSid)!, '1')
+              }, 2500)
+            } catch (e) {
+              console.warn('[ClaudeChat] bd-prime claude_send failed (non-fatal)', e)
+            }
           }
+        } catch (e) {
+          console.warn('[ClaudeChat] bd_prime failed (non-fatal)', e)
         }
-      } catch (e) {
-        console.warn('[ClaudeChat] bd_prime failed (non-fatal)', e)
       }
     })()
     return () => {
@@ -359,13 +403,13 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
   // whose state is 'pending' wins.
   const topmostPending = useMemo<PendingApproval | null>(() => {
     for (const f of frames) {
-      const a = extractApproval(f)
+      const a = extractApproval(f, gateToolUse)
       if (!a) continue
       const state = approvalStates[a.requestId] ?? 'pending'
       if (state === 'pending') return a
     }
     return null
-  }, [frames, approvalStates])
+  }, [frames, approvalStates, gateToolUse])
 
   // RV3-A — the set of tool_use ids that have already COMPLETED (a matching
   // tool_result frame arrived). A completed tool is never a pending approval:
@@ -410,7 +454,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
     (decision: 'approved' | 'denied'): boolean => {
       let pending: PendingApproval | null = null
       for (const f of framesRef.current) {
-        const a = extractApproval(f)
+        const a = extractApproval(f, gateToolUse)
         if (!a) continue
         const state = approvalsRef.current[a.requestId] ?? 'pending'
         if (state === 'pending') { pending = a; break }
@@ -425,7 +469,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       })
       return true
     },
-    [bridge],
+    [bridge, gateToolUse],
   )
 
   // Keyboard shortcut: a / d when chat is focused and a pending approval
@@ -539,12 +583,21 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
           <RenderItemView key={item.key} item={item} />
         ))}
         {/* Pending approvals — the only frames NOT in renderItems. Chronologically
-            the newest (awaiting the user), so they sit at the tail. */}
+            the newest (awaiting the user), so they sit at the tail.
+            Code-nfs: gateToolUse decides whether a bare tool_use counts.
+            Code-x5l: a real permission_request frame (isPermissionFrame) keeps
+            its card mounted through the resolved state so the user sees the
+            '[ok] approved' / '[x] denied' confirmation — it has no rich-tree
+            pair to fall back to. A tool_use approval (path 2) still unmounts on
+            resolve because it re-enters the render tree as a paired item. */}
         {frames.map((f, i) => {
-          const a = extractApproval(f)
+          const a = extractApproval(f, gateToolUse)
           if (!a) return null
           const state = approvalStates[a.requestId] ?? 'pending'
-          if (!isApprovalPending(a.requestId)) return null
+          const pending = isApprovalPending(a.requestId)
+          // Unmount once resolved UNLESS this is a real permission frame, which
+          // must show its resolved confirmation (Code-x5l).
+          if (!pending && !a.isPermissionFrame) return null
           return (
             <ApprovalCard
               key={`approval-${i}-${a.requestId}`}

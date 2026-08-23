@@ -17,6 +17,9 @@ import {
   focusPane,
   registerPty,
   setDefaultCwd,
+  setActiveProject,
+  spawnAgent,
+  allAgentBridges,
   leavesOf,
   toggleZoom,
   getZoom,
@@ -156,5 +159,48 @@ describe('termPanes tree algebra', () => {
     // Smoke: registerPty on an unknown pane is a no-op, focusPane too.
     expect(() => registerPty('nope', 999)).not.toThrow()
     expect(() => focusPane('nope')).not.toThrow()
+  })
+})
+
+// Code-x8p — the pane surface is keyed by project: switching swaps the whole
+// tree, and each project keeps its own panes/agents across a round-trip switch.
+describe('termPanes per-project surface (Code-x8p)', () => {
+  beforeEach(() => reset())
+
+  it('switching projects gives each its own pane tree', () => {
+    // Move off the boot surface onto project A (adopts the pristine boot leaf).
+    setActiveProject('projA', '/tmp/a')
+    expect(snapshotLeafCount()).toBe(1)
+    splitActive('v')
+    splitActive('v')
+    expect(snapshotLeafCount()).toBe(3)
+
+    // Switch to a fresh project B — its surface is a single pane, not A's 3.
+    setActiveProject('projB', '/tmp/b')
+    expect(snapshotLeafCount()).toBe(1)
+
+    // Switch back to A — its 3-pane surface is restored intact.
+    setActiveProject('projA', '/tmp/a')
+    expect(snapshotLeafCount()).toBe(3)
+  })
+
+  it('setActiveProject is a no-op when already active', () => {
+    setActiveProject('projA', '/tmp/a')
+    splitActive('v')
+    const n = snapshotLeafCount()
+    setActiveProject('projA', '/tmp/a') // same id
+    expect(snapshotLeafCount()).toBe(n)
+  })
+
+  it('allAgentBridges spans agents in non-active projects', () => {
+    setActiveProject('projA', '/tmp/a')
+    spawnAgent('projA', '/tmp/a', 'sid-a')
+    setActiveProject('projB', '/tmp/b')
+    spawnAgent('projB', '/tmp/b', 'sid-b')
+
+    // Even though projA is not active, its agent must still count as live so a
+    // project switch never reaps the hidden project's claude sessions.
+    const bridges = allAgentBridges()
+    expect(bridges.length).toBeGreaterThanOrEqual(2)
   })
 })

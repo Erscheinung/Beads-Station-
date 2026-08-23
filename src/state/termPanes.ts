@@ -139,10 +139,71 @@ function makeInitialTab(cwd: string): Tab {
   return { id: uid('tab'), root: leaf, activePaneId: leaf.paneId }
 }
 
-let state: TermPanesState = (() => {
-  const tab = makeInitialTab('')
+function makeInitialState(cwd: string): TermPanesState {
+  const tab = makeInitialTab(cwd)
   return { tabs: [tab], activeTabId: tab.id, insert: false }
-})()
+}
+
+// Code-x8p — the pane surface is now keyed by PROJECT. Each project owns its
+// own pane/tab/split tree; switching project swaps the whole visible surface so
+// a project's shells + agent panes are its own and never bleed across a switch
+// (the old design shared one global tree, so a Bug-Bash tab could show a
+// Beads-Station shell = "everything gone" to the user).
+//
+// `state` remains the ACTIVE project's TermPanesState — every mutation below
+// still operates on `state` unchanged. On a project switch we stash the current
+// `state` back into PROJECTS under the outgoing id and load (or lazily create)
+// the incoming project's state. In-memory only, matching the prior model (the
+// tree was never persisted across a full reload; only activeProjectId is).
+const BOOT_PROJECT = ''
+let activeProjectId = BOOT_PROJECT
+const PROJECTS = new Map<string, TermPanesState>()
+
+let state: TermPanesState = makeInitialState('')
+PROJECTS.set(BOOT_PROJECT, state)
+
+/** True when a state is a pristine boot surface (one empty, un-spawned leaf). */
+function isPristine(s: TermPanesState): boolean {
+  if (s.tabs.length !== 1) return false
+  const leaves = leavesOf(s.tabs[0].root)
+  return leaves.length === 1 && leaves[0].ptyId === null && leaves[0].cwd === '' && !leaves[0].agent && !leaves[0].fileNav
+}
+
+/**
+ * Code-x8p — make `projectId` the active pane surface. Stashes the current
+ * surface under the outgoing id and restores (or lazily creates) this one.
+ * On the very first switch away from the boot surface, if the boot surface is
+ * still pristine it is ADOPTED as this project's initial state (seeded to cwd)
+ * so the boot terminal becomes the first project's terminal rather than being
+ * discarded. No-op if already active.
+ */
+export function setActiveProject(projectId: string, cwd: string): void {
+  if (projectId === activeProjectId) return
+  // Stash the outgoing surface.
+  PROJECTS.set(activeProjectId, state)
+
+  let next = PROJECTS.get(projectId)
+  if (!next) {
+    // Adopt a pristine boot surface for the first real project switch.
+    if (activeProjectId === BOOT_PROJECT && isPristine(state)) {
+      const bootTab = state.tabs[0]
+      const seeded: TermPanesState = {
+        ...state,
+        tabs: [{ ...bootTab, root: mapLeaf(bootTab.root, bootTab.activePaneId, l => ({ ...l, cwd })) }],
+      }
+      next = seeded
+      PROJECTS.delete(BOOT_PROJECT)
+    } else {
+      next = makeInitialState(cwd)
+    }
+    PROJECTS.set(projectId, next)
+  }
+
+  activeProjectId = projectId
+  state = next
+  _lastCwd = cwd
+  emit()
+}
 
 const listeners = new Set<() => void>()
 
@@ -247,14 +308,26 @@ export function resolveTargetAgentBridge(): string | null {
  * so any SESSIONS entry whose bridge is no longer in the tree gets reaped;
  * without it, an agent leaf discarded by a tab reset (not via closeActivePane)
  * leaks its claude child until app exit.
+ *
+ * Code-x8p — now the pane surface is per-project, so an agent living in a
+ * NON-active project's surface must still count as live, or switching projects
+ * would reap every hidden project's agents. Walk ALL projects' states plus the
+ * in-hand `state` (the active one, which is stashed lazily on switch).
  */
 export function allAgentBridges(): string[] {
   const out: string[] = []
-  for (const tab of state.tabs) {
-    for (const leaf of leavesOf(tab.root)) {
-      if (leaf.agent != null) out.push(leaf.agent.bridgeId)
+  const seen = new Set<TermPanesState>()
+  const collect = (s: TermPanesState) => {
+    if (seen.has(s)) return
+    seen.add(s)
+    for (const tab of s.tabs) {
+      for (const leaf of leavesOf(tab.root)) {
+        if (leaf.agent != null) out.push(leaf.agent.bridgeId)
+      }
     }
   }
+  collect(state)
+  for (const s of PROJECTS.values()) collect(s)
   return out
 }
 

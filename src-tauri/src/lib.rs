@@ -14,6 +14,7 @@ mod fs;
 mod projects;
 mod pty;
 mod sense;
+mod spending;
 mod telemetry;
 mod watcher;
 
@@ -144,6 +145,7 @@ pub fn run() {
             sense::sense_list,
             sense::sense_promote,
             sense::sense_scan,
+            spending::gateway_spending,
             watcher::sense_watch_start,
             watcher::sense_watch_stop,
             watcher::watcher_start,

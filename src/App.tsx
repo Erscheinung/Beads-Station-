@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setDefaultCwd, spawnAgent, spawnFileNav, useTermPanes, allAgentBridges } from './state/termPanes'
+import { setActiveProject, spawnAgent, spawnFileNav, useTermPanes, allAgentBridges } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -51,12 +51,14 @@ export default function App() {
   // string; when there's no active project we pass a stub id and ignore.
   const permissionApi = usePermissionMode(active?.id ?? '__none__')
 
-  // RV1 — seed the terminal surface's default cwd from the active project.
-  // The pane surface is NOT keyed by active.id (persistence: shells survive
-  // project switch); setDefaultCwd only affects newly-spawned shells and the
-  // very first boot leaf.
+  // Code-x8p — the pane surface is now keyed by project. On every active-project
+  // change, swap the whole pane/tab/split surface to that project's own tree
+  // (lazily created on first visit; the pristine boot surface is adopted for the
+  // first project). A project's shells + agent panes are its own and survive a
+  // round-trip switch, instead of the old single global tree that showed one
+  // project's shells under another project's tab.
   useEffect(() => {
-    if (active) setDefaultCwd(active.path)
+    if (active) setActiveProject(active.id, active.path)
   }, [active])
 
   // <leader>p and Shift-Tab / Ctrl-Shift-Tab — cycle projects. Wraps both ways.

@@ -51,6 +51,19 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
     case 'bd_prime':
       return ''
 
+    // Code-9d8 — Gateway spend aggregate. A live value so the CostMeter's
+    // right-aligned `day/mo` row renders in the harness. The real command reads
+    // a cached Bearer token and hits gateway.example.com.
+    case 'gateway_spending':
+      return {
+        available: true,
+        dailyEur: 4.79,
+        monthlyEur: 114.91,
+        dailyLimitEur: 50,
+        monthlyLimitEur: 500,
+        plan: 'Pro',
+      }
+
     // --- PTY: hand back a fake id so Terminal panes mount without a real pty ---
     case 'pty_spawn':
       return 1
