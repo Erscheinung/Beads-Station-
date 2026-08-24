@@ -321,54 +321,11 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       }
       if (signal.aborted) return
 
-      // Phase 6 — fetch bd prime and inject as a system-reminder. Non-fatal
-      // on error so a missing/broken bd doesn't keep the chat from working.
-      // Use plain invoke (not safeInvoke): the local catch already handles
-      // failure as non-fatal, and safeInvoke would ALSO push a user-facing
-      // toast on every failure — which spams once per agent pane / per project
-      // switch when bd is slow or queued behind the bd-spawn guard (RV2 made
-      // this visible: N panes = N ClaudeChat mounts = N bd_prime calls).
-      //
-      // Code-ete: prime ONCE per CLI session, not per mount. The primer is
-      // hidden context + cost; re-sending on every remount/resume duplicates it
-      // in the running session's history. Two guards:
-      //   1. `useResume` — a persisted CLI session id means this exact session
-      //      was primed on its first (fresh) start; it already has the rules in
-      //      its conversation, so resuming must not re-send.
-      //   2. `primedKey` — a per-session-id localStorage flag covers the fresh
-      //      start path: if the same startSid was already primed (e.g. a fast
-      //      unmount/remount before the CLI id was captured), skip.
-      const primedKeyFor = (id: string | null | undefined) =>
-        id ? `bs.claude.primed:${id}` : null
-      const alreadyPrimed =
-        useResume || (!!startSid && localStorage.getItem(primedKeyFor(startSid)!) === '1')
-      if (!alreadyPrimed) {
-        try {
-          const bdPrimeOut = await invoke<string>('bd_prime', { repoPath: cwd })
-          if (!signal.aborted && bdPrimeOut && bdPrimeOut.trim()) {
-            const reminder = `<system-reminder>\nBeads workflow primer (auto-injected on session open):\n\n${bdPrimeOut}\n</system-reminder>`
-            appendFrame({ _kind: 'system-reminder', text: bdPrimeOut })
-            // Send the reminder text as a user message so the running session
-            // sees the rules. Wrapped in <system-reminder> tags by convention.
-            try {
-              await invoke('claude_send', { projectId: bridge, text: reminder })
-              // Mark primed against whatever id we started with, and — since the
-              // CLI mints its own id on a fresh start — also against the captured
-              // CLI id once it lands (resumeKey holds it), so the next mount
-              // resumes without re-priming.
-              if (startSid) localStorage.setItem(primedKeyFor(startSid)!, '1')
-              setTimeout(() => {
-                const cliSid = localStorage.getItem(resumeKey)
-                if (cliSid) localStorage.setItem(primedKeyFor(cliSid)!, '1')
-              }, 2500)
-            } catch (e) {
-              console.warn('[ClaudeChat] bd-prime claude_send failed (non-fatal)', e)
-            }
-          }
-        } catch (e) {
-          console.warn('[ClaudeChat] bd_prime failed (non-fatal)', e)
-        }
-      }
+      // Phase 6 removed (Code-x5o / Code-5uy): the SessionStart hook in
+      // .claude/settings.json already injects bd prime into every claude --print
+      // session. Fetching + re-sending it here was a ~16KB cache-write duplicate
+      // (~$0.40/pane first-turn cost) and added 0.4s for the bd subprocess on
+      // every mount. Hook coverage is sufficient for all pane types.
     })()
     return () => {
       ac.abort()

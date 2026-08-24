@@ -473,8 +473,14 @@ pub async fn claude_send(project_id: String, text: String) -> Result<(), String>
 
 #[tauri::command]
 pub async fn claude_kill(project_id: String) -> Result<(), String> {
-    let mut guard = SESSIONS.lock().await;
-    if let Some(mut session) = guard.remove(&project_id) {
+    // Drop the SESSIONS lock before wait() so concurrent claude_start calls
+    // are not serialized behind the dying child's OS reap (Node exit can take
+    // ~1-2s; holding the lock across that stalled every new project's chat).
+    let evicted = {
+        let mut guard = SESSIONS.lock().await;
+        guard.remove(&project_id)
+    };
+    if let Some(mut session) = evicted {
         let _ = session.child.start_kill();
         let _ = session.child.wait().await;
     }
