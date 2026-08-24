@@ -257,6 +257,16 @@ export function buildRenderItems(
         continue;
       }
 
+      // Streaming partials from --include-partial-messages: the CLI emits a
+      // stream_event frame per delta (message_start/content_block_delta/
+      // message_delta/content_block_stop, etc.). The final `assistant` frame
+      // already carries the complete text, and claudeUsage reads usage only
+      // from `assistant`/`result` — so these deltas are pure render noise.
+      // Drop them instead of falling through to the raw-JSON `unknown` case.
+      if (f?.type === 'stream_event') {
+        continue;
+      }
+
       items.push({ kind: 'unknown', key: nextKey('unk'), text: JSON.stringify(f).slice(0, 400) });
     }
 

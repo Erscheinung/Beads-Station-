@@ -32,6 +32,25 @@ use tokio::sync::Mutex;
 
 const SCROLLBACK_CAP: usize = 64;
 
+/// Code-6w0: Tauri event names may only contain alphanumerics, `-`, `/`, `:`,
+/// `_`. Project ids are directory basenames (projects.rs), so a repo like
+/// `All Doors` yields a space that makes every `listen()`/`emit()` for its
+/// channels fail silently — the chat pane then renders zero frames. Sanitize
+/// the id ONLY where it becomes an event-channel string; the SESSIONS /
+/// SCROLLBACK map keys and command args keep the raw id. The FE has an
+/// identical `chanId` (src/lib/eventChannel.ts) so both sides agree.
+pub(crate) fn chan_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '/' | ':' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Per-bridge scrollback ring buffer. Stores the last SCROLLBACK_CAP parsed
 /// JSON frames so a late-mounting or re-mounting listener can replay them via
 /// claude_get_scrollback without losing the session preamble (Code-lbi).
@@ -168,18 +187,20 @@ pub async fn claude_start(
     let path_env = augmented_path();
 
     {
-        let raw_event_name = format!("claude_event_raw:{project_id}");
         let api_key_present = std::env::var("ANTHROPIC_API_KEY")
             .map(|v| !v.is_empty())
             .unwrap_or(false);
         let base_url = std::env::var("ANTHROPIC_BASE_URL")
             .unwrap_or_else(|_| "<unset>".into());
+        // Startup diagnostic: stderr + tracing only. It used to also
+        // window.emit on the raw channel, which dumped a wall of PATH text into
+        // the chat scroll on every (re)start (incl. "new session"). The raw
+        // channel is reserved for genuinely-unparseable claude stdout.
         let msg = format!(
             "[claude_start] cwd={cwd} bin={} api_key_present={api_key_present} base_url={base_url} (PATH={path_env})",
             claude_path.display()
         );
         eprintln!("{msg}");
-        let _ = window.emit(&raw_event_name, msg);
     }
 
     let mut cmd = Command::new(&claude_path);
@@ -263,9 +284,9 @@ pub async fn claude_start(
         let win = window.clone();
         let pid = project_id.clone();
         tokio::spawn(async move {
-            let event_name = format!("claude_event:{pid}");
-            let raw_event_name = format!("claude_event_raw:{pid}");
-            let status_event_name = format!("claude_status:{pid}");
+            let event_name = format!("claude_event:{}", chan_id(&pid));
+            let raw_event_name = format!("claude_event_raw:{}", chan_id(&pid));
+            let status_event_name = format!("claude_status:{}", chan_id(&pid));
             let mut reader = BufReader::new(stdout).lines();
             loop {
                 match reader.next_line().await {
@@ -349,8 +370,8 @@ pub async fn claude_start(
         let win = window.clone();
         let pid = project_id.clone();
         tokio::spawn(async move {
-            let event_name = format!("claude_stderr:{pid}");
-            let status_event_name = format!("claude_status:{pid}");
+            let event_name = format!("claude_stderr:{}", chan_id(&pid));
+            let status_event_name = format!("claude_status:{}", chan_id(&pid));
             let mut reader = BufReader::new(stderr).lines();
             loop {
                 match reader.next_line().await {
@@ -639,6 +660,17 @@ pub async fn claude_deny(project_id: String, request_id: String) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chan_id_sanitizes_illegal_chars() {
+        // Code-6w0: the concrete regression — a space in the repo basename.
+        assert_eq!(chan_id("All Doors"), "All_Doors");
+        // Allowed set is preserved verbatim.
+        assert_eq!(chan_id("agent1"), "agent1");
+        assert_eq!(chan_id("a-b/c:d_e"), "a-b/c:d_e");
+        // Other whitespace / punctuation collapses to underscore.
+        assert_eq!(chan_id("a b\tc.d"), "a_b_c_d");
+    }
 
     #[test]
     fn permission_mode_whitelist() {

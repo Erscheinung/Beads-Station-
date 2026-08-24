@@ -591,6 +591,14 @@ async fn run_pulse_claude(
 ) -> Result<(), String> {
     let claude_path =
         binresolve::resolve_bin_or_default("claude", claude::CLAUDE_BIN_FALLBACK)?;
+    // Code-0vd (RV-live): surface the resolved work model + posture per pulse so
+    // an operator toggling Everyday/Heavy can confirm the --model arg actually
+    // changed. Prompt is elided (can be large / sensitive); repo + model + mode
+    // are the verify-relevant facts.
+    tracing::info!(
+        "conductor: pulse spawn repo={repo} model={model} mode={permission_mode} bin={}",
+        claude_path.display()
+    );
     let mut cmd = tokio::process::Command::new(&claude_path);
     cmd.current_dir(repo)
         .arg("-p")

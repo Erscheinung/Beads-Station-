@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen } from '../lib/safeListen'
+import { chanId } from '../lib/eventChannel'
 import { ToolDrawer, frameToHookEvent, type HookEvent } from './ToolDrawer'
 import { ApprovalCard, type ApprovalStatus } from './ApprovalCard'
 import { CostMeter } from './CostMeter'
@@ -218,7 +219,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
 
       // Code-lbi: register ALL listeners BEFORE claude_start so no early frames
       // (startup diagnostic, initial stderr, session-id) are lost to the race.
-      await safeListen<Frame>(`claude_event:${bridge}`, e => {
+      await safeListen<Frame>(`claude_event:${chanId(bridge)}`, e => {
         const frame = e.payload
         // Session is alive — reset the respawn counter.
         respawnAttemptsRef.current = 0
@@ -234,10 +235,10 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
         appendFrame(frame)
         setStatus(s => (s === 'failed' ? s : 'frame'))
       }, signal)
-      await safeListen<string>(`claude_event_raw:${bridge}`, e => {
+      await safeListen<string>(`claude_event_raw:${chanId(bridge)}`, e => {
         appendFrame({ _kind: 'raw', line: String(e.payload) })
       }, signal)
-      await safeListen<string>(`claude_stderr:${bridge}`, e => {
+      await safeListen<string>(`claude_stderr:${chanId(bridge)}`, e => {
         appendFrame({ _kind: 'stderr', line: String(e.payload) })
         setStderrCount(c => c + 1)
       }, signal)
@@ -245,7 +246,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       // Use the resumeKey from the outer scope so respawn goes through the
       // same persisted-id logic as the initial mount (not a stale closure).
       const resumeKey = `bs.claude.session:${bridge}`
-      await safeListen<string>(`claude_status:${bridge}`, e => {
+      await safeListen<string>(`claude_status:${chanId(bridge)}`, e => {
         if (e.payload === 'exited') {
           respawnAttemptsRef.current += 1
           if (respawnAttemptsRef.current > 3) {

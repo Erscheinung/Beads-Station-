@@ -17,6 +17,7 @@
 
 import { useSyncExternalStore } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { chanId } from '../lib/eventChannel'
 
 export type ClaudeStatus = 'running' | 'awaiting-input' | 'error' | 'idle'
 
@@ -61,7 +62,7 @@ async function startSubscription(projectId: string): Promise<void> {
   if (!e) return
   // claude_status — canonical, BE-emitted (Worker 1).
   try {
-    const off = await listen<string>(`claude_status:${projectId}`, ev => {
+    const off = await listen<string>(`claude_status:${chanId(projectId)}`, ev => {
       const v = String(ev.payload)
       if (VALID.has(v as ClaudeStatus)) setStatus(projectId, v as ClaudeStatus)
     })
@@ -72,7 +73,7 @@ async function startSubscription(projectId: string): Promise<void> {
   }
   // claude_event — frame stream; defensive fallback.
   try {
-    const off = await listen(`claude_event:${projectId}`, ev => {
+    const off = await listen(`claude_event:${chanId(projectId)}`, ev => {
       const next = deriveFromFrame(ev.payload)
       if (next) setStatus(projectId, next)
     })
@@ -83,7 +84,7 @@ async function startSubscription(projectId: string): Promise<void> {
   }
   // claude_stderr — any stderr line drives state to error.
   try {
-    const off = await listen(`claude_stderr:${projectId}`, () => {
+    const off = await listen(`claude_stderr:${chanId(projectId)}`, () => {
       setStatus(projectId, 'error')
     })
     if (e.terminated) { off(); return }

@@ -146,4 +146,19 @@ describe('buildRenderItems — approval gating & synthetic frames', () => {
     ]);
     expect(items.map((i) => i.kind)).toEqual(['localuser', 'stderr', 'raw', 'reminder', 'system', 'result']);
   });
+
+  it('drops streaming partial (stream_event) frames instead of rendering raw JSON', () => {
+    // Code-6w0 follow-up: --include-partial-messages emits stream_event deltas
+    // wrapping content_block_delta/message_delta/etc. The final assistant frame
+    // carries the complete text; these must not fall through to `unknown`.
+    const items = buildRenderItems([
+      { type: 'stream_event', event: { type: 'content_block_stop', index: 0 } },
+      { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: 'end_turn' } } },
+      asstText('Hey. What do you need?'),
+    ]);
+    expect(items.filter((i) => i.kind === 'unknown')).toHaveLength(0);
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('markdown');
+    expect((items[0] as any).text).toBe('Hey. What do you need?');
+  });
 });
