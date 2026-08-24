@@ -756,7 +756,29 @@ Six tickets, commit `db2e957` on `r12-live-verify`. Gates: tsc clean, vitest (+3
 
 **Deferred (not this batch):** `Code-2a3` (scrollback replay verify), `Code-m8x` (WKWebView manual smoke), `Code-r7q` (overlay soak) — all display/runtime-bound, undriveable headless. `Code-ky4.8` (bracket->label migration).
 
-**Next ready work:** the manual/soak tail above, or Track B designer polish.
+## Track D — Real-app verify pass (2026-08-24, PARTIAL — bugs found + fixed, full verify blocked by perf)
+
+Commit `140fb70` on `r12-live-verify`. Gates: tsc clean, vitest **67/67** (+1 stream_event drop test), cargo test chan_id ok, build+audit-emoji clean, cargo check clean. **No Playwright** (Track D is manual/WKWebView).
+
+**Code-6w0 (P1, FIXED) — Tauri event channel space-in-project-id.** `Project.id` = dir basename (`projects.rs:253`). A space in the name (e.g. "All Doors", re-admitted by Code-u7b) made every `listen()`/`emit()` on `claude_event:All Doors` fail: "Event name must include only alphanumeric characters, -, /, :, _". Chat pane rendered 0 frames despite claude running fine. Fix: `chan_id()` (Rust) + `chanId()` (`src/lib/eventChannel.ts`) sanitize illegal chars to `_` at the channel boundary only — map keys + command args stay raw. Applied at all BE emit sites (claude.rs) and all FE listen sites (claudeStatus.ts, ClaudeChat.tsx).
+
+**stream_event render fix (FIXED).** `--include-partial-messages` emits `type:'stream_event'` deltas that fell through to `renderItems.ts:260` `kind:'unknown'` → raw JSON dump in pane. Dropped before the fallback; final `assistant` frame carries complete text; claudeUsage confirmed not to read stream_events.
+
+**[claude_start] diag in pane (FIXED).** Startup diagnostic was `window.emit`'d on the raw channel → printed as yellow wall on every start/new-session. Moved to `eprintln!` only (dev terminal).
+
+**conductor pulse tracing (ADDED).** `run_pulse_claude` now logs `tracing::info! repo/model/mode` per pulse so Code-0vd's Everyday/Heavy tier toggle can be verified by watching the terminal.
+
+**Code-efg (P1) — step 1+2 PASS, step 3 partial.** Step 1: frames render, cost ticks, no render noise. Step 2: kill→child reaped, respawn→1 clean child. Step 3: quit→all children reaped (CloseRequested handler, lib.rs:98). Resume live click-through skipped (budget pressure). Resume path verified in code (ClaudeChat.tsx:292-301). **Limitation:** resume only works for legacy grid chat (stable bridge=projectId); agent panes use synthetic bridgeId (never resumes).
+
+**New bugs filed:**
+- `Code-5uy` (P2) — severe tab/project switch lag. Likely N agent-pane claude processes + per-mount `bd_prime` spawn. Needs live profiling.
+- `Code-x5o` (P3) — first-turn per-pane cost ~$0.44 from 106-234k cache-write tokens (SessionStart hook + bd_prime + CLAUDE.md injected). Model: `claude-sonnet-4-6[1m]`.
+
+**Code-44k + Code-0vd not started.** Needs run 2 with `devUrl=/?ui=designer` (flip tauri.conf.json, don't commit). Note: devUrl is bare `/` not `?ui=designer` despite the Track D prompt claiming otherwise.
+
+**Next:** fix Code-5uy perf before running more designer-skin verify (lag makes it unreliable). Then Code-44k (designer surfaces) and Code-0vd (conductor tier toggle — tracing now in place).
+
+
 
 
 
