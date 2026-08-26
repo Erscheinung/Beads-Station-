@@ -6,6 +6,8 @@ import { SensorsPanel } from './SensorsPanel'
 import { ConductorControl } from './ConductorControl'
 import { ActiveAgents } from './ActiveAgents'
 import { Timeline } from './Timeline'
+import { DesignerEmptyState } from './DesignerEmptyState'
+import { useProjects } from '../../state/projects'
 import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
 
@@ -28,6 +30,12 @@ export function DesignerShell() {
   const [tier, setTier] = useState<Tier>('everyday')
   const [nav, setNav]   = useState<NavItem>('graph')
 
+  // Code-9z4 — gate the whole shell on project availability. Without this every
+  // right-panel surface independently renders "No project selected." on a fresh
+  // machine (or a rejected projects_list), with no path forward. Show one
+  // purposeful first-run / error panel instead.
+  const { projects, loaded, error: projectsError } = useProjects()
+
   const meta = TIER_META[tier]
 
   // DU3 (Code-d7j) — the toggle drives BOTH the ACTIVE TIER card (local state)
@@ -39,6 +47,14 @@ export function DesignerShell() {
     setTier(next)
     void conductorSetDefaultTier(next).catch(() => {})
   }, [])
+
+  // Empty (fresh machine) or rejected (slow/broken backend) project load: show
+  // the first-run panel, not a shell full of "No project selected." Render the
+  // shell only once projects_list has resolved with at least one project (or is
+  // still loading — the surfaces show their own loading state then).
+  if (loaded && projects.length === 0) {
+    return <DesignerEmptyState error={projectsError} />
+  }
 
   return (
     <div className="du-theme" style={styles.root}>
