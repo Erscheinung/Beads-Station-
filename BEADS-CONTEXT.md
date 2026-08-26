@@ -778,6 +778,24 @@ Commit `140fb70` on `r12-live-verify`. Gates: tsc clean, vitest **67/67** (+1 st
 
 **Next:** fix Code-5uy perf before running more designer-skin verify (lag makes it unreliable). Then Code-44k (designer surfaces) and Code-0vd (conductor tier toggle — tracing now in place).
 
+## Track E — Demo-readiness hardening (2026-08-26, COMPLETE)
+
+Epic `Code-o40` + all 6 children + `Code-9z4` + `Code-6if` CLOSED on `r12-live-verify`. Commits `bf31d70`, `5209e08`, `3925a1f`, `1bdd7f8`. All work is vite/mockIPC-driven (Playwright + vitest) — **zero live claude CLI spend**. Gates every commit: build clean, vitest **68/68**, test:live demo-hardening **7/7**, cargo untouched (no Rust changed).
+
+**Code-o40.1/2/3/4 (`bf31d70`) — graceful empty/loading/error across both skins.** GateCockpit/SensorsPanel gain a `!repoPath` -> "No project selected." branch (loading gated on repoPath) + `data-testid`. Timeline + ActiveAgents surface `snap.error` ("bd error: {}") before their empty strings, matching BeadGraph. `projects.ts` `useProjects` now uses `safeInvoke(rethrow)` and exposes `error`; Dashboard renders "Couldn't load projects: {}" banner; App passes `projectsError` into both Dashboard renders — a failed startup load no longer reads as a fresh machine.
+
+**Code-9z4 (`5209e08`) — designer first-run onboarding.** DesignerShell mounted unconditionally, so a fresh machine (no `~/Code` git repos) or a rejected `projects_list` left every right-panel surface stuck on "No project selected." with no path forward. New `DesignerEmptyState.tsx` (designer-light theme): empty variant explains what the app scans; error variant names the reject a load failure. DesignerShell adds `useProjects` and short-circuits to it when `loaded && projects.length === 0`. The per-panel branch from o40.1 still guards the transient/!repoPath case; the two now-superseded GAP-3 empty-projects live cases were removed.
+
+**Code-6if (`3925a1f`) — in-app skin toggle.** Skin was chosen ONLY by `?ui=designer`; WKWebView has no address bar, so one skin was unreachable from the other. New `state/skin.ts` (external-store shape mirroring `state/theme.ts`): initial = persisted choice, else the `?ui=designer` param (dev entry still lands on designer), else terminal. App reads `useSkin()` instead of reparsing the URL each render. Designer top-bar gains a "Terminal skin" button; CommandPalette gains a "Switch to designer skin" entry. Committed devUrl stays terminal `/`; the store, not the URL, now decides reachability.
+
+**Code-o40.5 (`1bdd7f8`) — capped self-heal loop.** `bdCache` re-armed a 4s refetch forever on a legitimately-empty real repo (all=[], not no-db): each heal settle re-ran applySnapshot which re-armed the timer. Now capped at `MAX_HEAL_ATTEMPTS`(3) consecutive empty settles via `Entry.healAttempts`, reset on any non-empty settle. Live `bd_changed` refetches unaffected (they don't go through the heal path). +1 unit test.
+
+**Code-o40.6 (`1bdd7f8`) — IssueTree empty placeholder.** Empty tree body was a silent blank scroll area; now renders a centered "No issues." when `flatRows.length === 0`. IssueList header still carries the authoritative count.
+
+**Live-verify infra (carried from prior partial):** `mockIpc.ts` `window.__bsMockOverride` (per-cmd override seeded before boot) + `__bsThrow[:msg]` sentinel to force a cmd reject; `tests/live/demo-hardening.spec.ts` (7 cases).
+
+**Next:** Track D real-app verify still open (Code-6w0/efg/0vd/44k — WKWebView-bound, undriveable headless; needs Code-5uy perf fix first).
+
 
 
 
