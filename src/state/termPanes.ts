@@ -67,6 +67,10 @@ export function isFileNavLeaf(l: Leaf): boolean {
 
 export interface Split {
   kind: 'split'
+  /** Stable identity so the renderer can key wrapper divs across reflows
+   *  (Code-bqz: without it React matches wrappers by position and a keyed
+   *  pane changing siblings/ratio remounts its whole subtree). */
+  splitId: string
   dir: SplitDir
   /** ratio of `a` (0..1); b takes the rest. */
   ratio: number
@@ -421,6 +425,7 @@ export function splitActive(dir: SplitDir): void {
     ...tab,
     root: mapLeaf(tab.root, tab.activePaneId, existing => ({
       kind: 'split',
+      splitId: uid('split'),
       dir,
       ratio: 0.5,
       a: existing,
@@ -450,6 +455,7 @@ export function spawnAgent(
     ...tab,
     root: mapLeaf(tab.root, tab.activePaneId, existing => ({
       kind: 'split',
+      splitId: uid('split'),
       dir: 'v',
       ratio: 0.5,
       a: existing,
@@ -470,6 +476,7 @@ export function spawnFileNav(rootPath: string): void {
     ...tab,
     root: mapLeaf(tab.root, tab.activePaneId, existing => ({
       kind: 'split',
+      splitId: uid('split'),
       dir: 'v',
       ratio: 0.5,
       a: existing,

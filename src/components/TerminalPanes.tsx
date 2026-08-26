@@ -204,6 +204,10 @@ function FileNavPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
   )
 }
 
+function nodeKey(node: Node): string {
+  return node.kind === 'leaf' ? node.paneId : node.splitId
+}
+
 function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
   if (node.kind === 'leaf') {
     return <PaneLeaf key={node.paneId} leaf={node} ctx={ctx} />
@@ -213,8 +217,13 @@ function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
   const isRow = node.dir === 'v'
   const aPct = `${node.ratio * 100}%`
   const bPct = `${(1 - node.ratio) * 100}%`
+  // Code-bqz: key the container + both halves by stable ids so React matches
+  // wrappers by key, not tree position. Without this, splitting/reflowing a
+  // sibling re-parented a keyed pane and remounted its whole ClaudeChat/Terminal
+  // subtree (respawning claude children + the [ClaudeChat] starting burst).
   return (
     <div
+      key={node.splitId}
       style={{
         display: 'flex',
         flexDirection: isRow ? 'row' : 'column',
@@ -226,10 +235,10 @@ function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
         background: 'var(--bs-border)',
       }}
     >
-      <div style={{ flexBasis: aPct, minWidth: 0, minHeight: 0, background: 'var(--bs-bg)', position: 'relative' }}>
+      <div key={nodeKey(node.a)} style={{ flexBasis: aPct, minWidth: 0, minHeight: 0, background: 'var(--bs-bg)', position: 'relative' }}>
         {renderNode(node.a, ctx)}
       </div>
-      <div style={{ flexBasis: bPct, minWidth: 0, minHeight: 0, background: 'var(--bs-bg)', position: 'relative' }}>
+      <div key={nodeKey(node.b)} style={{ flexBasis: bPct, minWidth: 0, minHeight: 0, background: 'var(--bs-bg)', position: 'relative' }}>
         {renderNode(node.b, ctx)}
       </div>
     </div>

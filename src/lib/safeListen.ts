@@ -26,7 +26,7 @@
 // helper is the abort-aware layer on top; the registry is the counting
 // layer underneath.
 
-import { type EventCallback } from '@tauri-apps/api/event'
+import { type EventCallback, type UnlistenFn } from '@tauri-apps/api/event'
 import { safeListen as registryListen } from './listenerRegistry'
 
 /**
@@ -47,7 +47,21 @@ export async function safeListen<T>(
   signal: AbortSignal,
 ): Promise<void> {
   if (signal.aborted) return
-  const unlisten = await registryListen<T>(channel, handler)
+  // Code-bqz: under rapid mount/abort thrash, Tauri's listen()/unlisten can
+  // reject with "undefined is not an object (evaluating listeners[eventId]
+  // .handlerId)" when an abort races a half-registered handle. If that
+  // rejection escaped, the caller's async effect body would reject BEFORE it
+  // reached its own invoke('claude_start') — so a flapping pane never spawned
+  // its backend child. Swallow the registration failure to a no-op listener:
+  // one dropped listener is recoverable (scrollback replay + respawn cover it);
+  // an unspawned child is not.
+  let unlisten: UnlistenFn
+  try {
+    unlisten = await registryListen<T>(channel, handler)
+  } catch (err) {
+    if (!signal.aborted) console.warn('[safeListen] listen failed', channel, err)
+    return
+  }
   if (signal.aborted) {
     unlisten()
     return

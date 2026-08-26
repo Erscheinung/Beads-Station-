@@ -79,7 +79,14 @@ export function Terminal({
         if (ptyIdRef.current !== null) invoke('pty_write', { id: ptyIdRef.current, data: d })
       })
       ro = new ResizeObserver(() => {
-        fit.fit()
+        // Code-bqz: a queued RO callback can fire after the effect aborts and
+        // xterm.dispose() ran (reflow/skin-flip unmount). fit.fit() then reads
+        // the torn-down renderer -> "undefined is not an object (evaluating
+        // this._renderer.value.dimensions)". Guard on liveness before measuring.
+        if (signal.aborted || xtermRef.current === null) return
+        try {
+          fit.fit()
+        } catch { return }
         if (ptyIdRef.current !== null) invoke('pty_resize', { id: ptyIdRef.current, cols: xterm.cols, rows: xterm.rows })
       })
       ro.observe(hostRef.current!)

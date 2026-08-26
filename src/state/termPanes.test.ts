@@ -141,11 +141,13 @@ describe('termPanes tree algebra', () => {
   it('leavesOf counts leaves of a nested split tree', () => {
     const tree = {
       kind: 'split' as const,
+      splitId: 's1',
       dir: 'v' as const,
       ratio: 0.5,
       a: { kind: 'leaf' as const, paneId: 'p1', ptyId: null, cwd: '' },
       b: {
         kind: 'split' as const,
+        splitId: 's2',
         dir: 'h' as const,
         ratio: 0.5,
         a: { kind: 'leaf' as const, paneId: 'p2', ptyId: null, cwd: '' },
