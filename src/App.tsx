@@ -25,7 +25,7 @@ export default function App() {
   useVimNav()
   const vim = useVim()
   const theme = useTheme()
-  const { projects, activeId, setActive, refresh, loaded } = useProjects()
+  const { projects, activeId, setActive, refresh, loaded, error: projectsError } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
   const [terminalHeight, setTerminalHeight] = useState<number>(() => {
@@ -235,13 +235,13 @@ export default function App() {
   }
 
   if (loaded && projects.length === 0) {
-    return <Dashboard />
+    return <Dashboard error={projectsError} />
   }
 
   if (!active) {
     // First load before projects_list resolves — render Dashboard so the
     // viewport doesn't flicker.
-    return <Dashboard />
+    return <Dashboard error={projectsError} />
   }
 
   const activeTerminalHeight = terminalCollapsed ? 24 : terminalHeight

@@ -176,7 +176,11 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
           </>
         ) : (
           <p style={styles.nextHint}>
-            {snap.loaded ? 'Nothing ready — queue is clear.' : 'Reading the queue…'}
+            {snap.error
+              ? `bd error: ${snap.error}`
+              : snap.loaded
+                ? 'Nothing ready — queue is clear.'
+                : 'Reading the queue…'}
           </p>
         )}
       </div>

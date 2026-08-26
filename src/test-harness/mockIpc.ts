@@ -25,8 +25,16 @@ declare global {
     /** Ordered log of every invoke the app made — tests assert against it
      *  (e.g. that pressing 'a' fired claude_approve with the right requestId). */
     __bsInvokeLog?: Array<{ cmd: string; args: Record<string, unknown> | undefined }>
+    /** Per-cmd response override, seeded by a spec BEFORE boot (via
+     *  page.addInitScript) to exercise empty/error conditions the static
+     *  fixtures can't. A value replaces the routed return; the sentinel
+     *  string '__bsThrow' (optionally '__bsThrow:<message>') makes that cmd
+     *  reject, so a test can drive the ERROR path of any surface. */
+    __bsMockOverride?: Record<string, unknown>
   }
 }
+
+const THROW_SENTINEL = '__bsThrow'
 
 /** Router for every `invoke(cmd, args)` the app makes. Unknown commands
  *  resolve to null (void) so a new call site never crashes the harness;
@@ -176,6 +184,17 @@ export function installMockIpc(): void {
   window.__bsInvokeLog = []
   mockIPC((cmd, args) => {
     window.__bsInvokeLog!.push({ cmd, args: args as Record<string, unknown> | undefined })
+    // A spec-seeded override wins over the static fixture, and can force a
+    // rejection via the throw sentinel to drive a surface's ERROR branch.
+    const override = window.__bsMockOverride
+    if (override && Object.prototype.hasOwnProperty.call(override, cmd)) {
+      const val = override[cmd]
+      if (typeof val === 'string' && val.startsWith(THROW_SENTINEL)) {
+        const msg = val.slice(THROW_SENTINEL.length).replace(/^:/, '') || `mock ${cmd} rejected`
+        throw new Error(msg)
+      }
+      return val
+    }
     return route(cmd, args as Record<string, unknown> | undefined)
   }, {
     shouldMockEvents: true,

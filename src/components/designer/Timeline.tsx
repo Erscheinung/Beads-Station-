@@ -60,6 +60,9 @@ function TimelineInner({ repoPath }: { repoPath: string }) {
   if (!snap.loaded) {
     return <div style={styles.hint}>Reading the timeline…</div>
   }
+  if (snap.error) {
+    return <div style={styles.hint}>bd error: {snap.error}</div>
+  }
   if (days.length === 0) {
     return <div style={styles.hint}>No closed beads yet. Ship one and it lands here.</div>
   }

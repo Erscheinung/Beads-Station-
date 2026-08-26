@@ -19,7 +19,7 @@ const TIPS: Array<[string, string]> = [
   ['/', 'search'],
 ]
 
-export function Dashboard() {
+export function Dashboard({ error }: { error?: string | null } = {}) {
   return (
     <div
       style={{
@@ -64,6 +64,20 @@ export function Dashboard() {
         <span style={{ color: 'var(--bs-cyan)' }}>{'<leader>'}</span>
         <span style={{ color: 'var(--bs-cyan)' }}>p</span> to pick project
       </div>
+
+      {error && (
+        <div
+          style={{
+            fontSize: 12,
+            color: 'var(--bs-red)',
+            maxWidth: 520,
+            textAlign: 'center',
+            wordBreak: 'break-word',
+          }}
+        >
+          Couldn't load projects: {error}
+        </div>
+      )}
 
       <table
         style={{

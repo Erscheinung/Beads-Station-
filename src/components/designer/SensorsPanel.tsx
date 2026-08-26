@@ -92,12 +92,14 @@ export function SensorsPanel() {
   )
 
   return (
-    <div style={styles.wrap}>
+    <div style={styles.wrap} data-testid="sensors-panel">
       <p style={styles.label}>SENSED · WISPS</p>
 
-      {!loaded && <p style={styles.empty}>Sensing…</p>}
+      {!repoPath && <p style={styles.empty}>No project selected.</p>}
 
-      {loaded && wisps.length === 0 && (
+      {repoPath && !loaded && <p style={styles.empty}>Sensing…</p>}
+
+      {repoPath && loaded && wisps.length === 0 && (
         <p style={styles.empty}>No sensed files awaiting a decision.</p>
       )}
 

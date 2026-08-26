@@ -88,12 +88,14 @@ export function GateCockpit() {
   )
 
   return (
-    <div style={styles.wrap}>
+    <div style={styles.wrap} data-testid="gate-cockpit">
       <p style={styles.label}>NEXT UP · GATES</p>
 
-      {!loaded && <p style={styles.empty}>Loading gates…</p>}
+      {!repoPath && <p style={styles.empty}>No project selected.</p>}
 
-      {loaded && gates.length === 0 && (
+      {repoPath && !loaded && <p style={styles.empty}>Loading gates…</p>}
+
+      {repoPath && loaded && gates.length === 0 && (
         <p style={styles.empty}>No gates awaiting approval.</p>
       )}
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { safeInvoke } from '../lib/invokeErrorBoundary'
 
 // Mirrors the Rust `Project` struct (serde camelCase).
 export interface Project {
@@ -39,15 +39,22 @@ export function useProjects() {
   const [projects, setProjects] = useState<Project[]>([])
   const [activeId, setActiveIdState] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    const list = await invoke<Project[]>('projects_list')
-    setProjects(list)
+    // safeInvoke with rethrow: fires a global toast on reject AND lets the
+    // effect's catch record an error flag so App can distinguish a failed
+    // load from a genuinely empty project list (which look identical
+    // otherwise — both leave projects=[]).
+    const list = await safeInvoke<Project[]>('projects_list', undefined, { rethrow: true })
+    setError(null)
+    setProjects(list ?? [])
     setActiveIdState(prev => {
-      if (prev && list.some(p => p.id === prev)) return prev
+      const items = list ?? []
+      if (prev && items.some(p => p.id === prev)) return prev
       const persisted = loadPersistedActive()
-      if (persisted && list.some(p => p.id === persisted)) return persisted
-      return list.length > 0 ? list[0].id : null
+      if (persisted && items.some(p => p.id === persisted)) return persisted
+      return items.length > 0 ? items[0].id : null
     })
     setLoaded(true)
   }, [])
@@ -60,9 +67,10 @@ export function useProjects() {
   useEffect(() => {
     refresh().catch(err => {
       console.error('projects_list failed', err)
+      setError(String(err))
       setLoaded(true)
     })
   }, [refresh])
 
-  return { projects, activeId, setActive, refresh, loaded }
+  return { projects, activeId, setActive, refresh, loaded, error }
 }
