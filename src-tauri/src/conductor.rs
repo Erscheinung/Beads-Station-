@@ -21,6 +21,7 @@
 // graceful stop halts the SCHEDULE at the next loop boundary, never aborting an
 // in-flight pulse (that step is durable in bd regardless).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -171,10 +172,47 @@ const MAX_FANOUT: usize = 3;
 struct ConductorState {
     repo_path: String,
     interval_secs: u64,
+    /// The loop's posture. Code-jx3.2: an on-demand `conductor_pulse_now` for the
+    /// same repo INHERITS this so a dry-run loop can't be turned into a live
+    /// `acceptEdits` one-shot from the UI (keeps the RV5.0 gate invariant airtight).
+    dry_run: bool,
     stop: Arc<tokio::sync::Notify>,
 }
 
 static CONDUCTOR: Lazy<Mutex<Option<ConductorState>>> = Lazy::new(|| Mutex::new(None));
+
+// Code-jx3.3 (RV6.3) — per-builder cancel registry. A fanout tick registers one
+// cancel `Notify` per in-flight builder keyed by its bead id; `conductor_stop_agent`
+// fires the matching `Notify`, and the builder's `tokio::select!` bails + kills its
+// claude child (kill_on_drop). The registry is the ONLY shared cancel surface — the
+// Rust side still invents no locking beyond this bookkeeping; bd remains the source
+// of truth, and an aborted builder's in-flight step is durable (next tick re-derives).
+static IN_FLIGHT: Lazy<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Register a cancel handle for an in-flight builder. Returns the `Notify` the
+/// builder selects on. Overwrites any stale entry for the same bead (a prior tick's
+/// builder that never deregistered) — the newest in-flight builder owns the key.
+fn register_in_flight(bead_id: &str) -> Arc<tokio::sync::Notify> {
+    let notify = Arc::new(tokio::sync::Notify::new());
+    if let Ok(mut map) = IN_FLIGHT.lock() {
+        map.insert(bead_id.to_string(), notify.clone());
+    }
+    notify
+}
+
+/// Remove a builder's cancel handle once it finishes (success, failure, or cancel).
+fn deregister_in_flight(bead_id: &str) {
+    if let Ok(mut map) = IN_FLIGHT.lock() {
+        map.remove(bead_id);
+    }
+}
+
+/// Look up + remove a builder's cancel handle. `Some` means a builder was in flight
+/// and is now told to stop; `None` means nothing was running for that bead.
+fn take_in_flight(bead_id: &str) -> Option<Arc<tokio::sync::Notify>> {
+    IN_FLIGHT.lock().ok()?.remove(bead_id)
+}
 
 /// App-global status event (un-namespaced, telemetry idiom). Drives the
 /// Designer-UI "Claude is awake" footer + the DU3 active-agents panel.
@@ -384,12 +422,44 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
         }
     };
 
-    // 4. One-shot claude run that advances one molecule step.
-    //    RV4.2: if the top bead is an EPIC, fan out N parallel builders across
-    //    its swarm's ready children instead of running a single builder. Each
-    //    builder serializes conflicting writes through `bd merge-slot`.
+    // 4+. Advance exactly this bead (fanout if it's an epic). Shared with the
+    //     on-demand `conductor_pulse_now` path (Code-jx3.2) so a triggered pulse
+    //     runs the SAME gated body as an interval pulse — no second code path.
+    pulse_bead(app, repo, dry_run, interval_secs, &top, &primer).await;
+}
+
+/// Code-jx3.2 (RV6.2) — advance ONE already-resolved bead: fan out if it's an
+/// epic, else run a single tier-resolved builder pulse, then heartbeat + emit
+/// `awake`. Extracted verbatim from the tail of `pulse()` so the interval loop and
+/// the on-demand `conductor_pulse_now` command share one gated body. `primer` is
+/// the pre-loaded bd-prime context; `interval_secs` only labels the status event.
+async fn pulse_bead(
+    app: &AppHandle,
+    repo: &str,
+    dry_run: bool,
+    interval_secs: u64,
+    top: &bd::Issue,
+    primer: &str,
+) {
+    let status = |state: &'static str, bead_id: Option<String>, detail: Option<String>| {
+        emit_status(
+            app,
+            ConductorStatus {
+                state,
+                bead_id,
+                detail,
+                last_pulse_ms: Some(now_ms()),
+                interval_secs,
+                repo_path: repo.to_string(),
+            },
+        );
+    };
+
+    // If the top bead is an EPIC, fan out N parallel builders across its swarm's
+    // ready children instead of running a single builder. Each builder serializes
+    // conflicting writes through `bd merge-slot`.
     if top.issue_type == "epic" {
-        fanout_pulse(app, repo, dry_run, interval_secs, &top, &primer).await;
+        fanout_pulse(app, repo, dry_run, interval_secs, top, primer).await;
         return;
     }
 
@@ -401,7 +471,7 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
     let work_model = override_model.as_deref().unwrap_or_else(|| tier.model());
 
     let prompt = build_prompt(
-        &primer,
+        primer,
         &top.id,
         &top.title,
         top.description.as_deref().unwrap_or(""),
@@ -409,19 +479,19 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
         tier.ceremony(),
     );
     let mode = if dry_run { "plan" } else { "acceptEdits" };
-    if let Err(e) = run_pulse_claude(repo, &prompt, mode, work_model).await {
+    if let Err(e) = run_pulse_claude(repo, &prompt, mode, work_model, None).await {
         tracing::warn!("conductor: claude pulse failed: {e}");
         status("error", Some(top.id.clone()), Some(format!("claude: {e}")));
         return;
     }
 
-    // 5. Heartbeat — record last completed pulse. Non-fatal on error.
+    // Heartbeat — record last completed pulse. Non-fatal on error.
     if let Err(e) = bd_verb(repo, &heartbeat_args(&now_rfc3339_ish())).await {
         tracing::warn!("conductor: heartbeat failed: {e}");
     }
 
-    // 6. Awake.
-    status("awake", Some(top.id), None);
+    // Awake.
+    status("awake", Some(top.id.clone()), None);
 }
 
 /// RV4.2 — epic fanout. Ensures a swarm molecule exists for the epic, reads its
@@ -505,8 +575,13 @@ async fn fanout_pulse(
             build_builder_prompt(primer, &epic.id, &child.id, &child.title, tier.tag(), tier.ceremony());
         let repo_owned = repo.to_string();
         let mode_owned = mode.to_string();
+        // Code-jx3.3: register a cancel handle so `conductor_stop_agent(child.id)`
+        // can stop just this builder. Deregister on completion (ok/err/cancel) so a
+        // stale handle never lingers past the tick.
+        let cancel = register_in_flight(&child.id);
         handles.push(async move {
-            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &work_model).await;
+            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &work_model, Some(&cancel)).await;
+            deregister_in_flight(&child.id);
             (child.id, r)
         });
     }
@@ -583,11 +658,18 @@ where
 /// Reuses claude.rs's binary resolution + augmented PATH + ANTHROPIC env
 /// forwarding, but NOT its persistent stream-json session shape. `model` is the
 /// RV4.3 size-tier work model (MODEL_SMALL/Haiku for [S]/default; escalates for [M]/[L]).
+///
+/// Code-jx3.3: `cancel` is an optional per-builder stop signal. When it fires
+/// mid-run the child claude is killed (kill_on_drop) and the call returns the
+/// `cancelled` marker Err. The single-pulse path passes `None`; fanout builders
+/// pass their registered `Notify`. The in-flight bd step is durable regardless —
+/// a cancelled builder costs at most one retried step (same idempotency contract).
 async fn run_pulse_claude(
     repo: &str,
     prompt: &str,
     permission_mode: &str,
     model: &str,
+    cancel: Option<&tokio::sync::Notify>,
 ) -> Result<(), String> {
     let claude_path =
         binresolve::resolve_bin_or_default("claude", claude::CLAUDE_BIN_FALLBACK)?;
@@ -607,6 +689,9 @@ async fn run_pulse_claude(
         .arg(model)
         .arg("--permission-mode")
         .arg(permission_mode)
+        // Code-jx3.3: kill the child if this future is dropped/aborted, so a
+        // cancelled builder never leaves an orphan claude running.
+        .kill_on_drop(true)
         .env("PATH", claude::augmented_path());
 
     // Forward Anthropic creds the same way claude_start does; only vars that
@@ -624,10 +709,30 @@ async fn run_pulse_claude(
         }
     }
 
-    let output = tokio::time::timeout(PULSE_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| format!("claude pulse timed out after {}s", PULSE_TIMEOUT.as_secs()))?
-        .map_err(|e| format!("failed to spawn claude: {e}"))?;
+    // Spawn + reap the child, racing three arms: completion, PULSE_TIMEOUT, and
+    // (if present) the per-builder cancel. Cancel/timeout drop the child future,
+    // and kill_on_drop reaps the process — no orphan claude survives.
+    let child = cmd.spawn().map_err(|e| format!("failed to spawn claude: {e}"))?;
+    let output = {
+        let wait = child.wait_with_output();
+        tokio::pin!(wait);
+        let cancelled = async {
+            match cancel {
+                Some(n) => n.notified().await,
+                // No cancel signal: never resolve, so select falls to wait/timeout.
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            r = &mut wait => r.map_err(|e| format!("failed to spawn claude: {e}"))?,
+            _ = tokio::time::sleep(PULSE_TIMEOUT) => {
+                return Err(format!("claude pulse timed out after {}s", PULSE_TIMEOUT.as_secs()));
+            }
+            _ = cancelled => {
+                return Err("cancelled".into());
+            }
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -668,6 +773,7 @@ pub async fn conductor_start(
         *guard = Some(ConductorState {
             repo_path: repo_path.clone(),
             interval_secs: interval,
+            dry_run: dry,
             stop: stop.clone(),
         });
         (old, stop)
@@ -729,6 +835,151 @@ pub async fn conductor_stop(app: AppHandle) -> Result<(), String> {
             },
         );
     }
+    Ok(())
+}
+
+/// Code-jx3.2 (RV6.2) — read a running conductor's posture for a repo, if one is
+/// running for exactly that repo. Returns `(dry_run, interval_secs)`. `None` means
+/// no conductor is running for this repo, so an on-demand pulse falls back to its
+/// passed flag + the default interval. Pure over the CONDUCTOR lock, so the
+/// inheritance rule is unit-testable without a runtime.
+fn running_posture(repo: &str) -> Option<(bool, u64)> {
+    let guard = CONDUCTOR.lock().ok()?;
+    let state = guard.as_ref()?;
+    if state.repo_path == repo {
+        Some((state.dry_run, state.interval_secs))
+    } else {
+        None
+    }
+}
+
+/// Code-jx3.2 (RV6.2) — fire ONE targeted pulse for `bead_id` on demand, bypassing
+/// the interval wait but NOT the gate. Runs the SAME gated body as an interval
+/// pulse (`pulse_bead`): bd prime + bd doctor health gate, then advance the bead
+/// (fanout if it's an epic). Does NOT start/stop the loop — it's a one-shot.
+///
+/// Safety (locked): posture INHERITS a running loop's `dry_run` for this repo, so
+/// a dry-run conductor can't be turned into a live `acceptEdits` one-shot from the
+/// UI. If no conductor is running, the passed `dry_run` is honored (defaults true).
+/// Either way the RV5.0 human gate stays authoritative for real edits.
+#[tauri::command]
+pub async fn conductor_pulse_now(
+    app: AppHandle,
+    repo_path: String,
+    bead_id: String,
+    dry_run: Option<bool>,
+) -> Result<(), String> {
+    // Posture: a running loop for THIS repo wins over the passed flag; else honor
+    // the flag (default true = plan/dry-run), and label the status with the
+    // default interval since no loop cadence applies.
+    let (dry, interval) = match running_posture(&repo_path) {
+        Some((loop_dry, loop_interval)) => (loop_dry, loop_interval),
+        None => (dry_run.unwrap_or(true), DEFAULT_INTERVAL_SECS),
+    };
+
+    let emit = |state: &'static str, bead: Option<String>, detail: Option<String>| {
+        emit_status(
+            &app,
+            ConductorStatus {
+                state,
+                bead_id: bead,
+                detail,
+                last_pulse_ms: Some(now_ms()),
+                interval_secs: interval,
+                repo_path: repo_path.clone(),
+            },
+        );
+    };
+
+    emit("waking", Some(bead_id.clone()), Some("run now".into()));
+
+    // bd prime — context for the pulse prompt. Non-fatal on error.
+    let primer = match bd::bd_prime(repo_path.clone()).await {
+        Ok(text) => text,
+        Err(e) => {
+            tracing::warn!("conductor: pulse_now bd prime failed: {e}");
+            String::new()
+        }
+    };
+
+    // bd doctor health GATE — same posture as the interval pulse. Unhealthy DB:
+    // defer this bead + note the reason, never fake progress.
+    if let Err(e) = bd_verb(&repo_path, &["doctor".to_string()]).await {
+        tracing::warn!("conductor: pulse_now bd doctor unhealthy: {e}");
+        let _ = bd_verb(&repo_path, &defer_args(&bead_id)).await;
+        let _ = bd_verb(
+            &repo_path,
+            &note_args(&bead_id, "conductor: deferred — bd doctor unhealthy (run now)"),
+        )
+        .await;
+        emit("deferred", Some(bead_id), Some("bd doctor unhealthy".into()));
+        return Ok(());
+    }
+
+    // Resolve the targeted bead (carries labels for tier + epic detection).
+    let issue = bd::bd_show(repo_path.clone(), bead_id.clone())
+        .await
+        .map_err(|e| format!("bd show {bead_id}: {e}"))?;
+
+    pulse_bead(&app, &repo_path, dry, interval, &issue, &primer).await;
+    Ok(())
+}
+
+/// Code-jx3.3 (RV6.3) — stop ONE in-flight builder by bead id. Fires its
+/// registered cancel `Notify`; the builder's `run_pulse_claude` bails and its
+/// claude child is killed (kill_on_drop). No-op if nothing is running for that
+/// bead. The gate stays authoritative: a stop only halts a dry-run/gated pulse
+/// that was already in flight, and the in-flight bd step is durable (next tick
+/// re-derives). Emits a `deferred` status so the feed shows the stop landed.
+#[tauri::command]
+pub async fn conductor_stop_agent(app: AppHandle, bead_id: String) -> Result<(), String> {
+    match take_in_flight(&bead_id) {
+        Some(cancel) => {
+            cancel.notify_waiters();
+            emit_status(
+                &app,
+                ConductorStatus {
+                    state: "deferred",
+                    bead_id: Some(bead_id),
+                    detail: Some("stopped by operator".into()),
+                    last_pulse_ms: Some(now_ms()),
+                    interval_secs: DEFAULT_INTERVAL_SECS,
+                    repo_path: String::new(),
+                },
+            );
+            Ok(())
+        }
+        None => {
+            // Nothing in flight for this bead — not an error (the builder may have
+            // just finished). Report cleanly so the UI can clear its busy state.
+            Err(format!("no in-flight agent for {bead_id}"))
+        }
+    }
+}
+
+/// Code-jx3.3 (RV6.3) — defer a bead on demand (`bd defer <id>`). A pure bd write:
+/// it drops the bead out of `bd ready` so the conductor skips it on the next tick,
+/// with no cancel handle needed. Leaves bd fully re-derivable. Emits a `deferred`
+/// status so the feed reflects the operator's action.
+#[tauri::command]
+pub async fn conductor_defer_bead(
+    app: AppHandle,
+    repo_path: String,
+    bead_id: String,
+) -> Result<(), String> {
+    bd_verb(&repo_path, &defer_args(&bead_id)).await?;
+    let _ = bd_verb(&repo_path, &note_args(&bead_id, "conductor: deferred by operator")).await;
+    emit_status(
+        &app,
+        ConductorStatus {
+            state: "deferred",
+            bead_id: Some(bead_id),
+            detail: Some("deferred by operator".into()),
+            last_pulse_ms: Some(now_ms()),
+            interval_secs: DEFAULT_INTERVAL_SECS,
+            repo_path,
+        },
+    );
     Ok(())
 }
 
@@ -889,5 +1140,83 @@ mod tests {
         // The batch is `ready.take(MAX_FANOUT)` — assert the cap is a small,
         // positive bound so a wide epic never spawns an unbounded claude burst.
         assert!(MAX_FANOUT >= 1 && MAX_FANOUT <= 8, "MAX_FANOUT {MAX_FANOUT} out of sane range");
+    }
+
+    // Code-jx3.2 — the CONDUCTOR global is process-shared; serialize the two tests
+    // that mutate it so one's inserted state can't leak into the other's read.
+    static POSTURE_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_conductor(repo: &str, dry_run: bool, interval: u64) {
+        let mut guard = CONDUCTOR.lock().unwrap();
+        *guard = Some(ConductorState {
+            repo_path: repo.to_string(),
+            interval_secs: interval,
+            dry_run,
+            stop: Arc::new(tokio::sync::Notify::new()),
+        });
+    }
+
+    fn clear_conductor() {
+        *CONDUCTOR.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn running_posture_none_when_no_loop() {
+        let _g = POSTURE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        clear_conductor();
+        assert_eq!(running_posture("/repo/a"), None);
+    }
+
+    #[test]
+    fn running_posture_inherits_matching_repo_only() {
+        let _g = POSTURE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        // A dry-run loop on /repo/a: a pulse-now for /repo/a inherits (true, 900);
+        // a pulse-now for a DIFFERENT repo gets None (honors its own passed flag).
+        set_conductor("/repo/a", true, 900);
+        assert_eq!(running_posture("/repo/a"), Some((true, 900)));
+        assert_eq!(running_posture("/repo/other"), None);
+
+        // A live loop's posture is inherited verbatim — this is the safety point:
+        // the UI can't downgrade a live loop, and can't upgrade a dry-run one.
+        set_conductor("/repo/a", false, 1200);
+        assert_eq!(running_posture("/repo/a"), Some((false, 1200)));
+
+        clear_conductor();
+    }
+
+    // Code-jx3.3 — the in-flight registry bookkeeping (register/take/deregister).
+    // The abort itself needs a live runtime + child process, so we test only the
+    // bookkeeping: a registered bead is takeable exactly once, and deregister is a
+    // clean no-op-after. Serialized so parallel tests can't cross-pollute the map.
+    static IN_FLIGHT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn in_flight_register_take_is_once() {
+        let _g = IN_FLIGHT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        IN_FLIGHT.lock().unwrap().clear();
+
+        let _n = register_in_flight("Code-b1");
+        // First take finds it; second take (after removal) is None.
+        assert!(take_in_flight("Code-b1").is_some());
+        assert!(take_in_flight("Code-b1").is_none());
+        // Nothing registered for an unknown bead.
+        assert!(take_in_flight("Code-nope").is_none());
+    }
+
+    #[test]
+    fn in_flight_deregister_clears_the_entry() {
+        let _g = IN_FLIGHT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        IN_FLIGHT.lock().unwrap().clear();
+
+        let _n = register_in_flight("Code-b2");
+        deregister_in_flight("Code-b2");
+        // After deregister, a stop finds nothing in flight.
+        assert!(take_in_flight("Code-b2").is_none());
+        // Re-registering the same bead overwrites cleanly (newest builder owns it).
+        let _a = register_in_flight("Code-b3");
+        let _b = register_in_flight("Code-b3");
+        assert_eq!(IN_FLIGHT.lock().unwrap().get("Code-b3").is_some(), true);
+        assert_eq!(IN_FLIGHT.lock().unwrap().len() >= 1, true);
+        IN_FLIGHT.lock().unwrap().clear();
     }
 }

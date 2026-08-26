@@ -796,6 +796,23 @@ Epic `Code-o40` + all 6 children + `Code-9z4` + `Code-6if` CLOSED on `r12-live-v
 
 **Next:** Track D real-app verify still open (Code-6w0/efg/0vd/44k — WKWebView-bound, undriveable headless; needs Code-5uy perf fix first).
 
+## Track F — RV6 live orchestration cockpit (2026-08-26, code-complete, epic OPEN on gate)
+
+Epic `Code-jx3` — all 3 children (`jx3.1/jx3.2/jx3.3`) CLOSED. Epic stays **OPEN** (not force-closed): its `Code-33c` dep gate is unmet, so bd correctly blocks the epic close. That gate = real-Tauri smoke, still owed. Per operator decision this session: build RV6 now, defer real-app verify. All offline gates green: `npm run build` clean, vitest **77/77**, cargo test conductor **15/15**, `test:live` **40/40**. Turned `ActiveAgents.tsx` from a read-only snapshot into a cockpit.
+
+**Code-jx3.1 — per-pulse live feed.** `useConductorStatus.ts` gained a sibling `useConductorFeed(cap=50)`: same `conductor_status` listener, but ACCUMULATES into a capped, newest-first ring (`[entry, ...prev].slice(0,cap)`) instead of replacing. Entry = `{seq,state,bead_id,detail,ts}`; `seq` is a module monotonic (stable React keys when two pulses share a ts), `ts = last_pulse_ms ?? Date.now()`. `useConductorStatus` untouched (still the card/footer source). ActiveAgents renders a `<FeedSection>` (scroll, max-h 180, per-state dot via `FEED_DOT`, `relTime()` "12s ago" helper, no date lib). +5 unit tests (`useConductorStatus.test.ts`).
+
+**Code-jx3.2 — run this bead now.** Refactor: the per-bead tail of `pulse()` (epic-fanout branch + single-bead tier-resolve + `run_pulse_claude` + heartbeat + awake) is now `pulse_bead(app,repo,dry,interval,&issue,&primer)`. `pulse()` keeps prime+doctor+`bd_ready` then calls it — ZERO behavior change for the interval path. New `conductor_pulse_now(repo,bead_id,dry_run?)` command: bd prime + doctor gate (defers on unhealthy, never fakes), `bd_show` resolves the target, then `pulse_bead` (epics fan out identically). **Posture safety:** `running_posture(repo)` reads the running `CONDUCTOR` — a pulse-now for a repo with a live loop INHERITS that loop's `dry_run` (UI can't upgrade a dry-run loop to acceptEdits); no loop -> honor the passed flag (default true). `ConductorState` gained a `dry_run` field. FE `conductorPulseNow()` + a "Run now" button on the NEXT UP card (busy/error local state).
+
+**Code-jx3.3 — per-agent stop/defer.** Deepest change. `run_pulse_claude` gained an `Option<&Notify>` cancel arm — `tokio::select!` over wait/PULSE_TIMEOUT/cancel + `kill_on_drop(true)` so a cancelled builder never orphans a claude child. New `IN_FLIGHT: Lazy<Mutex<HashMap<String,Arc<Notify>>>>` registry keyed by bead id; `fanout_pulse` registers one cancel Notify per builder (`register_in_flight`) and deregisters on completion. New `conductor_stop_agent(bead_id)` fires the matching Notify; `conductor_defer_bead(repo,bead_id)` = `bd defer` + note (pure bd write, re-derivable). ActiveAgents conductor cards carry `beadId` and show Stop (while resolving) + Defer; chat panes carry no beadId and get neither. +2 registry-bookkeeping unit tests. FE `conductorStopAgent`/`conductorDeferBead` + `conductorBridge.test.ts` (4 tests).
+
+**Bugs filed (FE gaps found while building, backend already supports the fix):**
+- `Code-hq4` (P2) — per-builder stop needs per-child CARDS. Backend stops one fanout builder by child id, but ActiveAgents renders ONE aggregate conductor card (beadId = epic during fanout), so the UI can only act on the epic. Needs per-builder cards (per-builder feed/status or a `builders[]` on ConductorStatus). Blocks-linked to jx3.3.
+- `Code-iya` (P2) — aborted builder may leave a bd merge-slot held. The acquire/release discipline lives in the builder PROMPT; a builder killed between `acquire` and `release` leaves `<prefix>-merge-slot` held, blocking siblings next tick. Needs a slot TTL/auto-release or conductor-side release-on-stop. Durable-step idempotency unaffected — this is only the lease leaking.
+
+**Persisted:** `bd remember rv6-pulse-refactor` captures the pulse_bead/cancel/posture design.
+
+**Next:** epic close waits on `Code-33c` (real-Tauri smoke; `Code-6w0` still open, needs `Code-5uy` perf fix first). Real-app verify of RV6: start conductor dry-run, click Run now, confirm a feed row + a `pulse spawn ... mode=plan` log line matching an interval pulse; trigger a fanout, Stop one builder, confirm bd re-derives next tick. Then fix `Code-hq4`/`Code-iya`.
 
 
 

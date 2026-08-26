@@ -6,7 +6,7 @@
 // DesignerShell mounts outside App's BdLiveProvider, and the conductor status
 // isn't part of the bd snapshot anyway (it's an app-global event, not an issue).
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { safeListen } from './safeListen'
 import { CONDUCTOR_STATUS_EVENT, type ConductorStatus } from './conductorBridge'
 
@@ -30,6 +30,58 @@ export function useConductorStatus(): ConductorStatus | null {
   }, [])
 
   return status
+}
+
+// Code-jx3.1 (RV6.1) — the live per-pulse feed. Where useConductorStatus REPLACES
+// on each event (one snapshot for the card/footer), this ACCUMULATES into a capped
+// ring so the DU3 panel can show a scrolling history: waking -> awake -> closed,
+// each with a bead id + timestamp. Read-only; additive to useConductorStatus (they
+// each register one listener — ActiveAgents mounts this hook exactly once).
+
+/** One entry in the conductor feed, newest first. */
+export interface ConductorFeedEntry {
+  /** Monotonic within a session so React keys stay stable when two pulses share a ts. */
+  seq: number
+  state: string
+  bead_id: string | null
+  detail: string | null
+  /** Epoch-ms of the pulse (falls back to receipt time if the backend omits it). */
+  ts: number
+}
+
+const DEFAULT_FEED_CAP = 50
+
+/**
+ * Accumulate `conductor_status` events into a capped, newest-first ring buffer
+ * (FE-only). `cap` bounds memory; excess entries drop off the tail. One listener
+ * per mounting component.
+ */
+export function useConductorFeed(cap: number = DEFAULT_FEED_CAP): ConductorFeedEntry[] {
+  const [feed, setFeed] = useState<ConductorFeedEntry[]>([])
+  const seqRef = useRef(0)
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    void safeListen<ConductorStatus>(
+      CONDUCTOR_STATUS_EVENT,
+      e => {
+        const s = e.payload
+        seqRef.current += 1
+        const entry: ConductorFeedEntry = {
+          seq: seqRef.current,
+          state: s.state,
+          bead_id: s.bead_id,
+          detail: s.detail,
+          ts: s.last_pulse_ms ?? Date.now(),
+        }
+        setFeed(prev => [entry, ...prev].slice(0, cap))
+      },
+      ctrl.signal,
+    )
+    return () => ctrl.abort()
+  }, [cap])
+
+  return feed
 }
 
 /** Presentation mapping shared by the footer + card. `null` = never started. */

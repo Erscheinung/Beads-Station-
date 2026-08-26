@@ -41,6 +41,42 @@ export function conductorStop(): Promise<void> {
   return invoke<void>('conductor_stop');
 }
 
+/**
+ * Code-jx3.2 (RV6.2) — fire ONE targeted pulse for `beadId` on demand, bypassing
+ * the interval wait but NOT the gate. Runs the same gated body as an interval
+ * pulse (bd prime + doctor gate, then advance the bead / fanout if it's an epic).
+ *
+ * Posture: if a conductor is already running for this repo, the backend INHERITS
+ * that loop's dry-run flag (a dry-run loop can't be turned into a live one-shot);
+ * `dryRun` here only applies when no loop is running. Defaults true (plan/dry-run).
+ */
+export function conductorPulseNow(
+  repoPath: string,
+  beadId: string,
+  dryRun = true,
+): Promise<void> {
+  return invoke<void>('conductor_pulse_now', { repoPath, beadId, dryRun });
+}
+
+/**
+ * Code-jx3.3 (RV6.3) — stop ONE in-flight builder by bead id. Fires its cancel
+ * signal; the builder bails and its claude child is killed. Rejects if nothing is
+ * running for that bead (the builder may have just finished). The in-flight bd step
+ * is durable, so the next tick re-derives cleanly.
+ */
+export function conductorStopAgent(beadId: string): Promise<void> {
+  return invoke<void>('conductor_stop_agent', { beadId });
+}
+
+/**
+ * Code-jx3.3 (RV6.3) — defer a bead on demand (`bd defer <id>`). Drops it out of
+ * `bd ready` so the conductor skips it next tick. Pure bd write, no cancel handle;
+ * leaves bd fully re-derivable.
+ */
+export function conductorDeferBead(repoPath: string, beadId: string): Promise<void> {
+  return invoke<void>('conductor_defer_bead', { repoPath, beadId });
+}
+
 /** DU3 (Code-d7j) — the Designer-UI tier modes. Everyday = Sonnet/medium
  *  default, Heavy = Opus/xhigh default. */
 export type ConductorTier = 'everyday' | 'heavy';

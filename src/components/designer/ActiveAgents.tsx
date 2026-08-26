@@ -1,10 +1,12 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { BdLiveProvider } from '../../lib/BdLiveProvider'
 import { useProjects } from '../../state/projects'
 import { useTermPanes, leavesOf } from '../../state/termPanes'
 import { useBdSnapshot } from '../../lib/bdCache'
-import { useConductorStatus } from '../../lib/useConductorStatus'
+import { useConductorStatus, useConductorFeed } from '../../lib/useConductorStatus'
+import type { ConductorFeedEntry } from '../../lib/useConductorStatus'
 import type { ConductorStatus } from '../../lib/conductorBridge'
+import { conductorPulseNow, conductorStopAgent, conductorDeferBead } from '../../lib/conductorBridge'
 
 // DU3 (Code-d7j) — the Active-agents panel. A calm, READ-ONLY summary of what
 // the conductor + chat panes are doing right now. Approve/reject stays in
@@ -34,6 +36,9 @@ interface AgentCard {
   state: AgentState
   /** 0..1 progress fill; done=1, active=indeterminate-ish partial. */
   progress: number
+  /** Code-jx3.3 — the bead this card is advancing, if any. Only conductor cards
+   *  carry one; chat panes (human-driven) are null and get no stop/defer. */
+  beadId?: string | null
 }
 
 const STATE_COLOR: Record<AgentState, string> = {
@@ -62,6 +67,7 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
         action: bead ? `Resolving ${bead}` : 'Waking…',
         state: 'resolving',
         progress: 0.25,
+        beadId: bead,
       }
     case 'awake':
       return {
@@ -71,6 +77,7 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
         action: bead ? `Advanced ${bead}` : detail || 'Pulse complete',
         state: 'done',
         progress: 1,
+        beadId: bead,
       }
     case 'deferred':
       return {
@@ -80,6 +87,7 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
         action: bead ? `Deferred ${bead}` : 'Deferred',
         state: 'deferred',
         progress: 0.5,
+        beadId: bead,
       }
     case 'error':
       return {
@@ -97,10 +105,32 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
   }
 }
 
+// Code-jx3.1 (RV6.1) — feed-row presentation. The feed carries the raw wire
+// `state` (not the AgentState the cards use), so it gets its own dot mapping.
+const FEED_DOT: Record<string, string> = {
+  waking: 'var(--bs-blue)',
+  awake: 'var(--bs-green)',
+  deferred: 'var(--bs-orange)',
+  error: 'var(--bs-red)',
+  idle: 'var(--bs-fg-faint)',
+  stopped: 'var(--bs-fg-faint)',
+}
+
+/** Compact relative age, no date lib (epoch-ms in, "just now"/"12s"/"4m"/"2h" out). */
+function relTime(ts: number, now: number): string {
+  const secs = Math.max(0, Math.round((now - ts) / 1000))
+  if (secs < 5) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.round(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  return `${Math.round(mins / 60)}h ago`
+}
+
 function AgentsInner({ repoPath }: { repoPath: string }) {
   const { projects } = useProjects()
 
   const status = useConductorStatus()
+  const feed = useConductorFeed()
   const panes = useTermPanes()
   const snap = useBdSnapshot(repoPath)
 
@@ -132,6 +162,51 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
 
   const nextUp = snap.ready[0] ?? null
 
+  // Code-jx3.2 (RV6.2) — fire a targeted pulse for the NEXT UP bead on demand.
+  // Backend inherits a running loop's dry-run posture; the button never opts into
+  // live edits by itself. Local flight state disables the button + surfaces errors.
+  const [running, setRunning] = useState(false)
+  const [runErr, setRunErr] = useState<string | null>(null)
+  const runNow = async (beadId: string) => {
+    setRunning(true)
+    setRunErr(null)
+    try {
+      await conductorPulseNow(repoPath, beadId)
+    } catch (e) {
+      setRunErr(String(e))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  // Code-jx3.3 (RV6.3) — per-agent stop/defer. Stop cancels an in-flight builder
+  // (backend kills its claude child); defer drops the bead out of bd ready. Both
+  // key their busy/error state by bead id so multiple cards act independently.
+  const [cardBusy, setCardBusy] = useState<string | null>(null)
+  const [cardErr, setCardErr] = useState<string | null>(null)
+  const stopAgent = async (beadId: string) => {
+    setCardBusy(beadId)
+    setCardErr(null)
+    try {
+      await conductorStopAgent(beadId)
+    } catch (e) {
+      setCardErr(String(e))
+    } finally {
+      setCardBusy(null)
+    }
+  }
+  const deferBead = async (beadId: string) => {
+    setCardBusy(beadId)
+    setCardErr(null)
+    try {
+      await conductorDeferBead(repoPath, beadId)
+    } catch (e) {
+      setCardErr(String(e))
+    } finally {
+      setCardBusy(null)
+    }
+  }
+
   return (
     <div style={styles.wrap}>
       {cards.length === 0 && (
@@ -158,6 +233,34 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
                 }}
               />
             </div>
+            {/* Code-jx3.3 — stop/defer, only for conductor cards with a bead
+                (chat panes are human-driven and carry no beadId). Stop is offered
+                while a pulse is in flight; Defer whenever a bead is targeted. */}
+            {c.beadId && (
+              <div style={styles.cardControls}>
+                {c.state === 'resolving' && (
+                  <button
+                    type="button"
+                    style={styles.ctrlBtn}
+                    disabled={cardBusy === c.beadId}
+                    onClick={() => stopAgent(c.beadId!)}
+                  >
+                    Stop
+                  </button>
+                )}
+                <button
+                  type="button"
+                  style={styles.ctrlBtn}
+                  disabled={cardBusy === c.beadId}
+                  onClick={() => deferBead(c.beadId!)}
+                >
+                  Defer
+                </button>
+                {cardErr && cardBusy === null && (
+                  <span style={styles.ctrlErr}>{cardErr}</span>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -173,6 +276,15 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
             <p style={styles.nextHint}>
               No blockers. Claude claims it the moment a pane frees up.
             </p>
+            <button
+              type="button"
+              style={{ ...styles.runBtn, ...(running ? styles.runBtnBusy : null) }}
+              disabled={running}
+              onClick={() => runNow(nextUp.id)}
+            >
+              {running ? 'Running…' : 'Run now'}
+            </button>
+            {runErr && <p style={styles.runErr}>{runErr}</p>}
           </>
         ) : (
           <p style={styles.nextHint}>
@@ -184,6 +296,39 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
           </p>
         )}
       </div>
+
+      {/* Code-jx3.1 (RV6.1) — live per-pulse feed. Read-only scrolling history. */}
+      <FeedSection feed={feed} />
+    </div>
+  )
+}
+
+/** The scrolling per-pulse feed. Newest first, capped by the hook's ring. */
+function FeedSection({ feed }: { feed: ConductorFeedEntry[] }) {
+  // One render-time `now` so every row's relative age is consistent within a paint.
+  const now = Date.now()
+  return (
+    <div style={styles.feedWrap}>
+      <p style={styles.feedLabel}>PULSE FEED</p>
+      {feed.length === 0 ? (
+        <p style={styles.feedEmpty}>No pulses yet this session.</p>
+      ) : (
+        <div style={styles.feedList}>
+          {feed.map(entry => (
+            <div key={entry.seq} style={styles.feedRow}>
+              <span
+                style={{
+                  ...styles.feedDot,
+                  background: FEED_DOT[entry.state] ?? 'var(--bs-fg-faint)',
+                }}
+              />
+              <span style={styles.feedState}>{entry.state}</span>
+              {entry.bead_id && <span style={styles.feedBead}>{entry.bead_id}</span>}
+              <span style={styles.feedTime}>{relTime(entry.ts, now)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -305,5 +450,106 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: 'var(--bs-fg-faint)',
     lineHeight: 1.45,
+  },
+  feedWrap: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  feedLabel: {
+    margin: 0,
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.1em',
+    color: 'var(--bs-fg-faint)',
+  },
+  feedEmpty: {
+    margin: 0,
+    fontSize: 11,
+    color: 'var(--bs-fg-faint)',
+    lineHeight: 1.45,
+  },
+  feedList: {
+    display: 'flex',
+    flexDirection: 'column',
+    maxHeight: 180,
+    overflow: 'auto',
+    border: '1px solid var(--bs-border)',
+    borderRadius: 8,
+    background: 'var(--bs-bg-dark)',
+  },
+  feedRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '6px 10px',
+    borderBottom: '1px solid color-mix(in srgb, var(--bs-border) 50%, transparent)',
+    fontSize: 11,
+  },
+  feedDot: {
+    width: 7,
+    height: 7,
+    borderRadius: '50%',
+    flexShrink: 0,
+  },
+  feedState: {
+    color: 'var(--bs-fg-muted)',
+    minWidth: 56,
+  },
+  feedBead: {
+    fontFamily: 'var(--du-font-mono)',
+    color: 'var(--bs-fg)',
+    flex: 1,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  feedTime: {
+    marginLeft: 'auto',
+    color: 'var(--bs-fg-faint)',
+    flexShrink: 0,
+  },
+  runBtn: {
+    marginTop: 6,
+    alignSelf: 'flex-start',
+    padding: '5px 12px',
+    fontSize: 11,
+    fontWeight: 600,
+    color: 'var(--bs-orange)',
+    background: 'transparent',
+    border: '1px solid var(--bs-orange)',
+    borderRadius: 7,
+    cursor: 'pointer',
+  },
+  runBtnBusy: {
+    color: 'var(--bs-fg-faint)',
+    borderColor: 'var(--bs-border)',
+    cursor: 'default',
+  },
+  runErr: {
+    margin: '4px 0 0',
+    fontSize: 11,
+    color: 'var(--bs-red)',
+    lineHeight: 1.4,
+  },
+  cardControls: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 2,
+  },
+  ctrlBtn: {
+    padding: '3px 10px',
+    fontSize: 10,
+    fontWeight: 600,
+    color: 'var(--bs-fg-muted)',
+    background: 'transparent',
+    border: '1px solid var(--bs-border)',
+    borderRadius: 6,
+    cursor: 'pointer',
+  },
+  ctrlErr: {
+    fontSize: 10,
+    color: 'var(--bs-red)',
   },
 }
