@@ -89,6 +89,25 @@ export function IssueTree({
       aria-label="Issues"
       style={{ overflow: 'auto', height: '100%' }}
     >
+      {flatRows.length === 0 ? (
+        // Code-o40.6 — an empty tree body was a silent blank scroll area. Give
+        // it a centered placeholder so the surface reads as "loaded, nothing to
+        // show" rather than broken. (The IssueList header still carries the
+        // authoritative '(0)' / 'no beads db' count.)
+        <div
+          style={{
+            height: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--bs-fg-faint)',
+            fontSize: 12,
+            userSelect: 'none',
+          }}
+        >
+          No issues.
+        </div>
+      ) : (
       <div style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}>
         {rowVirtualizer.getVirtualItems().map((vi) => {
           const row = flatRows[vi.index];
@@ -183,6 +202,7 @@ export function IssueTree({
           );
         })}
       </div>
+      )}
     </div>
   );
 }

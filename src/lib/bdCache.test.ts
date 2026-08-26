@@ -96,6 +96,25 @@ describe('bdCache — RV3.3 shared snapshot', () => {
     expect(snapshotMock).toHaveBeenCalledTimes(1) // no self-heal for non-empty
   })
 
+  it('caps the transient-empty self-heal loop on a persistently-empty repo (Code-o40.5)', async () => {
+    vi.useFakeTimers()
+    // Every read settles empty (a legitimately-empty real repo).
+    snapshotMock.mockResolvedValue({ ready: [], all: [], no_db: false })
+
+    await fetchSnapshot(REPO)
+    expect(snapshotMock).toHaveBeenCalledTimes(1) // initial
+
+    // Each heal window fires one retry — but only up to MAX_HEAL_ATTEMPTS (3).
+    await vi.advanceTimersByTimeAsync(4000) // heal #1 -> call 2
+    await vi.advanceTimersByTimeAsync(4000) // heal #2 -> call 3
+    await vi.advanceTimersByTimeAsync(4000) // heal #3 -> call 4 (arms nothing)
+    expect(snapshotMock).toHaveBeenCalledTimes(4)
+
+    // Loop is now capped: no further retries no matter how long we wait.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(snapshotMock).toHaveBeenCalledTimes(4)
+  })
+
   it('stops self-healing once issues appear', async () => {
     vi.useFakeTimers()
     // First settle empty -> arms heal; the heal retry returns non-empty.

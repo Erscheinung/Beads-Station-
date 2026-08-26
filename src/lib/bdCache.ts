@@ -31,6 +31,16 @@ import { useBdLiveContext } from './BdLiveProvider'
 // issues appear or a real error surfaces.
 const SELF_HEAL_MS = 4000
 
+// Code-o40.5 (GAP-1) — cap the transient-empty self-heal. Each heal fetch
+// settles and re-runs applySnapshot; a legitimately-empty repo (all=[], not
+// no-db) would otherwise re-arm the timer forever, an unbounded background
+// refetch loop. Bound it: after MAX_HEAL_ATTEMPTS consecutive empty settles we
+// accept the repo as genuinely empty and stop re-arming. A non-empty settle
+// resets the counter, so a repo that later fills and empties again can heal
+// afresh; a real bd_changed event still refetches directly (it does not go
+// through the heal path).
+const MAX_HEAL_ATTEMPTS = 3
+
 export interface BdSnapshotState {
   ready: Issue[]
   all: Issue[]
@@ -49,6 +59,9 @@ interface Entry extends BdSnapshotState {
   inFlight: Promise<void> | null
   subscribers: Set<() => void>
   healTimer: ReturnType<typeof setTimeout> | null
+  /** Code-o40.5 — consecutive empty self-heal retries armed so far; reset on
+   *  any non-empty settle. Caps the transient-empty refetch loop. */
+  healAttempts: number
 }
 
 const EMPTY: BdSnapshotState = { ready: [], all: [], loaded: false, error: null, noDb: false }
@@ -64,6 +77,7 @@ function ensure(repoPath: string): Entry {
       inFlight: null,
       subscribers: new Set(),
       healTimer: null,
+      healAttempts: 0,
     }
     store.set(repoPath, e)
   }
@@ -143,7 +157,14 @@ function applySnapshot(repoPath: string, data: BdSnapshotData): void {
   // work (and would re-arm forever). A truly-empty real repo also self-confirms
   // empty, so retrying it is harmless but pointless; scope the heal to the
   // ambiguous case (empty + not no-db).
-  if (e.all.length === 0 && !e.noDb) {
+  //
+  // Code-o40.5: bound the retries. A non-empty settle means the transient
+  // resolved — reset the counter. An empty settle re-arms only until the cap,
+  // then accepts the repo as genuinely empty and stops (no unbounded loop).
+  if (e.all.length > 0) {
+    e.healAttempts = 0
+  } else if (!e.noDb && e.healAttempts < MAX_HEAL_ATTEMPTS) {
+    e.healAttempts += 1
     e.healTimer = setTimeout(() => {
       e.healTimer = null
       void fetchSnapshot(repoPath)
