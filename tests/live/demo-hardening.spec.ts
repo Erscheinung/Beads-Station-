@@ -103,3 +103,18 @@ test('Designer skin first-run panel shows the error variant when projects_list r
   await expect(empty).toBeVisible()
   await expect(empty.getByText('Couldn\'t load projects')).toBeVisible()
 })
+
+// --- Code-6if: in-app skin toggle so both skins are reachable in one window ---
+
+test('Designer top-bar "Terminal skin" button switches to the terminal shell', async ({
+  page,
+}) => {
+  // Default mock has projects, so the designer shell (with its top-bar) renders.
+  await bootDesignerWith(page, {})
+  await expect(page.getByRole('button', { name: 'Terminal skin' })).toBeVisible()
+  await page.getByRole('button', { name: 'Terminal skin' }).click()
+  // Terminal shell is up: the designer top-bar control is gone, and a
+  // terminal-only surface (the tab bar / board) is present.
+  await expect(page.getByRole('button', { name: 'Terminal skin' })).toHaveCount(0)
+  await expect(page.locator('.du-theme').first()).toHaveCount(0)
+})

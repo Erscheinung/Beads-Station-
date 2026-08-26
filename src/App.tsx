@@ -16,6 +16,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { useProjects } from './state/projects'
 import { useVim, setFocused } from './state/vim'
 import { useTheme } from './state/theme'
+import { useSkin } from './state/skin'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
@@ -25,6 +26,7 @@ export default function App() {
   useVimNav()
   const vim = useVim()
   const theme = useTheme()
+  const skin = useSkin()
   const { projects, activeId, setActive, refresh, loaded, error: projectsError } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
@@ -227,10 +229,11 @@ export default function App() {
     setConfirmedFor(() => new Set(projects.map(p => p.id)))
   }, [active, projects, refresh])
 
-  // DU1 — designer skin: ?ui=designer mounts DesignerShell instead of the
-  // terminal shell. All hooks above still run (Rules of Hooks); this check
-  // lives after every hook so the hook count is unconditionally stable.
-  if (new URLSearchParams(location.search).get('ui') === 'designer') {
+  // DU1 / Code-6if — designer skin mounts DesignerShell instead of the terminal
+  // shell. The skin now lives in a runtime store (seeded from the ?ui=designer
+  // param on first run) so an in-app control can flip it live. This check lives
+  // after every hook so the hook count is unconditionally stable.
+  if (skin === 'designer') {
     return <DesignerShell />
   }
 

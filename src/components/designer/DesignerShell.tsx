@@ -8,6 +8,7 @@ import { ActiveAgents } from './ActiveAgents'
 import { Timeline } from './Timeline'
 import { DesignerEmptyState } from './DesignerEmptyState'
 import { useProjects } from '../../state/projects'
+import { setSkin } from '../../state/skin'
 import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
 
@@ -64,19 +65,28 @@ export function DesignerShell() {
           <span style={styles.dot} />
           <span style={styles.wordmarkText}>Beads Station</span>
         </div>
-        <div style={styles.tierToggle} role="group" aria-label="Workflow tier">
+        <div style={styles.topbarRight}>
           <button
-            style={{ ...styles.tierBtn, ...(tier === 'everyday' ? styles.tierBtnActive : {}) }}
-            onClick={() => selectTier('everyday')}
+            style={styles.skinBtn}
+            onClick={() => setSkin('terminal')}
+            title="Switch to the terminal skin"
           >
-            Everyday
+            Terminal skin
           </button>
-          <button
-            style={{ ...styles.tierBtn, ...(tier === 'heavy' ? styles.tierBtnActive : {}) }}
-            onClick={() => selectTier('heavy')}
-          >
-            Heavy
-          </button>
+          <div style={styles.tierToggle} role="group" aria-label="Workflow tier">
+            <button
+              style={{ ...styles.tierBtn, ...(tier === 'everyday' ? styles.tierBtnActive : {}) }}
+              onClick={() => selectTier('everyday')}
+            >
+              Everyday
+            </button>
+            <button
+              style={{ ...styles.tierBtn, ...(tier === 'heavy' ? styles.tierBtnActive : {}) }}
+              onClick={() => selectTier('heavy')}
+            >
+              Heavy
+            </button>
+          </div>
         </div>
       </header>
 
@@ -253,6 +263,22 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--bs-border)',
     borderRadius: 8,
     overflow: 'hidden',
+  },
+  topbarRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+  },
+  skinBtn: {
+    padding: '5px 12px',
+    background: 'transparent',
+    border: '1px solid var(--bs-border)',
+    borderRadius: 8,
+    color: 'var(--bs-fg-muted)',
+    fontSize: 13,
+    fontFamily: 'var(--du-font-sans)',
+    cursor: 'pointer',
+    transition: 'background 120ms ease, color 120ms ease',
   },
   tierBtn: {
     padding: '5px 16px',

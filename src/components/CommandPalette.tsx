@@ -6,6 +6,7 @@ import { useBdSnapshot } from '../lib/bdCache'
 import { bdClaim, bdCreate } from '../types/issue'
 import { dailyAppend } from '../lib/dailyBridge'
 import { toggleTheme } from '../state/theme'
+import { setSkin } from '../state/skin'
 import './CommandPalette.css'
 
 // Phase 9 (Code-ky4.9) — cmdk command palette. Opens on Cmd/Ctrl+K or leader-k
@@ -94,6 +95,11 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
     dismiss()
   }, [dismiss])
 
+  const onSwitchToDesigner = useCallback(() => {
+    setSkin('designer')
+    dismiss()
+  }, [dismiss])
+
   return (
     <Command.Dialog
       open={open}
@@ -138,6 +144,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
                 <Command.Item onSelect={() => setView('grep')}>Grep issues</Command.Item>
                 <Command.Item onSelect={() => void onOpenObsidian()}>Open Obsidian update</Command.Item>
                 <Command.Item onSelect={onToggleTheme}>Toggle theme</Command.Item>
+                <Command.Item onSelect={onSwitchToDesigner}>Switch to designer skin</Command.Item>
               </Command.Group>
             )}
 
