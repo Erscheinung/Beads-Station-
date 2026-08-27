@@ -814,7 +814,15 @@ Epic `Code-jx3` — all 3 children (`jx3.1/jx3.2/jx3.3`) CLOSED. Epic stays **OP
 
 **Next:** epic close waits on `Code-33c` (real-Tauri smoke; `Code-6w0` still open, needs `Code-5uy` perf fix first). Real-app verify of RV6: start conductor dry-run, click Run now, confirm a feed row + a `pulse spawn ... mode=plan` log line matching an interval pulse; trigger a fanout, Stop one builder, confirm bd re-derives next tick. Then fix `Code-hq4`/`Code-iya`.
 
+## Track G — RV7 herdr thin-client conductor (2026-08-27, Code-3kl.1 + Code-3kl.2 shipped)
 
+Epic `Code-3kl` — 2 of 3 children closed this session. `Code-3kl.3` (thin-client pane cut + window-close persistence verify) remains open.
+
+**Code-3kl.1 — herdr_bridge.rs.** New `src-tauri/src/herdr_bridge.rs`: typed Unix socket client for herdr protocol 20. Wire format: newline-delimited JSON `{id,method,params}` / `{id,result}` or `{id,error}`. Implements: `agent.start`, `agent.read`, `agent.send_keys`, `agent.prompt` (with wait options), `agent.wait`, `agent.focus`, `pane.split`, `worktree.create`, `worktree.remove`. `AgentStatus` enum verbatim from herdr schema (idle/working/blocked/done/unknown). `is_available()` checks `HERDR_SOCKET_PATH` env var + socket existence. 10 unit tests covering serde roundtrip, wire shapes, and response parsing. tokio "net" feature added for `UnixStream`.
+
+**Code-3kl.2 — conductor.rs herdr_mode flag + AgentStatus adoption.** `ConductorState` gained `herdr_mode: bool` (auto-enabled when `HERDR_SOCKET_PATH` points at a live socket at `conductor_start` time). `run_pulse_claude` split into dispatcher + `run_pulse_via_herdr` (pane.split → agent.start → agent.prompt wait-until-Blocked-or-Done, respects cancel signal) + `run_pulse_subprocess` (original path, unchanged). `ConductorStatus` gained optional `agent_status: Option<String>` (skipped in serialization when absent). `running_posture` extended to 3-tuple `(dry_run, interval, herdr_mode)`. 61/61 tests pass, build clean. Committed + pushed on branch r12-live-verify.
+
+**Next (Code-3kl.3):** when herdr_mode=true, stop Tauri from owning PTYs for conductor panes; subscribe to `events.subscribe` / `pane.agent_status_changed` and relay into `conductor_status`. Manual verify: close window mid-pulse, reopen, confirm pulse ran in daemon + bd state intact.
 
 
 - After every phase closes: append a one-liner to the phase table above.
