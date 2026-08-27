@@ -11,6 +11,7 @@ mod conductor;
 mod daily;
 mod envloader;
 mod fs;
+mod herdr_bridge;
 mod projects;
 mod pty;
 mod sense;

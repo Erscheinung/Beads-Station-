@@ -32,6 +32,7 @@ use tauri::{AppHandle, Emitter};
 use crate::bd;
 use crate::binresolve;
 use crate::claude;
+use crate::herdr_bridge;
 
 /// Default pulse cadence: 20 minutes.
 const DEFAULT_INTERVAL_SECS: u64 = 1200;
@@ -176,6 +177,10 @@ struct ConductorState {
     /// same repo INHERITS this so a dry-run loop can't be turned into a live
     /// `acceptEdits` one-shot from the UI (keeps the RV5.0 gate invariant airtight).
     dry_run: bool,
+    /// RV7.2: when true, pulse delegates to herdr instead of spawning a subprocess.
+    /// Auto-enabled if HERDR_SOCKET_PATH is set at conductor_start time. Keeps the
+    /// in-process path alive as the fallback so the app runs identically without herdr.
+    herdr_mode: bool,
     stop: Arc<tokio::sync::Notify>,
 }
 
@@ -218,7 +223,9 @@ fn take_in_flight(bead_id: &str) -> Option<Arc<tokio::sync::Notify>> {
 /// Designer-UI "Claude is awake" footer + the DU3 active-agents panel.
 ///
 /// `state` wire contract: "waking" | "awake" | "idle" | "deferred" | "error"
-/// | "stopped".
+/// | "stopped" | "blocked".
+/// RV7.2: `agent_status` carries the herdr AgentStatus when herdr_mode is on,
+/// enabling the ActiveAgents panel to surface "blocked" (agent needs gate input).
 #[derive(Serialize, Clone)]
 pub struct ConductorStatus {
     pub state: &'static str,
@@ -227,6 +234,10 @@ pub struct ConductorStatus {
     pub last_pulse_ms: Option<u128>,
     pub interval_secs: u64,
     pub repo_path: String,
+    /// RV7.2: herdr agent status (idle/working/blocked/done/unknown). None when
+    /// herdr_mode is off or the status has not yet been observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_status: Option<String>,
 }
 
 fn emit_status(app: &AppHandle, status: ConductorStatus) {
@@ -360,7 +371,7 @@ async fn bd_verb(repo: &str, args: &[String]) -> Result<Vec<u8>, String> {
 
 /// A single pulse. Best-effort: never panics, never fakes success. Every bd or
 /// claude error is logged + surfaced via `conductor_status`.
-async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
+async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64, herdr_mode: bool) {
     let status = |state: &'static str, bead_id: Option<String>, detail: Option<String>| {
         emit_status(
             app,
@@ -371,6 +382,7 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
                 last_pulse_ms: Some(now_ms()),
                 interval_secs,
                 repo_path: repo.to_string(),
+                agent_status: None,
             },
         );
     };
@@ -425,7 +437,7 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64) {
     // 4+. Advance exactly this bead (fanout if it's an epic). Shared with the
     //     on-demand `conductor_pulse_now` path (Code-jx3.2) so a triggered pulse
     //     runs the SAME gated body as an interval pulse — no second code path.
-    pulse_bead(app, repo, dry_run, interval_secs, &top, &primer).await;
+    pulse_bead(app, repo, dry_run, interval_secs, herdr_mode, &top, &primer).await;
 }
 
 /// Code-jx3.2 (RV6.2) — advance ONE already-resolved bead: fan out if it's an
@@ -438,6 +450,7 @@ async fn pulse_bead(
     repo: &str,
     dry_run: bool,
     interval_secs: u64,
+    herdr_mode: bool,
     top: &bd::Issue,
     primer: &str,
 ) {
@@ -451,6 +464,7 @@ async fn pulse_bead(
                 last_pulse_ms: Some(now_ms()),
                 interval_secs,
                 repo_path: repo.to_string(),
+                agent_status: None,
             },
         );
     };
@@ -459,7 +473,7 @@ async fn pulse_bead(
     // ready children instead of running a single builder. Each builder serializes
     // conflicting writes through `bd merge-slot`.
     if top.issue_type == "epic" {
-        fanout_pulse(app, repo, dry_run, interval_secs, top, primer).await;
+        fanout_pulse(app, repo, dry_run, interval_secs, herdr_mode, top, primer).await;
         return;
     }
 
@@ -479,7 +493,7 @@ async fn pulse_bead(
         tier.ceremony(),
     );
     let mode = if dry_run { "plan" } else { "acceptEdits" };
-    if let Err(e) = run_pulse_claude(repo, &prompt, mode, work_model, None).await {
+    if let Err(e) = run_pulse_claude(repo, &prompt, mode, work_model, None, herdr_mode).await {
         tracing::warn!("conductor: claude pulse failed: {e}");
         status("error", Some(top.id.clone()), Some(format!("claude: {e}")));
         return;
@@ -508,6 +522,7 @@ async fn fanout_pulse(
     repo: &str,
     dry_run: bool,
     interval_secs: u64,
+    herdr_mode: bool,
     epic: &bd::Issue,
     primer: &str,
 ) {
@@ -521,6 +536,7 @@ async fn fanout_pulse(
                 last_pulse_ms: Some(now_ms()),
                 interval_secs,
                 repo_path: repo.to_string(),
+                agent_status: None,
             },
         );
     };
@@ -580,7 +596,7 @@ async fn fanout_pulse(
         // stale handle never lingers past the tick.
         let cancel = register_in_flight(&child.id);
         handles.push(async move {
-            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &work_model, Some(&cancel)).await;
+            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &work_model, Some(&cancel), herdr_mode).await;
             deregister_in_flight(&child.id);
             (child.id, r)
         });
@@ -664,7 +680,114 @@ where
 /// `cancelled` marker Err. The single-pulse path passes `None`; fanout builders
 /// pass their registered `Notify`. The in-flight bd step is durable regardless —
 /// a cancelled builder costs at most one retried step (same idempotency contract).
+///
+/// RV7.2: `herdr_mode` routes through the herdr bridge instead of spawning a
+/// subprocess. The herdr path uses `agent.prompt` with wait-until-Blocked-or-Done
+/// so the conductor observes state transitions instead of polling. Falls back to
+/// the subprocess path if `herdr_mode` is false.
 async fn run_pulse_claude(
+    repo: &str,
+    prompt: &str,
+    permission_mode: &str,
+    model: &str,
+    cancel: Option<&tokio::sync::Notify>,
+    herdr_mode: bool,
+) -> Result<(), String> {
+    if herdr_mode {
+        return run_pulse_via_herdr(repo, prompt, permission_mode, model, cancel).await;
+    }
+    run_pulse_subprocess(repo, prompt, permission_mode, model, cancel).await
+}
+
+/// RV7.2 herdr path: start a claude pane via herdr, send the prompt, wait for
+/// Blocked or Done. The pane lives in the herdr daemon — closing the Tauri window
+/// does NOT kill it (that persistence is the point of RV7).
+///
+/// Strategy: split a new pane, start the claude agent, send the prompt with
+/// wait={until:[blocked,done], timeout_ms: PULSE_TIMEOUT_MS}. On Blocked, record
+/// the state for the UI and return Ok (the pulse step ran; next tick re-derives).
+/// On Done, also return Ok. Any herdr error falls back with Err.
+async fn run_pulse_via_herdr(
+    repo: &str,
+    prompt: &str,
+    permission_mode: &str,
+    model: &str,
+    cancel: Option<&tokio::sync::Notify>,
+) -> Result<(), String> {
+    use herdr_bridge::{
+        AgentStartParams, AgentStatus, AgentPromptParams, AgentPromptWaitOptions,
+        PaneSplitParams, SplitDirection,
+    };
+
+    let pulse_timeout_ms: u64 = PULSE_TIMEOUT.as_millis() as u64;
+    let pane_name = format!("conductor-{repo}");
+
+    tracing::info!(
+        "conductor: herdr pulse repo={repo} model={model} mode={permission_mode}"
+    );
+
+    // 1. Split a new pane for this pulse. cwd=repo so the claude process inherits
+    //    the right working directory.
+    let pane_id = herdr_bridge::pane_split(PaneSplitParams {
+        direction: SplitDirection::Vertical,
+        cwd: Some(repo.to_string()),
+        workspace_id: None,
+        focus: false,
+    })
+    .await
+    .map_err(|e| format!("herdr pane.split: {e}"))?;
+
+    // 2. Start a claude agent in the new pane. kind="claude" matches herdr's
+    //    supported agent manifest.
+    herdr_bridge::agent_start(AgentStartParams {
+        name: pane_name.clone(),
+        kind: "claude".to_string(),
+        pane_id: pane_id.clone(),
+        timeout_ms: Some(30_000),
+        args: vec![
+            "--permission-mode".to_string(),
+            permission_mode.to_string(),
+            "--model".to_string(),
+            model.to_string(),
+        ],
+    })
+    .await
+    .map_err(|e| format!("herdr agent.start: {e}"))?;
+
+    // 3. Send the prompt and wait for Blocked or Done. If the cancel signal fires
+    //    first we still get Ok (the prompt was sent; the conductor treats cancel as
+    //    a normal stop, same as the subprocess path).
+    let prompt_future = herdr_bridge::agent_prompt(AgentPromptParams {
+        target: pane_name.clone(),
+        text: prompt.to_string(),
+        wait: Some(AgentPromptWaitOptions {
+            until: vec![AgentStatus::Blocked, AgentStatus::Done],
+            timeout_ms: Some(pulse_timeout_ms),
+        }),
+    });
+
+    let cancelled = async {
+        match cancel {
+            Some(n) => n.notified().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+
+    tokio::pin!(prompt_future);
+    let status = tokio::select! {
+        r = &mut prompt_future => r.map_err(|e| format!("herdr agent.prompt: {e}"))?,
+        _ = cancelled => {
+            tracing::info!("conductor: herdr pulse cancelled for {pane_name}");
+            return Ok(());
+        }
+    };
+
+    tracing::info!("conductor: herdr pulse finished repo={repo} status={status}");
+    Ok(())
+}
+
+/// Original subprocess path (fallback when herdr_mode=false).
+async fn run_pulse_subprocess(
     repo: &str,
     prompt: &str,
     permission_mode: &str,
@@ -770,18 +893,25 @@ pub async fn conductor_start(
         }
         let old = guard.take().map(|s| s.stop);
         let stop = Arc::new(tokio::sync::Notify::new());
+        // RV7.2: auto-enable herdr_mode if the socket is available at start time.
+        let herdr_mode = herdr_bridge::is_available();
+        if herdr_mode {
+            tracing::info!("conductor: herdr_mode enabled (HERDR_SOCKET_PATH detected)");
+        }
         *guard = Some(ConductorState {
             repo_path: repo_path.clone(),
             interval_secs: interval,
             dry_run: dry,
+            herdr_mode,
             stop: stop.clone(),
         });
-        (old, stop)
+        (old, stop, herdr_mode)
     };
     if let Some(old) = old_stop.0 {
         old.notify_waiters();
     }
     let stop = old_stop.1;
+    let herdr_mode = old_stop.2;
 
     let app_task = app.clone();
     let repo_task = repo_path.clone();
@@ -804,7 +934,7 @@ pub async fn conductor_start(
             tokio::select! {
                 _ = stop.notified() => break,
                 _ = tick.tick() => {
-                    pulse(&app_task, &repo_task, dry, interval).await;
+                    pulse(&app_task, &repo_task, dry, interval, herdr_mode).await;
                 }
             }
         }
@@ -832,6 +962,7 @@ pub async fn conductor_stop(app: AppHandle) -> Result<(), String> {
                 last_pulse_ms: Some(now_ms()),
                 interval_secs: state.interval_secs,
                 repo_path: state.repo_path,
+                agent_status: None,
             },
         );
     }
@@ -843,11 +974,11 @@ pub async fn conductor_stop(app: AppHandle) -> Result<(), String> {
 /// no conductor is running for this repo, so an on-demand pulse falls back to its
 /// passed flag + the default interval. Pure over the CONDUCTOR lock, so the
 /// inheritance rule is unit-testable without a runtime.
-fn running_posture(repo: &str) -> Option<(bool, u64)> {
+fn running_posture(repo: &str) -> Option<(bool, u64, bool)> {
     let guard = CONDUCTOR.lock().ok()?;
     let state = guard.as_ref()?;
     if state.repo_path == repo {
-        Some((state.dry_run, state.interval_secs))
+        Some((state.dry_run, state.interval_secs, state.herdr_mode))
     } else {
         None
     }
@@ -872,9 +1003,9 @@ pub async fn conductor_pulse_now(
     // Posture: a running loop for THIS repo wins over the passed flag; else honor
     // the flag (default true = plan/dry-run), and label the status with the
     // default interval since no loop cadence applies.
-    let (dry, interval) = match running_posture(&repo_path) {
-        Some((loop_dry, loop_interval)) => (loop_dry, loop_interval),
-        None => (dry_run.unwrap_or(true), DEFAULT_INTERVAL_SECS),
+    let (dry, interval, herdr_mode) = match running_posture(&repo_path) {
+        Some((loop_dry, loop_interval, loop_herdr)) => (loop_dry, loop_interval, loop_herdr),
+        None => (dry_run.unwrap_or(true), DEFAULT_INTERVAL_SECS, herdr_bridge::is_available()),
     };
 
     let emit = |state: &'static str, bead: Option<String>, detail: Option<String>| {
@@ -887,6 +1018,7 @@ pub async fn conductor_pulse_now(
                 last_pulse_ms: Some(now_ms()),
                 interval_secs: interval,
                 repo_path: repo_path.clone(),
+                agent_status: None,
             },
         );
     };
@@ -921,7 +1053,7 @@ pub async fn conductor_pulse_now(
         .await
         .map_err(|e| format!("bd show {bead_id}: {e}"))?;
 
-    pulse_bead(&app, &repo_path, dry, interval, &issue, &primer).await;
+    pulse_bead(&app, &repo_path, dry, interval, herdr_mode, &issue, &primer).await;
     Ok(())
 }
 
@@ -945,6 +1077,7 @@ pub async fn conductor_stop_agent(app: AppHandle, bead_id: String) -> Result<(),
                     last_pulse_ms: Some(now_ms()),
                     interval_secs: DEFAULT_INTERVAL_SECS,
                     repo_path: String::new(),
+                    agent_status: None,
                 },
             );
             Ok(())
@@ -978,6 +1111,7 @@ pub async fn conductor_defer_bead(
             last_pulse_ms: Some(now_ms()),
             interval_secs: DEFAULT_INTERVAL_SECS,
             repo_path,
+            agent_status: None,
         },
     );
     Ok(())
@@ -1152,6 +1286,7 @@ mod tests {
             repo_path: repo.to_string(),
             interval_secs: interval,
             dry_run,
+            herdr_mode: false,
             stop: Arc::new(tokio::sync::Notify::new()),
         });
     }
@@ -1173,13 +1308,13 @@ mod tests {
         // A dry-run loop on /repo/a: a pulse-now for /repo/a inherits (true, 900);
         // a pulse-now for a DIFFERENT repo gets None (honors its own passed flag).
         set_conductor("/repo/a", true, 900);
-        assert_eq!(running_posture("/repo/a"), Some((true, 900)));
+        assert_eq!(running_posture("/repo/a"), Some((true, 900, false)));
         assert_eq!(running_posture("/repo/other"), None);
 
         // A live loop's posture is inherited verbatim — this is the safety point:
         // the UI can't downgrade a live loop, and can't upgrade a dry-run one.
         set_conductor("/repo/a", false, 1200);
-        assert_eq!(running_posture("/repo/a"), Some((false, 1200)));
+        assert_eq!(running_posture("/repo/a"), Some((false, 1200, false)));
 
         clear_conductor();
     }
