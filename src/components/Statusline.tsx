@@ -5,13 +5,12 @@
 // the SAME deduped fetch that feeds Board + IssueList. The statusline no longer
 // spawns its own bd_counts (= bd_ready + bd_list) on a 5s poll or its own
 // bd_changed listener — that independent fan-out was a big part of the 8s cold
-// escalation. Only the git branch is still fetched here (cheap, unrelated,
-// one-shot), refreshed on bd_changed.
+// escalation. EXP backbone (Code-p2p): the git branch is now fetched on repo
+// change ONLY, not on every bd_changed — one fewer uncached spawn per bead write.
 
 import { useEffect, useMemo, useState } from 'react'
 import { safeInvoke } from '../lib/invokeErrorBoundary'
 import { useBdSnapshot } from '../lib/bdCache'
-import { useBdLiveContext } from '../lib/BdLiveProvider'
 
 declare global {
   interface Window {
@@ -75,10 +74,11 @@ export function Statusline({ repoPath, projectPath }: Props) {
     return () => window.clearInterval(id)
   }, [])
 
-  // Git branch — cheap one-shot, refreshed on repo change and on bd_changed
-  // (a commit/branch switch usually coincides with a .beads write). Kept
-  // separate from the snapshot: it's a different backend call and doesn't
-  // belong in the issue cache.
+  // Git branch — cheap one-shot, fetched on repo change only. It does NOT
+  // refetch on bd_changed: a bead write is not a branch change, and firing an
+  // unsemaphored git spawn on every bd_changed (multiplied per mounted view)
+  // was part of the fan-out that fed the fork/fd storm. A genuine branch switch
+  // remounts with a new repoPath, which re-runs this. (EXP backbone Code-p2p.)
   useEffect(() => {
     let cancelled = false
     safeInvoke<string>('bd_git_branch', { repoPath }, { rethrow: true })
@@ -86,11 +86,6 @@ export function Statusline({ repoPath, projectPath }: Props) {
       .catch(() => { if (!cancelled) setBranch('(unknown)') })
     return () => { cancelled = true }
   }, [repoPath])
-  useBdLiveContext(repoPath, () => {
-    safeInvoke<string>('bd_git_branch', { repoPath }, { rethrow: true })
-      .then(b => setBranch(b!))
-      .catch(() => setBranch('(unknown)'))
-  })
 
   // Pending-write dot — flipped by `window` events.
   useEffect(() => {
