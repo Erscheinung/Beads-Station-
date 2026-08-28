@@ -493,19 +493,38 @@ async fn pulse_bead(
         tier.ceremony(),
     );
     let mode = if dry_run { "plan" } else { "acceptEdits" };
-    if let Err(e) = run_pulse_claude(repo, &prompt, mode, work_model, None, herdr_mode).await {
-        tracing::warn!("conductor: claude pulse failed: {e}");
-        status("error", Some(top.id.clone()), Some(format!("claude: {e}")));
-        return;
-    }
+    let outcome = match run_pulse_claude(repo, &prompt, mode, work_model, None, herdr_mode).await {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!("conductor: claude pulse failed: {e}");
+            status("error", Some(top.id.clone()), Some(format!("claude: {e}")));
+            return;
+        }
+    };
 
     // Heartbeat — record last completed pulse. Non-fatal on error.
     if let Err(e) = bd_verb(repo, &heartbeat_args(&now_rfc3339_ish())).await {
         tracing::warn!("conductor: heartbeat failed: {e}");
     }
 
-    // Awake.
-    status("awake", Some(top.id.clone()), None);
+    // RV7.3: a Blocked outcome (herdr agent waiting on gate input) emits a
+    // `blocked` status with agent_status set, so the ActiveAgents panel can show
+    // the pane needs the operator. A Completed outcome is the ordinary `awake`.
+    match outcome {
+        PulseOutcome::Blocked => emit_status(
+            app,
+            ConductorStatus {
+                state: "blocked",
+                bead_id: Some(top.id.clone()),
+                detail: Some("agent blocked — needs gate input".to_string()),
+                last_pulse_ms: Some(now_ms()),
+                interval_secs,
+                repo_path: repo.to_string(),
+                agent_status: outcome.agent_status(),
+            },
+        ),
+        PulseOutcome::Completed => status("awake", Some(top.id.clone()), None),
+    }
 }
 
 /// RV4.2 — epic fanout. Ensures a swarm molecule exists for the epic, reads its
@@ -609,10 +628,14 @@ async fn fanout_pulse(
     // impossible since run_pulse_claude never panics, but counted honestly so
     // ok+failed+lost always == n and the status line can't silently undercount).
     let mut ok = 0usize;
+    let mut blocked: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for (id, r) in &results {
         match r {
-            Ok(()) => ok += 1,
+            Ok(PulseOutcome::Completed) => ok += 1,
+            // RV7.3: a blocked builder ran its step but is waiting on gate input.
+            // Counted apart from ok/failed so the aggregate can surface it.
+            Ok(PulseOutcome::Blocked) => blocked.push(id.clone()),
             Err(e) => {
                 tracing::warn!("conductor: builder {id} failed: {e}");
                 failed.push(id.clone());
@@ -627,14 +650,42 @@ async fn fanout_pulse(
     }
 
     if failed.is_empty() && lost == 0 {
-        emit("awake", Some(format!("{ok} builder(s) advanced for {}", epic.id)));
+        // RV7.3: if any builder is blocked (herdr gate wait), report `blocked`
+        // with agent_status so the panel flags the epic as needing input; the
+        // completed builders are still counted in the detail.
+        if blocked.is_empty() {
+            emit("awake", Some(format!("{ok} builder(s) advanced for {}", epic.id)));
+        } else {
+            emit_status(
+                app,
+                ConductorStatus {
+                    state: "blocked",
+                    bead_id: Some(epic.id.clone()),
+                    detail: Some(format!(
+                        "{ok} advanced, {} blocked ({}) for {}",
+                        blocked.len(),
+                        blocked.join(","),
+                        epic.id
+                    )),
+                    last_pulse_ms: Some(now_ms()),
+                    interval_secs,
+                    repo_path: repo.to_string(),
+                    agent_status: Some("blocked".to_string()),
+                },
+            );
+        }
     } else {
         emit(
             "error",
             Some(format!(
-                "{ok} ok, {} failed ({}){}",
+                "{ok} ok, {} failed ({}){}{}",
                 failed.len(),
                 failed.join(","),
+                if !blocked.is_empty() {
+                    format!(", {} blocked", blocked.len())
+                } else {
+                    String::new()
+                },
                 if lost > 0 { format!(", {lost} lost") } else { String::new() }
             )),
         );
@@ -680,11 +731,33 @@ where
 /// `cancelled` marker Err. The single-pulse path passes `None`; fanout builders
 /// pass their registered `Notify`. The in-flight bd step is durable regardless —
 /// a cancelled builder costs at most one retried step (same idempotency contract).
+/// RV7.3: terminal state of a single pulse. The subprocess path always resolves
+/// to `Completed` (a subprocess exit is a completion); the herdr path can also
+/// resolve to `Blocked` when the agent stops on `until:[blocked]` waiting for
+/// gate input. Maps to the `ConductorStatus.agent_status` wire field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PulseOutcome {
+    Completed,
+    Blocked,
+}
+
+impl PulseOutcome {
+    /// The `agent_status` wire string for this outcome, or None for a plain
+    /// completion (the FE treats a missing agent_status as "not herdr / not
+    /// blocked" and renders the ordinary `awake` card).
+    fn agent_status(self) -> Option<String> {
+        match self {
+            PulseOutcome::Blocked => Some("blocked".to_string()),
+            PulseOutcome::Completed => None,
+        }
+    }
+}
+
 ///
-/// RV7.2: `herdr_mode` routes through the herdr bridge instead of spawning a
-/// subprocess. The herdr path uses `agent.prompt` with wait-until-Blocked-or-Done
-/// so the conductor observes state transitions instead of polling. Falls back to
-/// the subprocess path if `herdr_mode` is false.
+/// `pulse_bead`/`fanout_pulse` can distinguish an agent that COMPLETED from one
+/// that BLOCKED (needs gate input). Without this the herdr Blocked transition —
+/// the whole reason RV7 waits on `until:[blocked,done]` — was silently reported
+/// as `awake`, so the operator never saw that an agent was waiting on them.
 async fn run_pulse_claude(
     repo: &str,
     prompt: &str,
@@ -692,7 +765,7 @@ async fn run_pulse_claude(
     model: &str,
     cancel: Option<&tokio::sync::Notify>,
     herdr_mode: bool,
-) -> Result<(), String> {
+) -> Result<PulseOutcome, String> {
     if herdr_mode {
         return run_pulse_via_herdr(repo, prompt, permission_mode, model, cancel).await;
     }
@@ -713,7 +786,7 @@ async fn run_pulse_via_herdr(
     permission_mode: &str,
     model: &str,
     cancel: Option<&tokio::sync::Notify>,
-) -> Result<(), String> {
+) -> Result<PulseOutcome, String> {
     use herdr_bridge::{
         AgentStartParams, AgentStatus, AgentPromptParams, AgentPromptWaitOptions,
         PaneSplitParams, SplitDirection,
@@ -778,12 +851,18 @@ async fn run_pulse_via_herdr(
         r = &mut prompt_future => r.map_err(|e| format!("herdr agent.prompt: {e}"))?,
         _ = cancelled => {
             tracing::info!("conductor: herdr pulse cancelled for {pane_name}");
-            return Ok(());
+            return Ok(PulseOutcome::Completed);
         }
     };
 
     tracing::info!("conductor: herdr pulse finished repo={repo} status={status}");
-    Ok(())
+    // RV7.3: a Blocked terminal state means the agent is waiting on gate input;
+    // surface it so the operator sees the pane needs them. Any other terminal
+    // state (Done and the should-not-happen idle/working/unknown) is a completion.
+    Ok(match status {
+        AgentStatus::Blocked => PulseOutcome::Blocked,
+        _ => PulseOutcome::Completed,
+    })
 }
 
 /// Original subprocess path (fallback when herdr_mode=false).
@@ -793,7 +872,7 @@ async fn run_pulse_subprocess(
     permission_mode: &str,
     model: &str,
     cancel: Option<&tokio::sync::Notify>,
-) -> Result<(), String> {
+) -> Result<PulseOutcome, String> {
     let claude_path =
         binresolve::resolve_bin_or_default("claude", claude::CLAUDE_BIN_FALLBACK)?;
     // Code-0vd (RV-live): surface the resolved work model + posture per pulse so
@@ -865,7 +944,9 @@ async fn run_pulse_subprocess(
             stderr.trim()
         ));
     }
-    Ok(())
+    // A subprocess exit is always a completion — the subprocess path has no
+    // Blocked concept (that lives only in the herdr wait protocol).
+    Ok(PulseOutcome::Completed)
 }
 
 /// Start the conductor for `repo_path`. Idempotent for the same repo; starting
@@ -1353,5 +1434,14 @@ mod tests {
         assert_eq!(IN_FLIGHT.lock().unwrap().get("Code-b3").is_some(), true);
         assert_eq!(IN_FLIGHT.lock().unwrap().len() >= 1, true);
         IN_FLIGHT.lock().unwrap().clear();
+    }
+
+    // RV7.3: PulseOutcome maps to the ConductorStatus.agent_status wire field.
+    // Blocked carries "blocked" (drives the ActiveAgents blocked card); Completed
+    // carries None (the FE renders the ordinary awake card, herdr or not).
+    #[test]
+    fn pulse_outcome_agent_status_wire() {
+        assert_eq!(PulseOutcome::Blocked.agent_status(), Some("blocked".to_string()));
+        assert_eq!(PulseOutcome::Completed.agent_status(), None);
     }
 }

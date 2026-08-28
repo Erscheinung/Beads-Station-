@@ -814,7 +814,7 @@ Epic `Code-jx3` — all 3 children (`jx3.1/jx3.2/jx3.3`) CLOSED. Epic stays **OP
 
 **Next:** epic close waits on `Code-33c` (real-Tauri smoke; `Code-6w0` still open, needs `Code-5uy` perf fix first). Real-app verify of RV6: start conductor dry-run, click Run now, confirm a feed row + a `pulse spawn ... mode=plan` log line matching an interval pulse; trigger a fanout, Stop one builder, confirm bd re-derives next tick. Then fix `Code-hq4`/`Code-iya`.
 
-## Track G — RV7 herdr thin-client conductor (2026-08-27, Code-3kl.1 + Code-3kl.2 shipped)
+## Track G — RV7 herdr thin-client conductor (2026-08-27 → 08-28, epic Code-3kl CLOSED 3/3)
 
 Epic `Code-3kl` — 2 of 3 children closed this session. `Code-3kl.3` (thin-client pane cut + window-close persistence verify) remains open.
 
@@ -822,7 +822,11 @@ Epic `Code-3kl` — 2 of 3 children closed this session. `Code-3kl.3` (thin-clie
 
 **Code-3kl.2 — conductor.rs herdr_mode flag + AgentStatus adoption.** `ConductorState` gained `herdr_mode: bool` (auto-enabled when `HERDR_SOCKET_PATH` points at a live socket at `conductor_start` time). `run_pulse_claude` split into dispatcher + `run_pulse_via_herdr` (pane.split → agent.start → agent.prompt wait-until-Blocked-or-Done, respects cancel signal) + `run_pulse_subprocess` (original path, unchanged). `ConductorStatus` gained optional `agent_status: Option<String>` (skipped in serialization when absent). `running_posture` extended to 3-tuple `(dry_run, interval, herdr_mode)`. 61/61 tests pass, build clean. Committed + pushed on branch r12-live-verify.
 
-**Next (Code-3kl.3):** when herdr_mode=true, stop Tauri from owning PTYs for conductor panes; subscribe to `events.subscribe` / `pane.agent_status_changed` and relay into `conductor_status`. Manual verify: close window mid-pulse, reopen, confirm pulse ran in daemon + bd state intact.
+**Code-3kl.3 — thin-client pane cut + window-close persistence verify (2026-08-28, epic CLOSED 3/3).** Thin-client pane cut VERIFIED by inspection: `run_pulse_via_herdr` owns no Tauri PTY — it drives `pane.split` + `agent.start` over the herdr Unix socket, so the daemon owns the pane and it outlives the Tauri window by construction. Gap found + fixed in the shipped .2: `run_pulse_via_herdr` observed the terminal `AgentStatus` (Blocked/Done) but `run_pulse_claude` returned `Result<(), String>`, dropping it — a Blocked agent (waiting on gate input) was reported as `awake`. Now `run_pulse_claude`/`run_pulse_via_herdr`/`run_pulse_subprocess` return `PulseOutcome::{Completed,Blocked}`; `pulse_bead` + `fanout_pulse` emit `state:"blocked"` + `agent_status:"blocked"` on a blocked outcome (fanout counts blocked builders apart from ok/failed). FE: `ConductorStatus` carries `agent_status?`; `statusPresentation` + `ActiveAgents.conductorCard` + `FEED_DOT` render a blocked (orange) card that keeps the bead so the operator can Defer — approve/reject stays in GateCockpit. Gates: build clean, 84 vitest (+3 statusPresentation blocked), 16 rust conductor tests (+`pulse_outcome_agent_status_wire`), 40 live specs.
+
+**RV7.3 REMAINING MANUAL GATE (cannot automate — no WebKitWebDriver on macOS, needs a live herdr daemon):** start conductor with `HERDR_SOCKET_PATH` set, close window mid-pulse, reopen, confirm pulse continued in the daemon + bd state intact + reopened window re-attaches to the `conductor_status` stream. Blocked on a running herdr daemon build.
+
+**Code-zm7 audit (PLAN B Part 1):** FE pane management is REAL (splits `s`/`v`, tabs, `C-w h/j/k/l` focus-move, zoom, close all shipped in `TerminalPanes.tsx` + `state/termPanes.ts`). Description created 2026-07-26 is stale. Sole remaining gap = PTYs surviving WINDOW CLOSE, which is exactly the RV7 herdr epic — linked `Code-zm7 ↔ Code-3kl` relates-to. Not closed: window-close persistence is zm7's headline claim and is not met in-process.
 
 
 - After every phase closes: append a one-liner to the phase table above.

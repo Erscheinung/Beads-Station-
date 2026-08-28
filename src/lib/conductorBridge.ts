@@ -9,7 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 /** Live conductor state, pushed on the `conductor_status` event each pulse. */
 export interface ConductorStatus {
-  /** "waking" | "awake" | "idle" | "deferred" | "error" | "stopped". */
+  /** "waking" | "awake" | "idle" | "deferred" | "error" | "stopped" | "blocked". */
   state: string;
   bead_id: string | null;
   detail: string | null;
@@ -17,6 +17,13 @@ export interface ConductorStatus {
   last_pulse_ms: number | null;
   interval_secs: number;
   repo_path: string;
+  /**
+   * RV7.3 — herdr agent status ("blocked" when the agent is waiting on gate
+   * input). Absent (undefined) on the subprocess path and whenever herdr_mode is
+   * off; the backend omits the field via `skip_serializing_if`. A `blocked`
+   * state always carries `agent_status: "blocked"`.
+   */
+  agent_status?: string | null;
 }
 
 /** The app event channel the backend emits ConductorStatus on. */

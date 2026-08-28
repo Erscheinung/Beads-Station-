@@ -16,6 +16,8 @@ vi.mock('./safeListen', () => ({
 }))
 
 import { useConductorFeed } from './useConductorStatus'
+import { statusPresentation } from './useConductorStatus'
+import type { ConductorStatus } from './conductorBridge'
 
 function emit(state: string, bead_id: string | null, last_pulse_ms: number | null) {
   act(() => {
@@ -71,5 +73,33 @@ describe('useConductorFeed', () => {
     const { result } = renderHook(() => useConductorFeed())
     emit('idle', null, null)
     expect(result.current[0].ts).toBeGreaterThan(0)
+  })
+})
+
+// RV7.3 (Code-3kl.3) — statusPresentation maps the wire state (incl. the new
+// herdr `blocked`) to a dot color + label for the footer/card.
+describe('statusPresentation', () => {
+  const base: Omit<ConductorStatus, 'state' | 'bead_id'> = {
+    detail: null,
+    last_pulse_ms: null,
+    interval_secs: 1200,
+    repo_path: '/repo/a',
+  }
+
+  it('maps blocked to the orange attention dot with the bead id', () => {
+    const pres = statusPresentation({ ...base, state: 'blocked', bead_id: 'Code-3kl.3' })
+    expect(pres.dot).toBe('var(--bs-orange)')
+    expect(pres.text).toContain('Code-3kl.3')
+    expect(pres.text.toLowerCase()).toContain('blocked')
+  })
+
+  it('maps blocked without a bead to a generic blocked label', () => {
+    const pres = statusPresentation({ ...base, state: 'blocked', bead_id: null })
+    expect(pres.dot).toBe('var(--bs-orange)')
+    expect(pres.text.toLowerCase()).toContain('blocked')
+  })
+
+  it('null status is stopped (never started)', () => {
+    expect(statusPresentation(null).text.toLowerCase()).toContain('stopped')
   })
 })

@@ -23,7 +23,7 @@ import { conductorPulseNow, conductorStopAgent, conductorDeferBead } from '../..
 // one. The conductor + pane stores are self-contained (module-level / event),
 // so only the bd snapshot needs the provider.
 
-type AgentState = 'resolving' | 'reviewing' | 'done' | 'deferred' | 'error' | 'resting'
+type AgentState = 'resolving' | 'reviewing' | 'done' | 'deferred' | 'error' | 'resting' | 'blocked'
 
 interface AgentCard {
   key: string
@@ -48,6 +48,7 @@ const STATE_COLOR: Record<AgentState, string> = {
   deferred: 'var(--bs-yellow)',
   error: 'var(--bs-red)',
   resting: 'var(--bs-fg-faint)',
+  blocked: 'var(--bs-orange)',
 }
 
 /** Map the conductor's wire state to an agent-card presentation. */
@@ -77,6 +78,19 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
         action: bead ? `Advanced ${bead}` : detail || 'Pulse complete',
         state: 'done',
         progress: 1,
+        beadId: bead,
+      }
+    case 'blocked':
+      // RV7.3 — herdr agent stopped on a gate. Surface it as a distinct blocked
+      // card (orange) that still carries the bead so the operator can Defer it;
+      // approve/reject stays in GateCockpit.
+      return {
+        key: 'conductor',
+        label,
+        tier: null,
+        action: bead ? `Blocked · ${bead} needs approval` : 'Blocked · needs approval',
+        state: 'blocked',
+        progress: 0.75,
         beadId: bead,
       }
     case 'deferred':
@@ -110,6 +124,7 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
 const FEED_DOT: Record<string, string> = {
   waking: 'var(--bs-blue)',
   awake: 'var(--bs-green)',
+  blocked: 'var(--bs-orange)',
   deferred: 'var(--bs-orange)',
   error: 'var(--bs-red)',
   idle: 'var(--bs-fg-faint)',

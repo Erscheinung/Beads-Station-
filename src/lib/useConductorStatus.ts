@@ -101,6 +101,15 @@ export function statusPresentation(status: ConductorStatus | null): {
       }
     case 'idle':
       return { dot: 'var(--bs-fg-faint)', text: 'Conductor idle' }
+    case 'blocked':
+      // RV7.3 — a herdr agent is waiting on gate input. Orange (attention, not
+      // an error) mirrors the deferred/gate palette.
+      return {
+        dot: 'var(--bs-orange)',
+        text: status?.bead_id
+          ? `Conductor blocked · ${status.bead_id} needs input`
+          : 'Conductor blocked · needs input',
+      }
     case 'deferred':
       return { dot: 'var(--bs-orange)', text: 'Conductor deferred' }
     case 'error':
