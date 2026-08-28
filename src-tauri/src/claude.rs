@@ -57,30 +57,30 @@ pub(crate) fn chan_id(id: &str) -> String {
 static SCROLLBACK: Lazy<Mutex<HashMap<String, VecDeque<Value>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-// Phase 2 still hardcodes the claude binary path. Phase 6 will make this
-// configurable via settings. Phase 2.5 routes the literal through
-// binresolve so we still find claude when it's been installed somewhere
-// else (e.g. /opt/homebrew/bin) and only fall back to the literal when
-// the resolver comes up empty.
-pub(crate) const CLAUDE_BIN_FALLBACK: &str = "~/.local/bin/claude";
-
 /// Build a colon-joined PATH that prepends the canonical install dirs to
 /// whatever PATH the GUI app inherited. Deduped while preserving order so
 /// child processes (claude itself, and anything claude shells out to like
 /// git) can find their tools even when launchd handed us an empty PATH.
 pub(crate) fn augmented_path() -> String {
-    let canonical = ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"];
+    let canonical = ["/opt/homebrew/bin", "/usr/local/bin"];
     let inherited = std::env::var("PATH").unwrap_or_default();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
-    // nvm node bin dirs first: an nvm-managed claude/node/git-helpers won't be
-    // on the GUI app's launchd PATH otherwise (same gap binresolve closes).
+    // HOME-expanded ~/.local/bin first (was a hardcoded /Users/<dev>/.local/bin —
+    // dead on any other machine / packaged .app). nvm node bin dirs next: an
+    // nvm-managed claude/node/git-helpers won't be on the GUI app's launchd PATH
+    // otherwise (same gap binresolve closes).
+    let home_local: Vec<String> = crate::binresolve::expand_home("~/.local/bin")
+        .and_then(|p| p.to_str().map(String::from))
+        .into_iter()
+        .collect();
     let nvm_dirs: Vec<String> = crate::binresolve::nvm_node_bin_dirs()
         .into_iter()
         .filter_map(|p| p.to_str().map(String::from))
         .collect();
-    for entry in nvm_dirs
+    for entry in home_local
         .into_iter()
+        .chain(nvm_dirs.into_iter())
         .chain(canonical.iter().map(|s| s.to_string()))
         .chain(inherited.split(':').filter(|s| !s.is_empty()).map(|s| s.to_string()))
     {
@@ -99,6 +99,12 @@ struct ClaudeSession {
     stdin: Arc<Mutex<ChildStdin>>,
     child: Child,
     session_id: String,
+    // EXP backbone: the spawn-governor permit for this child. A `claude --print`
+    // is long-lived (holds three pipe fds for its whole life), so unlike a
+    // short bd read it must keep its permit until the child is reaped. Held here
+    // so it drops exactly when the ClaudeSession leaves the SESSIONS map (every
+    // removal = reap: normal exit, claude_kill, kill_all_sessions, reconcile).
+    _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 /// Per-bridge session map. Keyed by the bridge id (see the module doc —
@@ -178,11 +184,12 @@ pub async fn claude_start(
     };
     validate_permission_mode(&mode)?;
 
-    // Resolve claude binary via binresolve; fall back to the literal if the
-    // resolver finds nothing. Also emit a diagnostic event so we can tell
-    // from the frontend exactly which binary + cwd we're spawning under —
-    // this is what made the Phase 2.5 dmg debugging trivial.
-    let claude_path = crate::binresolve::resolve_bin_or_default("claude", CLAUDE_BIN_FALLBACK)
+    // Resolve claude binary via binresolve (searches ~/.local/bin, homebrew,
+    // nvm, PATH, and honors BS_CLAUDE_BIN). No hardcoded fallback path anymore —
+    // the old one pointed at one developer's home and was dead on any other
+    // machine or a packaged .app. Emit a diagnostic event so we can tell from
+    // the frontend exactly which binary + cwd we're spawning under.
+    let claude_path = crate::binresolve::resolve_bin("claude")
         .map_err(|e| format!("resolve claude binary: {e}"))?;
     let path_env = augmented_path();
 
@@ -251,6 +258,13 @@ pub async fn claude_start(
             }
         }
     }
+
+    // EXP backbone: acquire a spawn-governor permit BEFORE forking claude, and
+    // hold it for the child's whole life (moved into ClaudeSession below). This
+    // is the one long-lived-child slot the old bd-only cap never counted — the
+    // biggest fd/fork consumer. On the lost-race branch below the permit drops
+    // with the redundant child, freeing the slot immediately.
+    let permit = crate::spawngov::permit().await;
 
     let mut child = cmd
         .spawn()
@@ -407,6 +421,9 @@ pub async fn claude_start(
         if let Some(existing) = guard.get(&project_id) {
             let sid = existing.session_id.clone();
             drop(guard);
+            // Lost the same-bridge race: free the governor slot immediately,
+            // then reap the redundant child outside the map lock.
+            drop(permit);
             let mut redundant = child;
             let _ = redundant.start_kill();
             let _ = redundant.wait().await;
@@ -418,6 +435,7 @@ pub async fn claude_start(
                 stdin,
                 child,
                 session_id: session_id.clone(),
+                _permit: permit,
             },
         );
     }

@@ -153,3 +153,20 @@ pub async fn pty_kill(id: u32) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// EXP backbone: reap every live PTY child on app exit. A pane closed without
+/// its FE unmount calling `pty_kill` (a crash, a force-quit, a missed cleanup)
+/// otherwise leaks the master fd + child + reader thread for the process
+/// lifetime — an fd-drain vector. Mirrors `claude::kill_all_sessions`; called
+/// from the `CloseRequested` handler alongside it. Returns the count reaped.
+pub fn kill_all_ptys() -> usize {
+    let mut map = match PTYS.lock() {
+        Ok(m) => m,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let n = map.len();
+    for (_id, mut handle) in map.drain() {
+        let _ = handle.child.kill();
+    }
+    n
+}

@@ -1025,8 +1025,14 @@ async fn run_pulse_subprocess(
     model: &str,
     cancel: Option<&tokio::sync::Notify>,
 ) -> Result<PulseOutcome, String> {
-    let claude_path =
-        binresolve::resolve_bin_or_default("claude", claude::CLAUDE_BIN_FALLBACK)?;
+    // EXP backbone: hold a spawn-governor permit for the whole pulse (spawn +
+    // wait/select). The conductor is the biggest load generator — a fanout can
+    // fire MAX_FANOUT of these, each a full claude subprocess forking bd/git/
+    // dolt — and it used to bypass the cap entirely. Held to end of scope so the
+    // child counts against the global cap until it exits/cancels/times out.
+    let _permit = crate::spawngov::permit().await;
+
+    let claude_path = binresolve::resolve_bin("claude")?;
     // Code-0vd (RV-live): surface the resolved work model + posture per pulse so
     // an operator toggling Everyday/Heavy can confirm the --model arg actually
     // changed. Prompt is elided (can be large / sensitive); repo + model + mode

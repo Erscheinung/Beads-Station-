@@ -15,6 +15,7 @@ mod herdr_bridge;
 mod projects;
 mod pty;
 mod sense;
+mod spawngov;
 mod spending;
 mod telemetry;
 mod watcher;
@@ -100,6 +101,8 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let reaped = tauri::async_runtime::block_on(claude::kill_all_sessions());
                 eprintln!("[claude] window close: reaped {reaped} live session(s)");
+                let ptys = pty::kill_all_ptys();
+                eprintln!("[pty] window close: reaped {ptys} live pty child(ren)");
             }
         })
         .invoke_handler(tauri::generate_handler![

@@ -15,9 +15,16 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
-/// Cache of name → resolved absolute path so repeated bd/claude spawns
-/// don't re-stat the filesystem.
-static CACHE: Lazy<Mutex<HashMap<String, PathBuf>>> =
+/// Cache of name → resolved path. `Ok(path)` is a hit; `Err(())` is a
+/// remembered MISS. Caching misses matters under fd pressure: `is_executable`
+/// (a `metadata` stat) fails on every candidate when the fd table is exhausted,
+/// so a not-found result there is spurious — but re-walking 5 canonical dirs +
+/// nvm enumeration + the whole PATH on every subsequent spawn piles on more
+/// stat syscalls, amplifying the exact exhaustion that caused the miss. We
+/// remember the miss for the process lifetime and short-circuit. (A genuinely-
+/// missing binary won't appear mid-session; a transient-EMFILE miss is the cost
+/// of doing business once, not once per spawn.)
+static CACHE: Lazy<Mutex<HashMap<String, Result<PathBuf, ()>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Canonical install directories to search first, in priority order.
@@ -44,7 +51,7 @@ fn is_executable(path: &std::path::Path) -> bool {
     std::fs::metadata(path).map(|md| md.is_file()).unwrap_or(false)
 }
 
-fn expand_home(dir: &str) -> Option<PathBuf> {
+pub(crate) fn expand_home(dir: &str) -> Option<PathBuf> {
     if let Some(rest) = dir.strip_prefix("~/") {
         let home = std::env::var("HOME").ok()?;
         Some(PathBuf::from(home).join(rest))
@@ -81,7 +88,10 @@ pub(crate) fn nvm_node_bin_dirs() -> Vec<PathBuf> {
 pub fn resolve_bin(name: &str) -> Result<PathBuf, String> {
     if let Ok(cache) = CACHE.lock() {
         if let Some(hit) = cache.get(name) {
-            return Ok(hit.clone());
+            return match hit {
+                Ok(path) => Ok(path.clone()),
+                Err(()) => Err(miss_message(name)),
+            };
         }
     }
 
@@ -93,7 +103,7 @@ pub fn resolve_bin(name: &str) -> Result<PathBuf, String> {
         let candidate = PathBuf::from(&p);
         if is_executable(&candidate) {
             if let Ok(mut cache) = CACHE.lock() {
-                cache.insert(name.to_string(), candidate.clone());
+                cache.insert(name.to_string(), Ok(candidate.clone()));
             }
             return Ok(candidate);
         }
@@ -105,7 +115,7 @@ pub fn resolve_bin(name: &str) -> Result<PathBuf, String> {
         let candidate = base.join(name);
         if is_executable(&candidate) {
             if let Ok(mut cache) = CACHE.lock() {
-                cache.insert(name.to_string(), candidate.clone());
+                cache.insert(name.to_string(), Ok(candidate.clone()));
             }
             return Ok(candidate);
         }
@@ -118,7 +128,7 @@ pub fn resolve_bin(name: &str) -> Result<PathBuf, String> {
         let candidate = base.join(name);
         if is_executable(&candidate) {
             if let Ok(mut cache) = CACHE.lock() {
-                cache.insert(name.to_string(), candidate.clone());
+                cache.insert(name.to_string(), Ok(candidate.clone()));
             }
             return Ok(candidate);
         }
@@ -134,16 +144,28 @@ pub fn resolve_bin(name: &str) -> Result<PathBuf, String> {
             let candidate = PathBuf::from(dir).join(name);
             if is_executable(&candidate) {
                 if let Ok(mut cache) = CACHE.lock() {
-                    cache.insert(name.to_string(), candidate.clone());
+                    cache.insert(name.to_string(), Ok(candidate.clone()));
                 }
                 return Ok(candidate);
             }
         }
     }
 
-    Err(format!(
+    // Not found anywhere. Remember the miss so we don't re-walk the whole
+    // search on every subsequent spawn (see CACHE doc — matters under EMFILE).
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.insert(name.to_string(), Err(()));
+    }
+    Err(miss_message(name))
+}
+
+/// The not-found error string. Factored out so the cached-miss path and the
+/// live-miss path return byte-identical messages.
+fn miss_message(name: &str) -> String {
+    let override_var = format!("BS_{}_BIN", name.to_uppercase());
+    format!(
         "binary '{name}' not found in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin, ~/.nvm/versions/node/*/bin or PATH. Install {name}, symlink it into one of these directories, or set {override_var}=<absolute path>."
-    ))
+    )
 }
 
 /// Like resolve_bin, but if the search fails fall back to `fallback_abs_path`
@@ -159,7 +181,7 @@ pub fn resolve_bin_or_default(
             let fb = PathBuf::from(fallback_abs_path);
             if is_executable(&fb) {
                 if let Ok(mut cache) = CACHE.lock() {
-                    cache.insert(name.to_string(), fb.clone());
+                    cache.insert(name.to_string(), Ok(fb.clone()));
                 }
                 Ok(fb)
             } else {

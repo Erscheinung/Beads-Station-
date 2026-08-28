@@ -13,25 +13,6 @@ use tokio::process::Command;
 
 pub(crate) const ACTOR: &str = "Beads Station";
 
-/// RV3.1 — global cap on concurrent `bd` subprocess spawns from this app.
-/// bd is a ~130MB Go binary that forks git/dolt of its own; the app fires
-/// bd_list + bd_ready + bd_counts on a poll AND on every bd_changed, so an
-/// unthrottled burst (esp. with agent panes adding claude+bd load) can exhaust
-/// the process fork limit -> `fork: Resource temporarily unavailable` (EAGAIN /
-/// os error 35) -> cascading failures + a toast storm that buries the UI.
-/// Serializing to a small number keeps the app from being its own fork bomb;
-/// excess calls await a permit instead of spawning into an exhausted table.
-static BD_SEMAPHORE: once_cell::sync::Lazy<tokio::sync::Semaphore> =
-    once_cell::sync::Lazy::new(|| tokio::sync::Semaphore::new(3));
-
-/// True when an error string looks like a fork/resource-exhaustion (EAGAIN),
-/// whether from our own spawn or from bd's internal fork of git/dolt.
-fn is_resource_exhaustion(msg: &str) -> bool {
-    msg.contains("os error 35")
-        || msg.contains("Resource temporarily unavailable")
-        || msg.contains("resource temporarily unavailable")
-}
-
 /// Outcome of a `bd` subprocess run. `NoDatabase` is the classified
 /// "no beads database found" case (project has no `.beads/` dir). Reads
 /// map it to an empty result; writes surface it as a real error so a
@@ -118,39 +99,24 @@ pub struct Dependency {
 /// ensures the role check lands against the correct repo and writes
 /// actually persist.
 async fn run_bd_classified(repo_path: &str, args: &[&str]) -> Result<BdOutcome, String> {
-    // RV3.1 — hold a semaphore permit for the whole spawn so the app never has
-    // more than BD_SEMAPHORE bd children in flight at once. Acquire can't fail
-    // (the semaphore is never closed); the permit drops at end of scope.
-    let _permit = BD_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|e| format!("bd semaphore closed: {e}"))?;
-
-    // RV3.1 — retry on fork/resource exhaustion (EAGAIN / os error 35) with a
-    // short escalating backoff. A transient exhaustion (e.g. a subprocess burst
-    // draining the fork table) usually clears within a few hundred ms; retrying
-    // recovers silently instead of surfacing a toast. Non-EAGAIN errors return
-    // immediately. Bounded to 3 attempts so a genuine, sustained exhaustion
-    // still fails (rather than hanging) — but by then the semaphore + backoff
-    // have removed the app as the storm's amplifier.
-    const MAX_ATTEMPTS: usize = 3;
-    const BACKOFF_MS: [u64; 2] = [120, 350];
-    let mut attempt = 0;
-    loop {
-        match run_bd_once(repo_path, args).await {
-            Ok(outcome) => return Ok(outcome),
-            Err(e) if is_resource_exhaustion(&e) && attempt < MAX_ATTEMPTS - 1 => {
-                tokio::time::sleep(std::time::Duration::from_millis(BACKOFF_MS[attempt])).await;
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    // The spawn governor now owns BOTH the concurrency cap (one process-global
+    // permit pool shared with git/claude) AND the resource-exhaustion retry
+    // policy (EMFILE + EAGAIN). `run_bd_once` acquires + holds a permit for its
+    // whole spawn; `with_retry` re-runs it on a transient exhaustion. bd reads
+    // are short-lived (fully awaited within the call) so acquiring the permit
+    // inside the retried op is correct — it releases when the op returns.
+    crate::spawngov::with_retry(|| run_bd_once(repo_path, args)).await
 }
 
-/// A single bd spawn + classify (no retry, no permit). Split out so
-/// `run_bd_classified` can wrap it in the semaphore + EAGAIN-retry loop.
+/// A single bd spawn + classify (no retry). Acquires a governor permit for the
+/// duration of the spawn so bd children count against the same global cap as
+/// git/claude. Split out so `run_bd_classified` can wrap it in the retry loop.
 async fn run_bd_once(repo_path: &str, args: &[&str]) -> Result<BdOutcome, String> {
+    // Hold a permit for the whole spawn+await. bd fully completes within this
+    // call, so the permit drops at end of scope (unlike claude, which must hold
+    // its permit far longer — see claude.rs).
+    let _permit = crate::spawngov::permit().await;
+
     // Phase 2.5: launchd-launched GUIs inherit an empty PATH, so
     // `Command::new("bd")` resolves to nothing. Always go through
     // binresolve::resolve_bin to find the canonical absolute path.
@@ -476,20 +442,25 @@ pub async fn bd_gate_resolve(repo_path: String, id: String) -> Result<(), String
 /// when the repo is detached / not a git repo / fails to spawn.
 #[tauri::command]
 pub async fn bd_git_branch(repo_path: String) -> Result<String, String> {
-    // Use std::process not tokio — tiny one-shot, doesn't need async I/O
-    // but we keep the signature async for tauri compat. Use tokio::process.
-    let git_path = crate::binresolve::resolve_bin("git")?;
-    let output = tokio::process::Command::new(&git_path)
-        .arg("-C").arg(&repo_path)
-        .arg("rev-parse").arg("--abbrev-ref").arg("HEAD")
-        .output()
-        .await
-        .map_err(|e| format!("git spawn failed: {e}"))?;
-    if !output.status.success() {
-        return Ok("(no-git)".into());
-    }
-    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if s == "HEAD" { Ok("(detached)".into()) } else { Ok(s) }
+    // Governed like every other spawn: git is cheap but Statusline used to fire
+    // it on every bd_changed unthrottled, adding forks during a storm. One
+    // permit for the whole (short) spawn; retry on transient exhaustion.
+    crate::spawngov::with_retry(|| async {
+        let _permit = crate::spawngov::permit().await;
+        let git_path = crate::binresolve::resolve_bin("git")?;
+        let output = tokio::process::Command::new(&git_path)
+            .arg("-C").arg(&repo_path)
+            .arg("rev-parse").arg("--abbrev-ref").arg("HEAD")
+            .output()
+            .await
+            .map_err(|e| format!("git spawn failed: {e}"))?;
+        if !output.status.success() {
+            return Ok("(no-git)".into());
+        }
+        let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(if s == "HEAD" { "(detached)".into() } else { s })
+    })
+    .await
 }
 
 /// Returns ready/in_progress/blocked/closed counts for the repo so the
@@ -597,6 +568,14 @@ pub async fn bd_snapshot(repo_path: String) -> Result<BdSnapshot, String> {
 /// surface a non-fatal error to the FE than block ClaudeChat mount.
 #[tauri::command]
 pub async fn bd_prime(repo_path: String) -> Result<String, String> {
+    // Acquire a governor permit BEFORE arming the 5s timeout. Previously this
+    // spawned directly (bypassing the cap) and started the timeout immediately,
+    // so a prime that merely QUEUED behind other spawns during a burst counted
+    // its wait against the 5s budget and false-"timed out" — the exact
+    // "bd prime timed out after 5s" the storm produced. The timeout now measures
+    // only bd's actual runtime, and the spawn counts against the global cap.
+    let _permit = crate::spawngov::permit().await;
+
     let bd_path = crate::binresolve::resolve_bin("bd")?;
     let mut cmd = tokio::process::Command::new(&bd_path);
     cmd.current_dir(&repo_path);
