@@ -173,32 +173,38 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
 
   // R2 §5a — bounded frames collection. Cap at 500; when appending overflows,
   // trim to the last 500, tally eviction, and GC approvalStates keys whose
-  // requestId no longer appears in the surviving frames. GC runs in the same
-  // event handler right after the setFrames call (functional setApprovalStates
-  // keeps only live keys), so no orphan approval state can linger past eviction.
+  // requestId no longer appears in the surviving frames.
+  //
+  // Code-1cs (F3): the eviction tally + approval GC used to run from INSIDE the
+  // setFrames updater. Updaters must be pure — React double-invokes them under
+  // StrictMode, and scheduling sibling setStates inside schedules extra renders
+  // during frame bursts. We now decide the trim against a ref mirror of the
+  // current frames (framesRef, kept in sync every render), do the setState side
+  // effects OUTSIDE the updater, and hand setFrames a plain value.
   const FRAME_CAP = 500
   const appendFrame = (next: Frame) => {
-    setFrames(prev => {
-      const merged = [...prev, next]
-      if (merged.length > FRAME_CAP) {
-        const dropped = merged.length - FRAME_CAP
-        const trimmed = merged.slice(-FRAME_CAP)
-        setEvictedCount(c => c + dropped)
-        // GC approvalStates: keep only keys whose requestId still appears.
-        const live = new Set<string>()
-        for (const f of trimmed) {
-          const a = extractApproval(f, gateToolUse)
-          if (a) live.add(a.requestId)
-        }
-        setApprovalStates(s => {
-          const kept: Record<string, ApprovalStatus> = {}
-          for (const k of Object.keys(s)) if (live.has(k)) kept[k] = s[k]
-          return kept
-        })
-        return trimmed
+    const merged = [...framesRef.current, next]
+    if (merged.length > FRAME_CAP) {
+      const dropped = merged.length - FRAME_CAP
+      const trimmed = merged.slice(-FRAME_CAP)
+      // GC approvalStates: keep only keys whose requestId still appears.
+      const live = new Set<string>()
+      for (const f of trimmed) {
+        const a = extractApproval(f, gateToolUse)
+        if (a) live.add(a.requestId)
       }
-      return merged
-    })
+      framesRef.current = trimmed
+      setFrames(trimmed)
+      setEvictedCount(c => c + dropped)
+      setApprovalStates(s => {
+        const kept: Record<string, ApprovalStatus> = {}
+        for (const k of Object.keys(s)) if (live.has(k)) kept[k] = s[k]
+        return kept
+      })
+      return
+    }
+    framesRef.current = merged
+    setFrames(merged)
   }
 
   useEffect(() => {
@@ -403,6 +409,25 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
     [frames, isApprovalPending],
   )
 
+  // Code-1cs (F2): the pending-approval list used to be derived by an
+  // un-memoized frames.map(extractApproval) in the JSX on every render, on top
+  // of the memoized renderItems/topmostPending/resolvedToolIds passes that
+  // already walk up to 500 frames. Fold the extraction into one memo (keeps the
+  // original frame index for a stable React key). The render-time decision
+  // (isApprovalPending / isPermissionFrame unmount rule) stays in the map below
+  // since it depends on approvalStates, which changes independently.
+  const approvalItems = useMemo(
+    () => {
+      const out: { approval: PendingApproval; index: number }[] = []
+      frames.forEach((f, i) => {
+        const a = extractApproval(f, gateToolUse)
+        if (a) out.push({ approval: a, index: i })
+      })
+      return out
+    },
+    [frames, gateToolUse],
+  )
+
   // Resolve the topmost pending approval. Shared by the window-level a/d
   // shortcut (chat/pane focus, no editable) AND the agent input's own onKeyDown
   // (RV3.12 — an agent pane's input holds focus, so a/d never reached the
@@ -548,9 +573,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
             '[ok] approved' / '[x] denied' confirmation — it has no rich-tree
             pair to fall back to. A tool_use approval (path 2) still unmounts on
             resolve because it re-enters the render tree as a paired item. */}
-        {frames.map((f, i) => {
-          const a = extractApproval(f, gateToolUse)
-          if (!a) return null
+        {approvalItems.map(({ approval: a, index: i }) => {
           const state = approvalStates[a.requestId] ?? 'pending'
           const pending = isApprovalPending(a.requestId)
           // Unmount once resolved UNLESS this is a real permission frame, which

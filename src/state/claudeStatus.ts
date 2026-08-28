@@ -7,10 +7,17 @@
 //   "error"          — any stderr or claude_start failure since last clear
 //   "idle"           — fresh, never started
 //
-// Backend (Worker 1) emits canonical events on `claude_status:{projectId}`.
-// As a defensive fallback we ALSO derive state from `claude_event:{projectId}`
-// + `claude_stderr:{projectId}` so the FE keeps working even if the BE-side
-// status emit is incomplete or arrives out of order.
+// Backend (Worker 1) emits canonical events on `claude_status:{projectId}`:
+// "running" (assistant frame), "awaiting-input" (result frame), "error"
+// (stderr line), "exited" (child EOF). See src-tauri/src/claude.rs. We drive
+// the status dot from that channel alone, plus `claude_stderr:{projectId}` as
+// the error signal.
+//
+// Code-1cs (F4): we used to ALSO listen `claude_event:{projectId}` (the full
+// frame stream — the hottest channel) and re-derive status from each frame as
+// a defensive fallback. That duplicated ClaudeChat's own claude_event listener
+// on every frame. Since claude.rs emits the canonical running/awaiting-input
+// transitions itself, the fallback was fully redundant; dropped.
 //
 // Subscriptions are started lazily on first `useClaudeStatus` per projectId
 // so we don't leak listeners for projects that are never observed.
@@ -48,15 +55,6 @@ function setStatus(projectId: string, next: ClaudeStatus): void {
   emit(projectId)
 }
 
-function deriveFromFrame(frame: unknown): ClaudeStatus | null {
-  if (!frame || typeof frame !== 'object') return null
-  const f = frame as Record<string, unknown>
-  if (f.type === 'assistant') return 'running'
-  if (f.type === 'result') return 'awaiting-input'
-  // system/init, hook, partial — leave the running state alone.
-  return null
-}
-
 async function startSubscription(projectId: string): Promise<void> {
   const e = entries.get(projectId)
   if (!e) return
@@ -70,17 +68,6 @@ async function startSubscription(projectId: string): Promise<void> {
     e.unlisten.push(off)
   } catch (err) {
     console.warn('[claudeStatus] failed to attach claude_status listener', err)
-  }
-  // claude_event — frame stream; defensive fallback.
-  try {
-    const off = await listen(`claude_event:${chanId(projectId)}`, ev => {
-      const next = deriveFromFrame(ev.payload)
-      if (next) setStatus(projectId, next)
-    })
-    if (e.terminated) { off(); return }
-    e.unlisten.push(off)
-  } catch (err) {
-    console.warn('[claudeStatus] failed to attach claude_event listener', err)
   }
   // claude_stderr — any stderr line drives state to error.
   try {

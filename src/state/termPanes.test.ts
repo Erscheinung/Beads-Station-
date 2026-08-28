@@ -23,6 +23,8 @@ import {
   leavesOf,
   toggleZoom,
   getZoom,
+  termPanesSignature,
+  setInsert,
 } from './termPanes'
 
 // The store is a module singleton. Reset it to a known shape before each
@@ -204,5 +206,41 @@ describe('termPanes per-project surface (Code-x8p)', () => {
     // project switch never reaps the hidden project's claude sessions.
     const bridges = allAgentBridges()
     expect(bridges.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// Code-1cs / Code-aod — App subscribes to the reconcile SIGNATURE (joined agent
+// bridges + active tab), not the whole state, so pure focus/insert churn no
+// longer re-renders App. Lock the invariant: bridge-set changes move the sig;
+// focus/insert churn leaves it byte-identical.
+describe('termPanes reconcile signature (Code-aod)', () => {
+  beforeEach(() => reset())
+
+  it('spawnAgent changes the signature', () => {
+    setActiveProject('sigA', '/tmp/sig-a')
+    const before = termPanesSignature()
+    spawnAgent('sigA', '/tmp/sig-a', 'sid-sig')
+    expect(termPanesSignature()).not.toBe(before)
+  })
+
+  it('setInsert does not change the signature (insert is not in the slice)', () => {
+    setActiveProject('sigB', '/tmp/sig-b')
+    spawnAgent('sigB', '/tmp/sig-b', 'sid-sig-b')
+    const before = termPanesSignature()
+    setInsert(true)
+    expect(termPanesSignature()).toBe(before)
+    setInsert(false)
+    expect(termPanesSignature()).toBe(before)
+  })
+
+  it('focusPane churn does not change the signature (no bridge-set change)', () => {
+    setActiveProject('sigC', '/tmp/sig-c')
+    splitActive('v') // 2 shell panes, no agents
+    const before = termPanesSignature()
+    // Focus the other pane and back — emits, but the bridge set is unchanged.
+    cyclePane()
+    expect(termPanesSignature()).toBe(before)
+    cyclePane()
+    expect(termPanesSignature()).toBe(before)
   })
 })

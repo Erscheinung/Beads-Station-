@@ -211,6 +211,26 @@ export function setActiveProject(projectId: string, cwd: string): void {
 
 const listeners = new Set<() => void>()
 
+// Code-aod — reconcile signature. App.tsx only subscribes to the pane store to
+// re-run the debounced claude_reconcile effect, which cares about ONE slice:
+// the set of live agent bridges. Subscribing to the whole state re-rendered App
+// (and its whole tree: Board, TerminalPanes, ClaudeChat, Statusline) on every
+// focusPane/setInsert/registerPty emit. Instead we maintain a cached signature
+// string of the reconcile-relevant slice and let App subscribe to THAT via
+// useTermPanesSignature; useSyncExternalStore bails the render when the string
+// is === unchanged, so pure focus/insert churn (which doesn't touch the bridge
+// set) no longer re-renders App. Recomputed only inside emit() (and seeded at
+// module load) so getSig returns a stable ref between mutations (the R3.5
+// render-loop lesson: getSnapshot must not build a fresh value each call).
+let _sig = ''
+function computeSig(): string {
+  // allAgentBridges() spans every project's surface; the active tab id +
+  // paneCount round out the slice the reconcile effect keys on. Sorted so a
+  // reorder that doesn't change membership stays stable.
+  const bridges = allAgentBridges().slice().sort().join(',')
+  return `${activeProjectId}|${state.activeTabId}|${bridges}`
+}
+
 function emit(): void {
   // Mirror the pane-op-relevant bits onto window for the non-reactive
   // keymap reader in useVimNav (avoids a stale closure / extra subscribe).
@@ -241,6 +261,7 @@ function emit(): void {
   } catch {
     /* SSR / non-browser — ignore */
   }
+  _sig = computeSig()
   listeners.forEach(l => l())
 }
 
@@ -259,6 +280,23 @@ function getSnapshot(): TermPanesState {
 
 export function useTermPanes(): TermPanesState {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+// Code-aod — reconcile-slice signature (see computeSig / _sig above). Returns a
+// primitive string, so useSyncExternalStore skips the render whenever the slice
+// is unchanged. App subscribes to this instead of useTermPanes so focus/insert
+// churn no longer re-renders the whole tree.
+function getSig(): string {
+  return _sig
+}
+
+export function useTermPanesSignature(): string {
+  return useSyncExternalStore(subscribe, getSig, getSig)
+}
+
+/** Non-hook read of the current reconcile signature (Code-1cs test probe). */
+export function termPanesSignature(): string {
+  return _sig
 }
 
 // Seed the window mirror once at module load so useVimNav can read termMode
@@ -280,6 +318,9 @@ try {
 } catch {
   /* noop */
 }
+// Seed the reconcile signature so useTermPanesSignature has a stable value
+// before the first emit (getSig must not build a fresh string per call).
+_sig = computeSig()
 
 // ---- tree helpers (pure) ----------------------------------------------
 

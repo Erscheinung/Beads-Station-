@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setActiveProject, spawnAgent, spawnFileNav, useTermPanes, allAgentBridges } from './state/termPanes'
+import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -208,7 +208,11 @@ export default function App() {
   // change (debounced) we send the set of still-live agent bridges; the backend
   // reaps any session not in that set. useTermPanes() re-renders on each
   // mutation so this effect re-runs; the debounce coalesces bursts.
-  const termState = useTermPanes()
+  // Code-aod — subscribe only to the reconcile-slice SIGNATURE (joined agent
+  // bridges + active tab), not the whole pane state. Pure focus/insert churn
+  // leaves the signature unchanged, so it no longer re-renders App (and its
+  // whole tree). The effect body reads allAgentBridges() directly.
+  const termSig = useTermPanesSignature()
   useEffect(() => {
     const t = window.setTimeout(() => {
       // Code-raa: include the legacy bottom-chat bridge (== active project id)
@@ -221,7 +225,7 @@ export default function App() {
       invoke('claude_reconcile', { liveBridges }).catch(() => {})
     }, 500)
     return () => window.clearTimeout(t)
-  }, [termState, active])
+  }, [termSig, active])
 
   // Memoized so their identity is stable across renders. Declared BEFORE the
   // early returns below (Rules of Hooks — a useCallback after a conditional

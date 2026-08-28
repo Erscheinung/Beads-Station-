@@ -836,6 +836,18 @@ Trigger: "would never use this tool as it is now" + wants a resizable/fullscreen
 
 **Forward tickets filed (PLAN E):** `Code-mkv` RV1-layout (P1: per-project persisted split ratios + strip height + snap), `Code-t3j` RV1-mode (P2: two-mode app<->terminal workspace, blocked on mkv + zm7), `Code-6k4` RV1-soak (P2: focus-toggle soak, linked to Code-r7q). Stability follow-on folds in `Code-aod`/`Code-1cs` (App re-render hub) so a focus toggle doesn't re-render the board.
 
+## Track I — PLAN C perf hardening (2026-08-28, Code-1cs + Code-aod CLOSED)
+
+Plan: `~/Documents/Beads/Implementation Prompts/2026-08-26 PLAN C — perf hardening.md`. Finished the 5-finding perf sweep the 2026-08-26 bug-hunt surfaced. TS-only, no behavior change — just fewer wasted renders + one deletion. All 4 gates green (91 vitest, build+emoji, cargo check, 43 live specs).
+
+- **F1 App re-render hub (Code-aod).** `App.tsx` subscribed `useTermPanes()` (full pane state) only to re-run the debounced `claude_reconcile` effect, so every `focusPane`/`setInsert`/`registerPty` emit re-rendered App + its whole tree (Board/TerminalPanes/ClaudeChat/Statusline). Fix: `termPanes.ts` now maintains a cached reconcile-slice signature string (`_sig` = `activeProjectId | activeTabId | sorted-agent-bridges`, recomputed in `emit()` + seeded at load). New `useTermPanesSignature()` hook returns the primitive; `useSyncExternalStore` bails the render when `===` unchanged, so focus/insert churn (not in the slice) no longer re-renders App. App subscribes to the sig, effect dep `[termSig, active]`. Non-hook `termPanesSignature()` exported for the unit probe.
+- **F2 ClaudeChat double frame-walk (Code-1cs).** JSX did an un-memoized `frames.map(extractApproval)` every render on top of the memoized renderItems/topmostPending passes. Folded into one `approvalItems` useMemo (`[frames, gateToolUse]`, keeps original frame index for the React key). Render-time decision (isApprovalPending / permission-frame unmount) stays in the map since it keys on approvalStates.
+- **F3 appendFrame setState-in-updater (Code-1cs).** Eviction tally + approval GC ran inside the `setFrames` updater (impure; double-invokes under StrictMode). Now decides the trim against `framesRef.current`, writes the ref, and calls `setEvictedCount`/`setApprovalStates` OUTSIDE the updater; `setFrames` gets a plain value. GC semantics preserved.
+- **F4 claudeStatus dual listener (Code-1cs).** Dropped the redundant `claude_event:{id}` fallback listener (fired every frame on the hottest channel) + `deriveFromFrame`. Backend `claude.rs:305-310` already emits canonical `claude_status` running/awaiting-input/error/exited, so the fallback was pure duplication. Kept `claude_stderr`→error. New `claudeStatus.test.ts` locks "no claude_event listener armed" + canonical-payload driving.
+- **F5 dead code (Code-1cs).** Deleted `src/hooks/useBdLive.ts` (DEPRECATED, zero live callers — all use `useBdLiveContext` from BdLiveProvider).
+
+**Next ready (daily-driver order):** PLAN A herdr daemon + pane persistence, then PLAN B terminal parity/themes (`Code-zm7` P1 ready), then RV1-layout `Code-mkv` (P1). PLAN C unblocks honest dogfooding; A is the architecture lever.
+
 
 - After every phase closes: append a one-liner to the phase table above.
 - When a hardcode is removed or a configurable replaces a literal: update the "What's already on disk" hardcodes block.
