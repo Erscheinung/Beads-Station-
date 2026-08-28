@@ -8,7 +8,12 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { safeListen } from './safeListen'
-import { CONDUCTOR_STATUS_EVENT, type ConductorStatus } from './conductorBridge'
+import {
+  CONDUCTOR_STATUS_EVENT,
+  CONDUCTOR_BUILDER_EVENT,
+  type ConductorStatus,
+  type BuilderStatus,
+} from './conductorBridge'
 
 /**
  * Subscribe to the conductor's live status. Returns the latest ConductorStatus,
@@ -47,6 +52,8 @@ export interface ConductorFeedEntry {
   detail: string | null
   /** Epoch-ms of the pulse (falls back to receipt time if the backend omits it). */
   ts: number
+  /** RV8.3 — the work model this pulse ran, when the backend reported one. */
+  model?: string | null
 }
 
 const DEFAULT_FEED_CAP = 50
@@ -73,6 +80,7 @@ export function useConductorFeed(cap: number = DEFAULT_FEED_CAP): ConductorFeedE
           bead_id: s.bead_id,
           detail: s.detail,
           ts: s.last_pulse_ms ?? Date.now(),
+          model: s.model ?? null,
         }
         setFeed(prev => [entry, ...prev].slice(0, cap))
       },
@@ -82,6 +90,65 @@ export function useConductorFeed(cap: number = DEFAULT_FEED_CAP): ConductorFeedE
   }, [cap])
 
   return feed
+}
+
+// RV8.1 — the per-builder live map. During a fanout the backend pushes one
+// BuilderStatus per builder on the SEPARATE `conductor_builder` event as each
+// transitions waking -> awake/blocked/error. This hook merges them by bead_id
+// into a map the ActiveAgents panel renders as one card per builder. It is
+// independent of useConductorStatus (the aggregate footer), so per-builder churn
+// never re-renders the footer — one listener, one functional setState per event.
+
+/** How long a terminal-state builder card lingers before it's pruned (ms). */
+const BUILDER_TERMINAL_TTL = 4000
+/** States that mean the builder is done — pruned after BUILDER_TERMINAL_TTL. */
+const BUILDER_TERMINAL = new Set(['awake', 'error'])
+
+/**
+ * Subscribe to `conductor_builder` and accumulate the live per-builder map keyed
+ * by bead_id. A builder's latest status replaces its prior one; a terminal state
+ * (awake/error) schedules that key's removal after a short TTL so finished cards
+ * clear on their own. `blocked` persists (the operator still needs to act).
+ */
+export function useConductorBuilders(): Record<string, BuilderStatus> {
+  const [builders, setBuilders] = useState<Record<string, BuilderStatus>>({})
+  // Per-key prune timers, so a re-transition (blocked -> awake) cancels a stale one.
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  useEffect(() => {
+    const ctrl = new AbortController()
+    const pending = timers.current
+    void safeListen<BuilderStatus>(
+      CONDUCTOR_BUILDER_EVENT,
+      e => {
+        const b = e.payload
+        setBuilders(prev => ({ ...prev, [b.bead_id]: b }))
+        // Reset any prior prune timer for this bead; schedule a fresh one only
+        // for terminal states.
+        if (pending[b.bead_id]) {
+          clearTimeout(pending[b.bead_id])
+          delete pending[b.bead_id]
+        }
+        if (BUILDER_TERMINAL.has(b.state)) {
+          pending[b.bead_id] = setTimeout(() => {
+            delete pending[b.bead_id]
+            setBuilders(prev => {
+              const next = { ...prev }
+              delete next[b.bead_id]
+              return next
+            })
+          }, BUILDER_TERMINAL_TTL)
+        }
+      },
+      ctrl.signal,
+    )
+    return () => {
+      ctrl.abort()
+      for (const t of Object.values(pending)) clearTimeout(t)
+    }
+  }, [])
+
+  return builders
 }
 
 /** Presentation mapping shared by the footer + card. `null` = never started. */

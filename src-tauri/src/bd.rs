@@ -672,6 +672,54 @@ pub(crate) async fn swarm_create(repo_path: &str, epic_id: &str) -> Result<(), S
     Ok(())
 }
 
+/// RV8.2 — parsed `bd merge-slot check --json`. The merge slot is a SINGLE global
+/// bead per rig (`<prefix>-merge-slot`); `available` is true when open, `holder`
+/// carries whatever `--holder` the acquirer passed (the conductor tags builders
+/// `builder:<bead-id>` so a killed builder's leaked slot can be reclaimed). Only
+/// the fields the release-guard reads are kept; `waiters` etc. are dropped.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub(crate) struct MergeSlot {
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub holder: Option<String>,
+    #[serde(default)]
+    pub id: String,
+}
+
+/// RV8.2 — read the merge slot state. NoDatabase collapses to a default (available)
+/// slot so a repo without bd never trips the release path. Shares the semaphore +
+/// EAGAIN retry via run_bd_classified.
+pub(crate) async fn merge_slot_check(repo_path: &str) -> Result<MergeSlot, String> {
+    match run_bd_classified(repo_path, &["merge-slot", "check", "--json"]).await? {
+        BdOutcome::NoDatabase => Ok(MergeSlot { available: true, ..Default::default() }),
+        BdOutcome::Ok(stdout) => serde_json::from_slice::<MergeSlot>(&stdout)
+            .map_err(|e| format!("failed to parse bd merge-slot check JSON: {e}")),
+    }
+}
+
+/// RV8.2 — release the merge slot on behalf of `holder`. `--holder` is verified by
+/// bd, so this is a no-op if a different holder owns the slot (the guard in
+/// `release_merge_slot_if_held` also checks first). ACTOR rides the audit trail.
+pub(crate) async fn merge_slot_release(repo_path: &str, holder: &str) -> Result<(), String> {
+    let args = release_args(holder);
+    let slices: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    run_bd_verb(repo_path, &slices).await.map(|_| ())
+}
+
+/// Pure arg builder for `bd merge-slot release --holder <holder> --actor <ACTOR>`.
+/// Split out so the wire shape is unit-testable without a runtime.
+fn release_args(holder: &str) -> Vec<String> {
+    vec![
+        "merge-slot".into(),
+        "release".into(),
+        "--holder".into(),
+        holder.into(),
+        "--actor".into(),
+        ACTOR.into(),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,6 +749,42 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "g1");
         assert_eq!(out[0].await_type, "human");
+    }
+
+    #[test]
+    fn merge_slot_check_parses_json() {
+        // RV8.2 — the release guard reads available/holder/id off
+        // `bd merge-slot check --json`. Pin the shape; waiters + extra keys drop.
+        let raw = br#"{
+            "available": false,
+            "holder": "builder:Code-child",
+            "id": "Code-merge-slot",
+            "waiters": ["a", "b"]
+        }"#;
+        let slot: MergeSlot = serde_json::from_slice(raw).unwrap();
+        assert!(!slot.available);
+        assert_eq!(slot.holder.as_deref(), Some("builder:Code-child"));
+        assert_eq!(slot.id, "Code-merge-slot");
+        // An available slot with a null holder parses cleanly too.
+        let open: MergeSlot =
+            serde_json::from_slice(br#"{"available":true,"holder":null,"id":"Code-merge-slot"}"#).unwrap();
+        assert!(open.available);
+        assert!(open.holder.is_none());
+    }
+
+    #[test]
+    fn release_args_shape() {
+        assert_eq!(
+            release_args("builder:Code-child"),
+            vec![
+                "merge-slot",
+                "release",
+                "--holder",
+                "builder:Code-child",
+                "--actor",
+                "Beads Station",
+            ]
+        );
     }
 
     #[test]

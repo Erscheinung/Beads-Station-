@@ -3,9 +3,9 @@ import { BdLiveProvider } from '../../lib/BdLiveProvider'
 import { useProjects } from '../../state/projects'
 import { useTermPanes, leavesOf } from '../../state/termPanes'
 import { useBdSnapshot } from '../../lib/bdCache'
-import { useConductorStatus, useConductorFeed } from '../../lib/useConductorStatus'
+import { useConductorStatus, useConductorFeed, useConductorBuilders } from '../../lib/useConductorStatus'
 import type { ConductorFeedEntry } from '../../lib/useConductorStatus'
-import type { ConductorStatus } from '../../lib/conductorBridge'
+import type { ConductorStatus, BuilderStatus } from '../../lib/conductorBridge'
 import { conductorPulseNow, conductorStopAgent, conductorDeferBead } from '../../lib/conductorBridge'
 
 // DU3 (Code-d7j) — the Active-agents panel. A calm, READ-ONLY summary of what
@@ -39,6 +39,21 @@ interface AgentCard {
   /** Code-jx3.3 — the bead this card is advancing, if any. Only conductor cards
    *  carry one; chat panes (human-driven) are null and get no stop/defer. */
   beadId?: string | null
+  /** RV8.3 — the work model this agent ran, for the tier badge (Sonnet/Opus/…). */
+  model?: string | null
+}
+
+/** RV8.3 — collapse a full model id to a short display tag for the badge. Falls
+ *  back to the raw string (or a tier tag) when the family isn't recognized. */
+function prettyModel(model?: string | null, tier?: string | null): string | null {
+  if (model) {
+    const m = model.toLowerCase()
+    if (m.includes('haiku')) return 'Haiku'
+    if (m.includes('sonnet')) return 'Sonnet'
+    if (m.includes('opus')) return 'Opus'
+    return model
+  }
+  return tier ?? null
 }
 
 const STATE_COLOR: Record<AgentState, string> = {
@@ -74,11 +89,12 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
       return {
         key: 'conductor',
         label,
-        tier: null,
+        tier: prettyModel(status.model, status.tier),
         action: bead ? `Advanced ${bead}` : detail || 'Pulse complete',
         state: 'done',
         progress: 1,
         beadId: bead,
+        model: status.model,
       }
     case 'blocked':
       // RV7.3 — herdr agent stopped on a gate. Surface it as a distinct blocked
@@ -87,11 +103,12 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
       return {
         key: 'conductor',
         label,
-        tier: null,
+        tier: prettyModel(status.model, status.tier),
         action: bead ? `Blocked · ${bead} needs approval` : 'Blocked · needs approval',
         state: 'blocked',
         progress: 0.75,
         beadId: bead,
+        model: status.model,
       }
     case 'deferred':
       return {
@@ -116,6 +133,62 @@ function conductorCard(status: ConductorStatus): AgentCard | null {
     case 'stopped':
     default:
       return null // resting — surfaced by the empty state, not a card
+  }
+}
+
+// RV8.1 — map ONE builder's live status to a per-child card. Each in-flight
+// builder gets its own card (keyed by bead id) with independent Stop/Defer, so a
+// fanout is supervised builder-by-builder instead of as one aggregate. `waking`
+// -> resolving so the existing Stop-button gate (state==='resolving') applies.
+function builderCard(b: BuilderStatus): AgentCard {
+  const badge = prettyModel(b.model, b.tier)
+  const short = b.title.length > 32 ? `${b.title.slice(0, 32)}…` : b.title
+  switch (b.state) {
+    case 'awake':
+      return {
+        key: `builder:${b.bead_id}`,
+        label: `Builder · ${b.bead_id}`,
+        tier: badge,
+        action: `Advanced ${b.bead_id}`,
+        state: 'done',
+        progress: 1,
+        beadId: b.bead_id,
+        model: b.model,
+      }
+    case 'blocked':
+      return {
+        key: `builder:${b.bead_id}`,
+        label: `Builder · ${b.bead_id}`,
+        tier: badge,
+        action: `Blocked · ${b.bead_id} ${b.detail ?? 'needs input'}`,
+        state: 'blocked',
+        progress: 0.75,
+        beadId: b.bead_id,
+        model: b.model,
+      }
+    case 'error':
+      return {
+        key: `builder:${b.bead_id}`,
+        label: `Builder · ${b.bead_id}`,
+        tier: badge,
+        action: b.detail ?? 'Builder error',
+        state: 'error',
+        progress: 1,
+        beadId: b.bead_id,
+        model: b.model,
+      }
+    case 'waking':
+    default:
+      return {
+        key: `builder:${b.bead_id}`,
+        label: `Builder · ${b.bead_id}`,
+        tier: badge,
+        action: `Building ${short}`,
+        state: 'resolving',
+        progress: 0.35,
+        beadId: b.bead_id,
+        model: b.model,
+      }
   }
 }
 
@@ -146,6 +219,7 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
 
   const status = useConductorStatus()
   const feed = useConductorFeed()
+  const builders = useConductorBuilders()
   const panes = useTermPanes()
   const snap = useBdSnapshot(repoPath)
 
@@ -172,8 +246,16 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
     return cards
   }, [panes, projects])
 
-  const conductor = status ? conductorCard(status) : null
-  const cards = [conductor, ...chatCards].filter(Boolean) as AgentCard[]
+  // RV8.1 — when a fanout is live, render one card per in-flight builder (each
+  // with its own Stop/Defer) and SUPPRESS the aggregate conductor card so the
+  // panel doesn't double-count. When no builders are live, fall back to the
+  // single conductor card (single-pulse, idle, etc.).
+  const builderList = Object.values(builders)
+  const conductor = builderList.length === 0 && status ? conductorCard(status) : null
+  const builderCards = builderList
+    .sort((a, b) => a.bead_id.localeCompare(b.bead_id))
+    .map(builderCard)
+  const cards = [conductor, ...builderCards, ...chatCards].filter(Boolean) as AgentCard[]
 
   const nextUp = snap.ready[0] ?? null
 
@@ -232,7 +314,11 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
 
       <div style={styles.list}>
         {cards.map(c => (
-          <div key={c.key} style={styles.card}>
+          <div
+            key={c.key}
+            style={styles.card}
+            data-bs-builder-card={c.key.startsWith('builder:') ? c.beadId ?? '' : undefined}
+          >
             <div style={styles.headRow}>
               <span style={{ ...styles.dot, background: STATE_COLOR[c.state] }} />
               <span style={styles.cardLabel}>{c.label}</span>
@@ -339,6 +425,9 @@ function FeedSection({ feed }: { feed: ConductorFeedEntry[] }) {
               />
               <span style={styles.feedState}>{entry.state}</span>
               {entry.bead_id && <span style={styles.feedBead}>{entry.bead_id}</span>}
+              {entry.model && (
+                <span style={styles.feedModel}>{prettyModel(entry.model)}</span>
+              )}
               <span style={styles.feedTime}>{relTime(entry.ts, now)}</span>
             </div>
           ))}
@@ -522,6 +611,15 @@ const styles: Record<string, React.CSSProperties> = {
   feedTime: {
     marginLeft: 'auto',
     color: 'var(--bs-fg-faint)',
+    flexShrink: 0,
+  },
+  feedModel: {
+    fontFamily: 'var(--du-font-mono)',
+    fontSize: 9,
+    color: 'var(--bs-fg-muted)',
+    border: '1px solid var(--bs-border)',
+    borderRadius: 4,
+    padding: '0 5px',
     flexShrink: 0,
   },
   runBtn: {

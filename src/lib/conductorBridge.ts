@@ -24,10 +24,39 @@ export interface ConductorStatus {
    * state always carries `agent_status: "blocked"`.
    */
   agent_status?: string | null;
+  /**
+   * RV8.3 — the resolved WORK model this pulse ran (e.g. "claude-sonnet-5"), so
+   * the operator can confirm the tier -> model mapping. Absent on the stop/defer
+   * emitters (backend omits via skip_serializing_if).
+   */
+  model?: string | null;
+  /** RV8.3 — the size-tier tag ("S"|"M"|"L") the model was chosen from. */
+  tier?: string | null;
 }
 
 /** The app event channel the backend emits ConductorStatus on. */
 export const CONDUCTOR_STATUS_EVENT = 'conductor_status';
+
+/**
+ * RV8.1 — one in-flight builder's live status, pushed on the SEPARATE
+ * `conductor_builder` event during a fanout. Distinct from the aggregate
+ * ConductorStatus so per-builder cards never clobber the single-snapshot footer.
+ * Fields mirror the Rust `BuilderStatus` struct (snake_case wire contract).
+ */
+export interface BuilderStatus {
+  bead_id: string;
+  title: string;
+  /** "waking" | "awake" | "blocked" | "error". */
+  state: string;
+  epic_id: string;
+  model?: string | null;
+  tier?: string | null;
+  detail?: string | null;
+  last_pulse_ms: number | null;
+}
+
+/** The app event channel the backend emits BuilderStatus on (RV8.1). */
+export const CONDUCTOR_BUILDER_EVENT = 'conductor_builder';
 
 /**
  * Start the conductor loop for a repo. `dryRun` defaults true (matches the

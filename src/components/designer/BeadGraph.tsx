@@ -3,6 +3,8 @@ import type { Issue } from '../../types/issue'
 import { BdLiveProvider } from '../../lib/BdLiveProvider'
 import { useBdSnapshot } from '../../lib/bdCache'
 import { useProjects } from '../../state/projects'
+import { spawnAgent } from '../../state/termPanes'
+import { setSkin } from '../../state/skin'
 
 // Bead graph — the Designer UI centerpiece. Nodes are beads; edges are bd
 // dependency links from each Issue's `dependencies` array (a blocker edge
@@ -133,7 +135,7 @@ function isToday(iso: string | null): boolean {
   )
 }
 
-function GraphInner({ repoPath }: { repoPath: string }) {
+function GraphInner({ repoPath, projectId, cwd }: { repoPath: string; projectId: string; cwd: string }) {
   const snap = useBdSnapshot(repoPath)
 
   const readyIds = useMemo(() => new Set(snap.ready.map(i => i.id)), [snap.ready])
@@ -174,6 +176,17 @@ function GraphInner({ repoPath }: { repoPath: string }) {
   if (snap.error) return <div style={styles.hint}>bd error: {snap.error}</div>
   if (nodes.length === 0) return <div style={styles.hint}>No beads to graph.</div>
 
+  // RV8.4 — bead-pane duality: clicking a READY node spawns a Claude agent pane
+  // targeting that bead (plan posture, matching App's spawn idiom) AND switches to
+  // the terminal skin, which is where agent panes render — so the click lands you
+  // ON the new pane. The reverse direction (agent closes bead -> graph re-derives)
+  // is already live via the bd FSEvents snapshot, closing the loop.
+  const onActivate = (issue: Issue) => {
+    spawnAgent(projectId, cwd, crypto.randomUUID(), 'plan')
+    setSkin('terminal')
+    void issue // the pane targets the active project; per-bead prompt pre-fill is deferred (RV8).
+  }
+
   return (
     <div style={styles.wrap}>
       {/* Count strip */}
@@ -206,7 +219,7 @@ function GraphInner({ repoPath }: { repoPath: string }) {
             })}
           </svg>
           {nodes.map(n => (
-            <Node key={n.issue.id} node={n} />
+            <Node key={n.issue.id} node={n} onActivate={onActivate} />
           ))}
         </div>
       </div>
@@ -228,17 +241,22 @@ function GraphInner({ repoPath }: { repoPath: string }) {
   )
 }
 
-function Node({ node }: { node: Placed }) {
+function Node({ node, onActivate }: { node: Placed; onActivate?: (issue: Issue) => void }) {
   const { issue, state, next, x, y } = node
   const [hover, setHover] = useState(false)
+  const clickable = state === 'ready' && onActivate != null
   return (
     <div
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      onClick={clickable ? () => onActivate!(issue) : undefined}
+      data-bs-bead-node={issue.id}
+      data-bs-bead-state={state}
       style={{
         ...styles.node,
         left: x,
         top: y,
+        cursor: clickable ? 'pointer' : 'default',
         borderColor: next || hover ? 'var(--bs-orange)' : 'var(--bs-border)',
         boxShadow: next
           ? '0 0 0 2px color-mix(in srgb, var(--bs-orange) 35%, transparent)'
@@ -249,7 +267,7 @@ function Node({ node }: { node: Placed }) {
         // DU4 motion polish — lift + accent on hover; keeps the NEXT ring.
         transition: 'transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease',
       }}
-      title={issue.title}
+      title={clickable ? `${issue.title} — click to spawn an agent` : issue.title}
     >
       <div style={styles.nodeHead}>
         <span style={{ ...styles.statusDot, background: STATE_TOKEN[state] }} />
@@ -284,7 +302,7 @@ export function BeadGraph() {
 
   return (
     <BdLiveProvider>
-      <GraphInner repoPath={active.path} />
+      <GraphInner repoPath={active.path} projectId={active.id} cwd={active.path} />
     </BdLiveProvider>
   )
 }

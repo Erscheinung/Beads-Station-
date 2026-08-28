@@ -219,6 +219,42 @@ fn take_in_flight(bead_id: &str) -> Option<Arc<tokio::sync::Notify>> {
     IN_FLIGHT.lock().ok()?.remove(bead_id)
 }
 
+/// RV8.2 — the holder tag a builder acquires the merge slot under (mirrors the
+/// `--holder "builder:{id}"` clause in `build_builder_prompt`). Kept in one place
+/// so the acquire (prompt) and the reclaim (release) can never drift apart.
+fn builder_holder(bead_id: &str) -> String {
+    format!("builder:{bead_id}")
+}
+
+/// RV8.2 — decide whether the conductor should reclaim the merge slot for a
+/// killed builder. Pure over the observed slot state so it's unit-testable:
+/// release ONLY if the slot is held AND its holder is exactly this bead's tag —
+/// never when it's available (nothing to release) or held by a sibling (whose
+/// legitimate lease must not be stomped).
+fn should_release(slot: &bd::MergeSlot, bead_id: &str) -> bool {
+    !slot.available && slot.holder.as_deref() == Some(builder_holder(bead_id).as_str())
+}
+
+/// RV8.2 — reclaim a leaked merge slot for a builder that was cancelled/timed out
+/// mid-lease (its prompt-driven `bd merge-slot release` never ran). Check-then-
+/// release, holder-verified, so a sibling's live lease is never disturbed.
+/// Best-effort: any bd error is logged, never fatal (the next tick re-derives, and
+/// a stuck slot at worst delays siblings one tick — far better than a hard failure).
+async fn release_merge_slot_if_held(repo: &str, bead_id: &str) {
+    match bd::merge_slot_check(repo).await {
+        Ok(slot) if should_release(&slot, bead_id) => {
+            let holder = builder_holder(bead_id);
+            if let Err(e) = bd::merge_slot_release(repo, &holder).await {
+                tracing::warn!("conductor: merge-slot reclaim for {bead_id} failed: {e}");
+            } else {
+                tracing::info!("conductor: reclaimed leaked merge-slot held by {holder}");
+            }
+        }
+        Ok(_) => {} // available, or held by a sibling — nothing to reclaim.
+        Err(e) => tracing::warn!("conductor: merge-slot check for {bead_id} failed: {e}"),
+    }
+}
+
 /// App-global status event (un-namespaced, telemetry idiom). Drives the
 /// Designer-UI "Claude is awake" footer + the DU3 active-agents panel.
 ///
@@ -238,10 +274,67 @@ pub struct ConductorStatus {
     /// herdr_mode is off or the status has not yet been observed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_status: Option<String>,
+    /// RV8.3: the resolved WORK model this pulse ran (e.g. "claude-sonnet-5"), so
+    /// the operator can confirm the tier -> model mapping and trust the spend.
+    /// Absent on the stop/defer emitters (no model resolved) via skip_serializing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// RV8.3: the size-tier tag ("S"|"M"|"L") the model was chosen from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
 }
 
 fn emit_status(app: &AppHandle, status: ConductorStatus) {
     let _ = app.emit("conductor_status", status);
+}
+
+/// RV8.1 — one in-flight builder's live status, emitted on the SEPARATE
+/// `conductor_builder` app event (distinct from the aggregate `conductor_status`).
+/// A fanout emits one of these per builder as it transitions waking -> awake /
+/// blocked / error, keyed by `bead_id` so the FE can render + control one card
+/// per builder without the single-snapshot conductor_status footer clobbering it.
+///
+/// `state` wire contract: "waking" | "awake" | "blocked" | "error".
+#[derive(Serialize, Clone)]
+pub struct BuilderStatus {
+    pub bead_id: String,
+    pub title: String,
+    pub state: &'static str,
+    pub epic_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub last_pulse_ms: Option<u128>,
+}
+
+/// Build a BuilderStatus. Pure so the wire shape is unit-testable without a
+/// runtime (RV8.1). `model`/`tier` carry the RV8.3 transparency fields.
+fn builder_status_from(
+    bead_id: &str,
+    title: &str,
+    epic_id: &str,
+    tier: Tier,
+    model: &str,
+    state: &'static str,
+    detail: Option<String>,
+) -> BuilderStatus {
+    BuilderStatus {
+        bead_id: bead_id.to_string(),
+        title: title.to_string(),
+        state,
+        epic_id: epic_id.to_string(),
+        model: Some(model.to_string()),
+        tier: Some(tier.tag().to_string()),
+        detail,
+        last_pulse_ms: Some(now_ms()),
+    }
+}
+
+fn emit_builder(app: &AppHandle, status: BuilderStatus) {
+    let _ = app.emit("conductor_builder", status);
 }
 
 fn now_ms() -> u128 {
@@ -351,8 +444,10 @@ Instructions:\n\
 2. Work ONE ready step of your bead's molecule at the [{tier_tag}] ceremony\n\
    above, then close that step: `bd close <step-id>`.\n\
 3. BEFORE any edit that could touch a file another builder might touch, acquire\n\
-   the shared merge slot: `bd merge-slot acquire`. Do the edit. Then\n\
-   `bd merge-slot release`. Never hold the slot across unrelated work — this is\n\
+   the shared merge slot: `bd merge-slot acquire --holder \"builder:{id}\"`. Do the\n\
+   edit. Then `bd merge-slot release --holder \"builder:{id}\"`. The `--holder` tag\n\
+   MUST be exactly `builder:{id}` on both acquire and release so a killed builder's\n\
+   slot can be reclaimed. Never hold the slot across unrelated work — this is\n\
    how sibling builders avoid clobbering each other. If the slot is held, wait\n\
    your turn (bd queues you); do NOT bypass it.\n\
 4. Record what you did: `bd note {id} \"<one line>\"`.\n\
@@ -383,6 +478,8 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64, h
                 interval_secs,
                 repo_path: repo.to_string(),
                 agent_status: None,
+                model: None,
+                tier: None,
             },
         );
     };
@@ -465,6 +562,8 @@ async fn pulse_bead(
                 interval_secs,
                 repo_path: repo.to_string(),
                 agent_status: None,
+                model: None,
+                tier: None,
             },
         );
     };
@@ -510,6 +609,7 @@ async fn pulse_bead(
     // RV7.3: a Blocked outcome (herdr agent waiting on gate input) emits a
     // `blocked` status with agent_status set, so the ActiveAgents panel can show
     // the pane needs the operator. A Completed outcome is the ordinary `awake`.
+    // RV8.3: both carry the resolved work model + tier tag for spend transparency.
     match outcome {
         PulseOutcome::Blocked => emit_status(
             app,
@@ -521,9 +621,24 @@ async fn pulse_bead(
                 interval_secs,
                 repo_path: repo.to_string(),
                 agent_status: outcome.agent_status(),
+                model: Some(work_model.to_string()),
+                tier: Some(tier.tag().to_string()),
             },
         ),
-        PulseOutcome::Completed => status("awake", Some(top.id.clone()), None),
+        PulseOutcome::Completed => emit_status(
+            app,
+            ConductorStatus {
+                state: "awake",
+                bead_id: Some(top.id.clone()),
+                detail: None,
+                last_pulse_ms: Some(now_ms()),
+                interval_secs,
+                repo_path: repo.to_string(),
+                agent_status: None,
+                model: Some(work_model.to_string()),
+                tier: Some(tier.tag().to_string()),
+            },
+        ),
     }
 }
 
@@ -556,6 +671,8 @@ async fn fanout_pulse(
                 interval_secs,
                 repo_path: repo.to_string(),
                 agent_status: None,
+                model: None,
+                tier: None,
             },
         );
     };
@@ -614,10 +731,43 @@ async fn fanout_pulse(
         // can stop just this builder. Deregister on completion (ok/err/cancel) so a
         // stale handle never lingers past the tick.
         let cancel = register_in_flight(&child.id);
+        // RV8.1: this builder's own status rides the separate `conductor_builder`
+        // channel. Clone app + owned fields into the task so each builder emits its
+        // live transitions (waking -> awake/blocked/error) independently.
+        let app_owned = app.clone();
+        let child_id = child.id.clone();
+        let child_title = child.title.clone();
+        let epic_id = epic.id.clone();
+        let model_owned = work_model.clone();
         handles.push(async move {
-            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &work_model, Some(&cancel), herdr_mode).await;
-            deregister_in_flight(&child.id);
-            (child.id, r)
+            emit_builder(
+                &app_owned,
+                builder_status_from(&child_id, &child_title, &epic_id, tier, &model_owned, "waking", None),
+            );
+            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &model_owned, Some(&cancel), herdr_mode).await;
+            // RV8.2: a cancelled/timed-out subprocess builder may have died holding
+            // the shared merge slot (its prompt-driven release never ran). Release it
+            // server-side, but ONLY if this bead still holds it (holder-verified) so a
+            // sibling's legitimate lease is never stomped. Never on the herdr path —
+            // that pane persists and owns its own release.
+            let (state, detail): (&'static str, Option<String>) = match &r {
+                Ok(PulseOutcome::Completed) => ("awake", None),
+                Ok(PulseOutcome::Blocked) => ("blocked", Some("needs gate input".to_string())),
+                Err(e) => {
+                    if !herdr_mode
+                        && (e == "cancelled" || e.starts_with("claude pulse timed out"))
+                    {
+                        release_merge_slot_if_held(&repo_owned, &child_id).await;
+                    }
+                    ("error", Some(e.clone()))
+                }
+            };
+            emit_builder(
+                &app_owned,
+                builder_status_from(&child_id, &child_title, &epic_id, tier, &model_owned, state, detail),
+            );
+            deregister_in_flight(&child_id);
+            (child_id, r)
         });
     }
     let results = futures_join_all(handles).await;
@@ -671,6 +821,8 @@ async fn fanout_pulse(
                     interval_secs,
                     repo_path: repo.to_string(),
                     agent_status: Some("blocked".to_string()),
+                    model: None,
+                    tier: None,
                 },
             );
         }
@@ -1044,6 +1196,8 @@ pub async fn conductor_stop(app: AppHandle) -> Result<(), String> {
                 interval_secs: state.interval_secs,
                 repo_path: state.repo_path,
                 agent_status: None,
+                model: None,
+                tier: None,
             },
         );
     }
@@ -1100,6 +1254,8 @@ pub async fn conductor_pulse_now(
                 interval_secs: interval,
                 repo_path: repo_path.clone(),
                 agent_status: None,
+                model: None,
+                tier: None,
             },
         );
     };
@@ -1159,6 +1315,8 @@ pub async fn conductor_stop_agent(app: AppHandle, bead_id: String) -> Result<(),
                     interval_secs: DEFAULT_INTERVAL_SECS,
                     repo_path: String::new(),
                     agent_status: None,
+                    model: None,
+                    tier: None,
                 },
             );
             Ok(())
@@ -1193,6 +1351,8 @@ pub async fn conductor_defer_bead(
             interval_secs: DEFAULT_INTERVAL_SECS,
             repo_path,
             agent_status: None,
+            model: None,
+            tier: None,
         },
     );
     Ok(())
@@ -1277,6 +1437,9 @@ mod tests {
         assert!(p.contains("[S]"));
         assert!(p.contains("bd merge-slot acquire"));
         assert!(p.contains("bd merge-slot release"));
+        // RV8.2 — the holder tag MUST be present on both acquire + release so a
+        // killed builder's slot is reclaimable by `release --holder builder:{id}`.
+        assert!(p.contains("--holder \"builder:Code-child\""));
         assert!(p.contains("do NOT bypass it") || p.contains("do NOT bypass"));
         assert!(p.contains("Do NOT touch sibling beads"));
         assert!(p.contains("Do NOT fake progress"));
@@ -1443,5 +1606,106 @@ mod tests {
     fn pulse_outcome_agent_status_wire() {
         assert_eq!(PulseOutcome::Blocked.agent_status(), Some("blocked".to_string()));
         assert_eq!(PulseOutcome::Completed.agent_status(), None);
+    }
+
+    // RV8.1 — the per-builder wire. builder_status_from carries the bead id, title,
+    // epic, state, and (RV8.3) model + tier tag; it serializes to the
+    // `conductor_builder` channel the ActiveAgents per-child cards subscribe to.
+    #[test]
+    fn builder_status_from_carries_identity_and_tier() {
+        let b = builder_status_from(
+            "Code-child",
+            "Do a thing",
+            "Code-epic",
+            Tier::Medium,
+            "claude-sonnet-5",
+            "waking",
+            None,
+        );
+        assert_eq!(b.bead_id, "Code-child");
+        assert_eq!(b.title, "Do a thing");
+        assert_eq!(b.epic_id, "Code-epic");
+        assert_eq!(b.state, "waking");
+        assert_eq!(b.model.as_deref(), Some("claude-sonnet-5"));
+        assert_eq!(b.tier.as_deref(), Some("M"));
+        assert!(b.last_pulse_ms.is_some());
+    }
+
+    #[test]
+    fn builder_status_serializes_to_wire_shape() {
+        let b = builder_status_from("Code-c", "t", "Code-e", Tier::Small, "claude-haiku-4-5-20251001", "awake", Some("done".into()));
+        let json = serde_json::to_value(&b).unwrap();
+        assert_eq!(json["bead_id"], "Code-c");
+        assert_eq!(json["state"], "awake");
+        assert_eq!(json["tier"], "S");
+        assert_eq!(json["model"], "claude-haiku-4-5-20251001");
+        assert_eq!(json["detail"], "done");
+    }
+
+    // RV8.3 — ConductorStatus carries model + tier when a pulse resolved one, and
+    // OMITS both keys otherwise (skip_serializing_if), keeping the wire back-compat
+    // for the stop/defer emitters + all pre-RV8 listeners.
+    #[test]
+    fn conductor_status_model_tier_skip_when_none() {
+        let with = ConductorStatus {
+            state: "awake",
+            bead_id: Some("Code-x".into()),
+            detail: None,
+            last_pulse_ms: Some(1),
+            interval_secs: 1200,
+            repo_path: "/r".into(),
+            agent_status: None,
+            model: Some("claude-opus-5".into()),
+            tier: Some("L".into()),
+        };
+        let j = serde_json::to_value(&with).unwrap();
+        assert_eq!(j["model"], "claude-opus-5");
+        assert_eq!(j["tier"], "L");
+
+        let without = ConductorStatus {
+            state: "stopped",
+            bead_id: None,
+            detail: None,
+            last_pulse_ms: Some(1),
+            interval_secs: 1200,
+            repo_path: "/r".into(),
+            agent_status: None,
+            model: None,
+            tier: None,
+        };
+        let j2 = serde_json::to_value(&without).unwrap();
+        assert!(j2.get("model").is_none(), "model key must be absent when None");
+        assert!(j2.get("tier").is_none(), "tier key must be absent when None");
+    }
+
+    // RV8.2 — the holder-verified slot reclaim guard. Release ONLY when the slot is
+    // held by exactly this bead's tag; never when available or held by a sibling.
+    #[test]
+    fn should_release_only_own_held_slot() {
+        let held_by_me = bd::MergeSlot {
+            available: false,
+            holder: Some("builder:Code-child".into()),
+            id: "Code-merge-slot".into(),
+        };
+        assert!(should_release(&held_by_me, "Code-child"));
+
+        let held_by_sibling = bd::MergeSlot {
+            available: false,
+            holder: Some("builder:Code-other".into()),
+            id: "Code-merge-slot".into(),
+        };
+        assert!(!should_release(&held_by_sibling, "Code-child"));
+
+        let available = bd::MergeSlot {
+            available: true,
+            holder: None,
+            id: "Code-merge-slot".into(),
+        };
+        assert!(!should_release(&available, "Code-child"));
+    }
+
+    #[test]
+    fn builder_holder_tag_shape() {
+        assert_eq!(builder_holder("Code-child"), "builder:Code-child");
     }
 }
