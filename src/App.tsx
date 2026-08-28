@@ -30,6 +30,11 @@ export default function App() {
   const { projects, activeId, setActive, refresh, loaded, error: projectsError } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
+  // Code-qqt (RV1-focus) — fullscreen terminal focus. When true, the terminal
+  // region covers the whole content area (Board stays mounted underneath, so no
+  // shell respawn). Toggled by Cmd/Ctrl+Enter via the `terminal:focus-toggle`
+  // event. Not persisted: it's a transient working mode, not a saved layout.
+  const [terminalFocus, setTerminalFocus] = useState(false)
   const [terminalHeight, setTerminalHeight] = useState<number>(() => {
     const saved = Number(localStorage.getItem('beads-station.terminalHeight'))
     return saved >= 80 && saved <= 700 ? saved : 280
@@ -86,6 +91,26 @@ export default function App() {
     const onToggle = () => setSidebarCollapsed(c => !c)
     window.addEventListener('sidebar:toggle', onToggle)
     return () => window.removeEventListener('sidebar:toggle', onToggle)
+  }, [])
+
+  // Code-qqt (RV1-focus) — Cmd/Ctrl+Enter toggles fullscreen terminal focus.
+  // Entering focus also un-collapses the strip and moves vim focus to the
+  // terminal so it's usable immediately; leaving restores board focus.
+  useEffect(() => {
+    const onToggle = () => {
+      setTerminalFocus(f => {
+        const next = !f
+        if (next) {
+          setTerminalCollapsed(false)
+          setFocused('terminal')
+        } else {
+          setFocused('board')
+        }
+        return next
+      })
+    }
+    window.addEventListener('terminal:focus-toggle', onToggle)
+    return () => window.removeEventListener('terminal:focus-toggle', onToggle)
   }, [])
 
   // C-w +/-/=/_  hotkeys dispatch terminal:resize {delta} from useVimNav.
@@ -270,23 +295,30 @@ export default function App() {
       </aside>
       <main style={{ background: 'var(--bs-bg)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <TabBar projects={projects} activeId={activeId} onSelect={setActive} />
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ flex: 1, minHeight: 0 }}>
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+          {/* Board stays MOUNTED under the fullscreen terminal (no remount /
+              no shell respawn); we only hide it visually while focused. */}
+          <div style={{ flex: 1, minHeight: 0, ...(terminalFocus ? { visibility: 'hidden' as const } : null) }}>
             <Board key={active.id} repoPath={active.path} projectId={active.id} />
           </div>
           <div
+            data-terminal-focus={terminalFocus ? 'true' : 'false'}
             style={{
-              height: activeTerminalHeight,
+              height: terminalFocus ? undefined : activeTerminalHeight,
               borderTop: '1px solid var(--bs-border)',
               display: 'flex',
               flexDirection: 'column',
               flexShrink: 0,
-              transition: 'height 120ms ease',
-              position: 'relative',
+              transition: terminalFocus ? undefined : 'height 120ms ease',
+              // RV1-focus: cover the whole content area, Board mounted beneath.
+              ...(terminalFocus
+                ? { position: 'absolute' as const, inset: 0, zIndex: 10, background: 'var(--bs-bg)' }
+                : null),
             }}
           >
-            {/* Drag handle on the terminal's top border — mirrors sidebar resize. */}
-            {!terminalCollapsed && (
+            {/* Drag handle on the terminal's top border — mirrors sidebar
+                resize. Hidden in fullscreen focus (height is not user-dragged). */}
+            {!terminalCollapsed && !terminalFocus && (
               <div
                 onMouseDown={startTerminalResize}
                 title="Drag to resize terminal (C-w +/- to step)"
@@ -294,7 +326,10 @@ export default function App() {
               />
             )}
             <button
-              onClick={() => setTerminalCollapsed(c => !c)}
+              onClick={() => (terminalFocus
+                ? window.dispatchEvent(new CustomEvent('terminal:focus-toggle'))
+                : setTerminalCollapsed(c => !c))}
+              title={terminalFocus ? 'Exit fullscreen (Cmd/Ctrl+Enter)' : 'Fullscreen: Cmd/Ctrl+Enter'}
               style={{
                 height: 24,
                 padding: '0 10px',
@@ -313,8 +348,10 @@ export default function App() {
                 flexShrink: 0,
               }}
             >
-              <span style={{ display: 'inline-block', width: 8, transform: terminalCollapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 120ms ease' }}>▼</span>
-              <span>terminal · {active.path}</span>
+              <span style={{ display: 'inline-block', width: 8, transform: terminalCollapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 120ms ease' }}>
+                {terminalFocus ? '⤢' : '▼'}
+              </span>
+              <span>terminal · {active.path}{terminalFocus ? '  ·  fullscreen (Cmd/Ctrl+Enter to exit)' : ''}</span>
             </button>
             {!terminalCollapsed && (
               <div style={{ flex: 1, minHeight: 0 }}>
