@@ -828,6 +828,14 @@ Epic `Code-3kl` — 2 of 3 children closed this session. `Code-3kl.3` (thin-clie
 
 **Code-zm7 audit (PLAN B Part 1):** FE pane management is REAL (splits `s`/`v`, tabs, `C-w h/j/k/l` focus-move, zoom, close all shipped in `TerminalPanes.tsx` + `state/termPanes.ts`). Description created 2026-07-26 is stale. Sole remaining gap = PTYs surviving WINDOW CLOSE, which is exactly the RV7 herdr epic — linked `Code-zm7 ↔ Code-3kl` relates-to. Not closed: window-close persistence is zm7's headline claim and is not met in-process.
 
+## Track H — livable terminal: fullscreen focus toggle (2026-08-28, Code-qqt shipped)
+
+Trigger: "would never use this tool as it is now" + wants a resizable/fullscreen focus terminal with one-key app<->terminal switching. Plan: `~/Documents/Beads/Implementation Prompts/2026-08-28 PLAN E — livable terminal (focus mode, layout, stability).md`.
+
+**Code-qqt — fullscreen terminal focus toggle (P0, CLOSED).** Cmd/Ctrl+Enter maximizes the terminal region over the whole content area and toggles back. `useVimNav` dispatches a `terminal:focus-toggle` CustomEvent (from any focus incl. xterm insert; plain Enter untouched). `App.tsx` holds a transient `terminalFocus` state: when true the terminal region is `position:absolute; inset:0; z-index:10` over `<main>` and the Board div is `visibility:hidden` but STAYS MOUNTED — no shell respawn / no remount. `Terminal.tsx`'s ResizeObserver reflows xterm on the height jump. Entering un-collapses + `setFocused('terminal')`; exiting `setFocused('board')`. `data-terminal-focus` attribute for tests; not persisted. Live specs `terminal-focus.spec.ts` (enter/exit/round-trip-no-remount). Gates: build clean, 84 vitest, 43 live specs.
+
+**Forward tickets filed (PLAN E):** `Code-mkv` RV1-layout (P1: per-project persisted split ratios + strip height + snap), `Code-t3j` RV1-mode (P2: two-mode app<->terminal workspace, blocked on mkv + zm7), `Code-6k4` RV1-soak (P2: focus-toggle soak, linked to Code-r7q). Stability follow-on folds in `Code-aod`/`Code-1cs` (App re-render hub) so a focus toggle doesn't re-render the board.
+
 
 - After every phase closes: append a one-liner to the phase table above.
 - When a hardcode is removed or a configurable replaces a literal: update the "What's already on disk" hardcodes block.
