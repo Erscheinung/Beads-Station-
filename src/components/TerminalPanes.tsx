@@ -18,6 +18,7 @@ import {
   registerPty,
   focusPane,
   setInsert,
+  setRatio,
   switchTab,
   type Node,
   type Leaf,
@@ -208,6 +209,31 @@ function nodeKey(node: Node): string {
   return node.kind === 'leaf' ? node.paneId : node.splitId
 }
 
+// Code-mkv — seam drag. The seam sits between the two halves of a split; on
+// mousedown we read the flex container's rect (the seam's parentElement) and,
+// on each mousemove, map the pointer position along the split axis to a ratio
+// for child `a`. Mirrors App.tsx's startTerminalResize (window listeners +
+// clamp), but writes to the termPanes store instead of React state.
+function startSeamDrag(splitId: string, isRow: boolean, e: React.MouseEvent): void {
+  e.preventDefault()
+  e.stopPropagation()
+  const container = (e.currentTarget as HTMLElement).parentElement
+  if (!container) return
+  const onMove = (ev: MouseEvent) => {
+    const rect = container.getBoundingClientRect()
+    const ratio = isRow
+      ? (ev.clientX - rect.left) / rect.width
+      : (ev.clientY - rect.top) / rect.height
+    if (Number.isFinite(ratio)) setRatio(splitId, ratio)
+  }
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove)
+    window.removeEventListener('mouseup', onUp)
+  }
+  window.addEventListener('mousemove', onMove)
+  window.addEventListener('mouseup', onUp)
+}
+
 function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
   if (node.kind === 'leaf') {
     return <PaneLeaf key={node.paneId} leaf={node} ctx={ctx} />
@@ -231,13 +257,32 @@ function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
         height: '100%',
         minWidth: 0,
         minHeight: 0,
-        gap: 1, // 1px hairline seam between children
         background: 'var(--bs-border)',
       }}
     >
       <div key={nodeKey(node.a)} style={{ flexBasis: aPct, minWidth: 0, minHeight: 0, background: 'var(--bs-bg)', position: 'relative' }}>
         {renderNode(node.a, ctx)}
       </div>
+      {/* Code-mkv — draggable seam. 4px hit area, 1px visible hairline via the
+          container background showing through. Keyed off splitId so it stays
+          stable across reflows. */}
+      <div
+        key={`${node.splitId}-seam`}
+        data-bs-split-seam={node.splitId}
+        onMouseDown={e => startSeamDrag(node.splitId, isRow, e)}
+        style={{
+          flex: '0 0 1px',
+          alignSelf: 'stretch',
+          cursor: isRow ? 'col-resize' : 'row-resize',
+          background: 'var(--bs-border)',
+          position: 'relative',
+          zIndex: 6,
+          // Widen the hit area beyond the 1px hairline without shifting layout.
+          ...(isRow
+            ? { boxSizing: 'content-box' as const, padding: '0 1.5px', margin: '0 -1.5px' }
+            : { boxSizing: 'content-box' as const, padding: '1.5px 0', margin: '-1.5px 0' }),
+        }}
+      />
       <div key={nodeKey(node.b)} style={{ flexBasis: bPct, minWidth: 0, minHeight: 0, background: 'var(--bs-bg)', position: 'relative' }}>
         {renderNode(node.b, ctx)}
       </div>

@@ -22,6 +22,26 @@ import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
 import { DesignerShell } from './components/designer/DesignerShell'
 
+// Code-mkv — per-project terminal strip height. Falls back to the legacy global
+// key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
+const TERM_H_MIN = 80
+const TERM_H_MAX = 700
+const TERM_H_DEFAULT = 280
+function loadTerminalHeight(projectId: string | undefined): number {
+  const clamp = (n: number) => (n >= TERM_H_MIN && n <= TERM_H_MAX ? n : null)
+  try {
+    if (projectId) {
+      const per = clamp(Number(localStorage.getItem(`beads-station.terminalHeight.${projectId}`)))
+      if (per != null) return per
+    }
+    const global = clamp(Number(localStorage.getItem('beads-station.terminalHeight')))
+    if (global != null) return global
+  } catch {
+    /* non-browser */
+  }
+  return TERM_H_DEFAULT
+}
+
 export default function App() {
   useVimNav()
   const vim = useVim()
@@ -35,6 +55,10 @@ export default function App() {
   // shell respawn). Toggled by Cmd/Ctrl+Enter via the `terminal:focus-toggle`
   // event. Not persisted: it's a transient working mode, not a saved layout.
   const [terminalFocus, setTerminalFocus] = useState(false)
+  // Code-mkv — strip height is now PER-PROJECT. The old global key
+  // `beads-station.terminalHeight` is the fallback/default source; per-project
+  // values live under `...terminalHeight.<projectId>`. Seeded from the global
+  // key on first load, then reloaded on every project switch (effect below).
   const [terminalHeight, setTerminalHeight] = useState<number>(() => {
     const saved = Number(localStorage.getItem('beads-station.terminalHeight'))
     return saved >= 80 && saved <= 700 ? saved : 280
@@ -133,9 +157,18 @@ export default function App() {
     localStorage.setItem('beads-station.sidebarWidth', String(sidebarWidth))
   }, [sidebarWidth])
 
+  // Code-mkv — on project switch, load that project's persisted strip height.
   useEffect(() => {
+    setTerminalHeight(loadTerminalHeight(active?.id))
+  }, [active?.id])
+
+  // Persist the strip height under the active project's key (Code-mkv). Also
+  // mirror to the legacy global key so a fresh project inherits a sane default.
+  useEffect(() => {
+    if (!active?.id) return
+    localStorage.setItem(`beads-station.terminalHeight.${active.id}`, String(terminalHeight))
     localStorage.setItem('beads-station.terminalHeight', String(terminalHeight))
-  }, [terminalHeight])
+  }, [terminalHeight, active?.id])
 
   const startSidebarResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -157,14 +190,28 @@ export default function App() {
     e.preventDefault()
     const startY = e.clientY
     const startH = terminalHeight
+    // Code-mkv — soft snap: content-area height drives the 25%/50% candidates.
+    // Measured once at drag start from <main> (the terminal's container).
+    const contentH = (e.currentTarget as HTMLElement).closest('main')?.clientHeight ?? window.innerHeight
+    const SNAP_PX = 24
+    let last = startH
     const onMove = (ev: MouseEvent) => {
       // Dragging up (negative delta) grows the terminal.
-      const next = Math.min(700, Math.max(80, startH - (ev.clientY - startY)))
-      setTerminalHeight(next)
+      last = Math.min(700, Math.max(80, startH - (ev.clientY - startY)))
+      setTerminalHeight(last)
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      // Snap to 25% / 50% of the content area when released within SNAP_PX.
+      // Fullscreen stays the Cmd/Ctrl+Enter path, not a drag target.
+      for (const frac of [0.25, 0.5]) {
+        const cand = Math.min(700, Math.max(80, Math.round(contentH * frac)))
+        if (Math.abs(last - cand) <= SNAP_PX) {
+          setTerminalHeight(cand)
+          break
+        }
+      }
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)

@@ -99,6 +99,30 @@ function uid(prefix: string): string {
   return `${prefix}${_seq}`
 }
 
+/**
+ * Code-mkv — advance `_seq` past the largest numeric suffix among `ids` so that
+ * ids minted after a restore never collide with rehydrated ones. `_seq` resets
+ * to 0 every reload; a persisted tree carrying `pane7`/`split3`/`agent2` would
+ * otherwise get `pane1`… on the next split, and the tree helpers match by exact
+ * string — a duplicate id would mutate/remove the wrong leaf.
+ */
+function bumpSeqPast(ids: string[]): void {
+  let max = _seq
+  for (const id of ids) {
+    const m = /(\d+)$/.exec(id)
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  _seq = max
+}
+
+/** All ids (paneId/splitId/agent bridgeId) in a subtree, for bumpSeqPast. */
+function idsOf(node: Node): string[] {
+  if (node.kind === 'leaf') {
+    return node.agent ? [node.paneId, node.agent.bridgeId] : [node.paneId]
+  }
+  return [node.splitId, ...idsOf(node.a), ...idsOf(node.b)]
+}
+
 function newLeaf(cwd: string): Leaf {
   return { kind: 'leaf', paneId: uid('pane'), ptyId: null, cwd }
 }
@@ -165,6 +189,88 @@ const PROJECTS = new Map<string, TermPanesState>()
 
 let state: TermPanesState = makeInitialState('')
 PROJECTS.set(BOOT_PROJECT, state)
+
+// ---- persistence (Code-mkv) --------------------------------------------
+//
+// The whole per-project pane surface (tab/split tree incl. ratios, cwds, agent
+// + file-nav leaves) is serialized to localStorage so a reload restores each
+// project's layout. Volatile handles are stripped: ptyId (the shell respawns
+// fresh on mount — Terminal ignores an incoming id), so it's reset to null.
+// Agent bridgeId IS kept: it's the resume key (bs.claude.session:<bridgeId>),
+// so a rehydrated agent leaf resumes its claude session on remount.
+//
+// Writes are debounced on emit() (a focus/insert burst -> one stringify). The
+// BOOT_PROJECT surface is never persisted (it's the pre-project scratch leaf).
+
+const PERSIST_KEY = 'beads-station.termPanes'
+const PERSIST_VERSION = 1
+
+/** Deep-copy a node, resetting every leaf's ptyId to null (stale after reload). */
+function sanitizeNode(node: Node): Node {
+  if (node.kind === 'leaf') return { ...node, ptyId: null }
+  return { ...node, a: sanitizeNode(node.a), b: sanitizeNode(node.b) }
+}
+
+function sanitizeState(s: TermPanesState): TermPanesState {
+  return {
+    ...s,
+    tabs: s.tabs.map(t => ({ ...t, root: sanitizeNode(t.root) })),
+    insert: false,
+  }
+}
+
+export function serializeProjects(): string {
+  // Snapshot every project surface EXCEPT the boot scratch. The live `state`
+  // is the active project's surface; the stashed copy in PROJECTS may be stale,
+  // so overwrite the active entry with `state` before reading the map.
+  const map: Record<string, TermPanesState> = {}
+  const snapshot = new Map(PROJECTS)
+  if (activeProjectId !== BOOT_PROJECT) snapshot.set(activeProjectId, state)
+  for (const [pid, s] of snapshot) {
+    if (pid === BOOT_PROJECT) continue
+    map[pid] = sanitizeState(s)
+  }
+  return JSON.stringify({ v: PERSIST_VERSION, projects: map })
+}
+
+export function restoreProjects(json: string | null): void {
+  if (!json) return
+  try {
+    const parsed = JSON.parse(json) as { v?: number; projects?: Record<string, TermPanesState> }
+    if (parsed.v !== PERSIST_VERSION || !parsed.projects) return
+    const allIds: string[] = []
+    for (const [pid, s] of Object.entries(parsed.projects)) {
+      if (!s?.tabs?.length) continue
+      PROJECTS.set(pid, sanitizeState(s))
+      for (const t of s.tabs) allIds.push(t.id, ...idsOf(t.root))
+    }
+    bumpSeqPast(allIds)
+  } catch {
+    /* corrupt payload — ignore, start fresh */
+  }
+}
+
+let _persistTimer: ReturnType<typeof setTimeout> | null = null
+function schedulePersist(): void {
+  if (_persistTimer !== null) return
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null
+    try {
+      localStorage.setItem(PERSIST_KEY, serializeProjects())
+    } catch {
+      /* quota / non-browser — ignore */
+    }
+  }, 150)
+}
+
+// Rehydrate persisted surfaces BEFORE any project switch. restore only fills
+// PROJECTS (not the live `state`), and setActiveProject prefers an existing
+// PROJECTS entry over adopting the boot leaf, so a restored project wins.
+try {
+  restoreProjects(localStorage.getItem(PERSIST_KEY))
+} catch {
+  /* non-browser — ignore */
+}
 
 /** True when a state is a pristine boot surface (one empty, un-spawned leaf). */
 function isPristine(s: TermPanesState): boolean {
@@ -262,6 +368,7 @@ function emit(): void {
     /* SSR / non-browser — ignore */
   }
   _sig = computeSig()
+  schedulePersist()
   listeners.forEach(l => l())
 }
 
@@ -297,6 +404,12 @@ export function useTermPanesSignature(): string {
 /** Non-hook read of the current reconcile signature (Code-1cs test probe). */
 export function termPanesSignature(): string {
   return _sig
+}
+
+/** Non-hook read of the active tab's root node (Code-mkv test probe — the tree
+ *  isn't otherwise exported; used to assert setRatio / restore in unit tests). */
+export function activeTabRoot(): Node {
+  return activeTab(state).root
 }
 
 // Seed the window mirror once at module load so useVimNav can read termMode
@@ -397,6 +510,17 @@ function mapLeaf(node: Node, paneId: string, replacer: (l: Leaf) => Node): Node 
   return { ...node, a: mapLeaf(node.a, paneId, replacer), b: mapLeaf(node.b, paneId, replacer) }
 }
 
+/** Return a new tree with `splitId`'s Split node replaced by `replacer(split)`.
+ *  Ref-preserving: returns the same node when nothing in the subtree changed. */
+function mapSplit(node: Node, splitId: string, replacer: (s: Split) => Split): Node {
+  if (node.kind === 'leaf') return node
+  const self = node.splitId === splitId ? replacer(node) : node
+  const a = mapSplit(self.a, splitId, replacer)
+  const b = mapSplit(self.b, splitId, replacer)
+  if (self === node && a === node.a && b === node.b) return node
+  return { ...self, a, b }
+}
+
 /**
  * Remove `paneId`'s leaf, collapsing the parent split into the sibling.
  * Returns the new root, or null if the removed leaf was the whole tree.
@@ -455,6 +579,21 @@ export function focusPane(paneId: string): void {
   const tab = activeTab(state)
   if (tab.activePaneId === paneId) return
   state = replaceTab(state, tab.id, { ...tab, activePaneId: paneId })
+  emit()
+}
+
+/**
+ * Code-mkv — set a split's `ratio` (fraction taken by child `a`), clamped so
+ * neither half can be dragged to zero. Immutable: rebuilds the active tab's
+ * tree via mapSplit, so the keyed wrappers survive (a ratio change is a style
+ * change on a stable-keyed wrapper, never a tree-shape change — no remount).
+ */
+export function setRatio(splitId: string, ratio: number): void {
+  const clamped = Math.min(0.95, Math.max(0.05, ratio))
+  const tab = activeTab(state)
+  const next = mapSplit(tab.root, splitId, s => (s.ratio === clamped ? s : { ...s, ratio: clamped }))
+  if (next === tab.root) return
+  state = replaceTab(state, tab.id, { ...tab, root: next })
   emit()
 }
 

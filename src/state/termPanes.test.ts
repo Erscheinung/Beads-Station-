@@ -25,6 +25,10 @@ import {
   getZoom,
   termPanesSignature,
   setInsert,
+  setRatio,
+  activeTabRoot,
+  serializeProjects,
+  restoreProjects,
 } from './termPanes'
 
 // The store is a module singleton. Reset it to a known shape before each
@@ -242,5 +246,96 @@ describe('termPanes reconcile signature (Code-aod)', () => {
     expect(termPanesSignature()).toBe(before)
     cyclePane()
     expect(termPanesSignature()).toBe(before)
+  })
+})
+
+// Code-mkv — setRatio writes a split's ratio (draggable seam); persistence
+// round-trips the per-project surface incl. ratios + agents, advancing _seq so
+// ids minted after restore never collide with rehydrated ones.
+describe('termPanes setRatio (Code-mkv)', () => {
+  beforeEach(() => reset())
+
+  it('sets the active tab root split ratio, clamped to 0.05..0.95', () => {
+    setActiveProject('ratA', '/tmp/rat-a')
+    splitActive('v')
+    const root = activeTabRoot()
+    expect(root.kind).toBe('split')
+    if (root.kind !== 'split') return
+    expect(root.ratio).toBe(0.5)
+
+    setRatio(root.splitId, 0.7)
+    const after = activeTabRoot()
+    expect(after.kind === 'split' && after.ratio).toBe(0.7)
+
+    // Clamp: 0 -> 0.05, 1 -> 0.95.
+    setRatio(root.splitId, 0)
+    expect(activeTabRoot().kind === 'split' && (activeTabRoot() as { ratio: number }).ratio).toBe(0.05)
+    setRatio(root.splitId, 1)
+    expect(activeTabRoot().kind === 'split' && (activeTabRoot() as { ratio: number }).ratio).toBe(0.95)
+  })
+
+  it('setRatio on an unknown splitId is a no-op and does not throw', () => {
+    setActiveProject('ratB', '/tmp/rat-b')
+    splitActive('v')
+    const before = activeTabRoot()
+    expect(() => setRatio('nope', 0.3)).not.toThrow()
+    expect(activeTabRoot()).toBe(before) // same ref — no rebuild
+  })
+})
+
+describe('termPanes persistence round-trip (Code-mkv)', () => {
+  beforeEach(() => reset())
+
+  it('serialize -> restore rehydrates the tree, strips ptyId, keeps agent bridge', () => {
+    setActiveProject('persA', '/tmp/pers-a')
+    splitActive('v')
+    spawnAgent('persA', '/tmp/pers-a', 'sid-pers')
+    // Grab an agent bridge id to assert it survives.
+    const root = activeTabRoot()
+    const agentBridge = leavesOf(root).find(l => l.agent)?.agent?.bridgeId
+    expect(agentBridge).toBeTruthy()
+
+    const json = serializeProjects()
+    expect(json).toContain('persA')
+
+    // Wipe in-memory PROJECTS by switching away + reset, then restore.
+    setActiveProject('elsewhere', '/tmp/else')
+    restoreProjects(json)
+
+    // Switching back to persA loads the restored surface.
+    setActiveProject('persA', '/tmp/pers-a')
+    const restored = leavesOf(activeTabRoot())
+    // 3 leaves: original shell, split shell, agent.
+    expect(restored.length).toBe(3)
+    // ptyId stripped on every leaf.
+    expect(restored.every(l => l.ptyId === null)).toBe(true)
+    // Agent bridge preserved (resume key stability).
+    expect(restored.some(l => l.agent?.bridgeId === agentBridge)).toBe(true)
+  })
+
+  it('restore advances _seq so a later split does not collide with rehydrated ids', () => {
+    setActiveProject('seqA', '/tmp/seq-a')
+    splitActive('v')
+    splitActive('v') // several panes/splits -> higher suffixes
+    const json = serializeProjects()
+
+    restoreProjects(json)
+    setActiveProject('seqA', '/tmp/seq-a')
+
+    // Collect all ids before, split, assert the new ids are unique (no dup).
+    const idsBefore = new Set(leavesOf(activeTabRoot()).map(l => l.paneId))
+    splitActive('h')
+    const leavesAfter = leavesOf(activeTabRoot())
+    const newLeaf = leavesAfter.find(l => !idsBefore.has(l.paneId))
+    expect(newLeaf).toBeTruthy()
+    // The freshly minted paneId must not duplicate any existing one.
+    const allIds = leavesAfter.map(l => l.paneId)
+    expect(new Set(allIds).size).toBe(allIds.length)
+  })
+
+  it('restore ignores a corrupt / wrong-version payload', () => {
+    expect(() => restoreProjects('not json')).not.toThrow()
+    expect(() => restoreProjects(JSON.stringify({ v: 999, projects: {} }))).not.toThrow()
+    expect(() => restoreProjects(null)).not.toThrow()
   })
 })
