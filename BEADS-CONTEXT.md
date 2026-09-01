@@ -871,6 +871,19 @@ Plan: `~/Documents/Beads/Implementation Prompts/2026-08-28 PLAN E — livable te
 - **Newly unblocked / next:** `Code-t3j` RV1-mode (two-mode workspace) still blocked on `Code-zm7` (multiplexed shells, P1 ready). `Code-6k4` focus-toggle soak noted to extend into a reload-restore soak.
 
 
+## Track L — soak tests + theme system + bd housekeeping (2026-09-01)
+
+Commits `e6fe7c7` (soak), `7b9bb44` (theme), `717e3bd` (bd). Gates: 112 vitest, 53 test:live, build clean.
+
+- **Code-meb closed (P0 epic).** EXP just-works-backbone epic: 7/7 children already done before this session; closed on session open.
+- **Code-6k4 — reload-restore + focus-toggle soak (layout.spec.ts).** Two new Playwright soak tests: (1) reload-restore: 20 page.reload() cycles assert paneCount stable, split ratio preserved ±0.02, `.xterm-screen` count ≤ paneCount, JS heap bounded (< 3× + 30MB baseline); (2) focus-toggle: 20 Ctrl+Enter enter/exit cycles assert same paneCount + no orphan xterm. Both pass in 8.9s total.
+- **Code-6wx — ghostty/cmux theme import + palette-driven surfaces.** `src/lib/themeImport.ts`: parse ghostty format (16 ANSI + bg/fg/cursor/selection) → `ThemePalette`; `applyPaletteToCSS` maps palette onto all `--bs-*` CSS tokens; blue accent never replaced by purple (design-system rule upheld). `src/themes/index.ts`: 5 bundled themes (tokyonight-storm default, catppuccin-mocha, gruvbox-dark, rose-pine, one-light). `theme.ts` extended with paletteId state + `setThemePalette()` + `useThemePaletteId()`; persisted palette re-applied on module load. `Terminal.tsx`: reads active palette on init + a `[paletteId]` effect updates `xterm.options.theme` live without remounting (no PTY respawn). `CommandPalette.tsx`: "Choose theme" command opens a `themes` subview listing all 5 bundled themes. 6 unit tests.
+- **Code-zm7 closed (P1).** FE multiplexed shell parity confirmed fully shipped (splits/tabs/zoom/focus-move/close). Window-close PTY persistence deferred (architectural: in-process PTYs die with the window; needs herdr daemon, Code-3kl closed).
+- **Code-ky4.8 closed (P3).** [Project]-bracket migration: stripped `[Beads-Station]` prefix from 4 issues (Code-ky4, ky4.8, ky4.10, Code-2a3); added `project=beads-station` label to all 4. Zero bracket-prefix issues remain.
+
+**Newly ready:** Code-xds (P3, inline gate on pane), Code-ky4.10 (P3, polish + packaging), Code-bqz (re-verify in real app), Code-m8x (conductor smoke in real app).
+
+
 - After every phase closes: append a one-liner to the phase table above.
 - When a hardcode is removed or a configurable replaces a literal: update the "What's already on disk" hardcodes block.
 - When a new locked decision is made: add a row to the decisions table.
