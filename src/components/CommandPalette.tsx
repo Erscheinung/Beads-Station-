@@ -5,7 +5,7 @@ import { useProjects } from '../state/projects'
 import { useBdSnapshot } from '../lib/bdCache'
 import { bdClaim, bdCreate } from '../types/issue'
 import { dailyAppend } from '../lib/dailyBridge'
-import { toggleTheme } from '../state/theme'
+import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from '../state/theme'
 import { setSkin } from '../state/skin'
 import './CommandPalette.css'
 
@@ -13,17 +13,20 @@ import './CommandPalette.css'
 // (see useVimNav). Six commands: switch project, new issue, claim ready, grep
 // issues, open Obsidian update, toggle theme.
 //
+// Code-6wx: added "Choose theme" sub-view listing bundled themes by name.
+//
 // cmdk's <Command.Dialog> owns the overlay + portal + a11y + fuzzy filtering;
 // we style it with the app's --bs-* tokens (dark, no purple). The palette lives
 // in the primary shell only (not the ?ui=designer skin) and needs the active
 // repo, so App mounts it inside the shell where `active` is known.
 
-type View = 'root' | 'projects' | 'ready' | 'grep' | 'newIssue'
+type View = 'root' | 'projects' | 'ready' | 'grep' | 'newIssue' | 'themes'
 
 export function CommandPalette({ repoPath }: { repoPath: string }) {
   const { open } = usePalette()
   const { projects, activeId, setActive, refresh } = useProjects()
   const snap = useBdSnapshot(repoPath)
+  const activePaletteId = useThemePaletteId()
 
   const [view, setView] = useState<View>('root')
   const [title, setTitle] = useState('')
@@ -95,6 +98,11 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
     dismiss()
   }, [dismiss])
 
+  const onChooseTheme = useCallback((id: string) => {
+    setThemePalette(id)
+    dismiss()
+  }, [dismiss])
+
   const onSwitchToDesigner = useCallback(() => {
     setSkin('designer')
     dismiss()
@@ -144,6 +152,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
                 <Command.Item onSelect={() => setView('grep')}>Grep issues</Command.Item>
                 <Command.Item onSelect={() => void onOpenObsidian()}>Open Obsidian update</Command.Item>
                 <Command.Item onSelect={onToggleTheme}>Toggle theme</Command.Item>
+                <Command.Item onSelect={() => setView('themes')}>Choose theme</Command.Item>
                 <Command.Item onSelect={onSwitchToDesigner}>Switch to designer skin</Command.Item>
               </Command.Group>
             )}
@@ -188,6 +197,20 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
                     onSelect={() => onGrepOpen(i.id)}
                   >
                     {i.id} · {i.title}
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {view === 'themes' && (
+              <Command.Group heading="Choose theme">
+                {BUNDLED_THEMES.map(t => (
+                  <Command.Item
+                    key={t.name}
+                    value={t.name}
+                    onSelect={() => onChooseTheme(t.name)}
+                  >
+                    {t.name}{t.name === activePaletteId ? ' · active' : ''}
                   </Command.Item>
                 ))}
               </Command.Group>

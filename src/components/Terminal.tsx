@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen } from '../lib/safeListen'
+import { getActivePalette, useThemePaletteId } from '../state/theme'
 import 'xterm/css/xterm.css'
 
 // RV1 — Terminal is now a CONTROLLED leaf owned by the termPanes store.
@@ -33,13 +34,38 @@ export function Terminal({
   const hostRef = useRef<HTMLDivElement>(null)
   const ptyIdRef = useRef<number | null>(null)
   const xtermRef = useRef<XTerm | null>(null)
+  const paletteId = useThemePaletteId()
 
   useEffect(() => {
+    const palette = getActivePalette()
     const xterm = new XTerm({
       fontFamily: "'JetBrains Mono', monospace",
       fontSize: 13,
-      /* mirrors --bs-bg / --bs-fg — xterm reads at instantiation, doesn't observe CSS vars */
-      theme: { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' },
+      theme: palette
+        ? {
+            background: palette.background,
+            foreground: palette.foreground,
+            cursor: palette.cursor,
+            selectionBackground: palette.selectionBackground,
+            selectionForeground: palette.selectionForeground,
+            black: palette.black,
+            red: palette.red,
+            green: palette.green,
+            yellow: palette.yellow,
+            blue: palette.blue,
+            magenta: palette.magenta,
+            cyan: palette.cyan,
+            white: palette.white,
+            brightBlack: palette.brightBlack,
+            brightRed: palette.brightRed,
+            brightGreen: palette.brightGreen,
+            brightYellow: palette.brightYellow,
+            brightBlue: palette.brightBlue,
+            brightMagenta: palette.brightMagenta,
+            brightCyan: palette.brightCyan,
+            brightWhite: palette.brightWhite,
+          }
+        : { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' },
       convertEol: true,
       cursorBlink: true,
     })
@@ -102,6 +128,38 @@ export function Terminal({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Re-apply palette when the user switches themes without remounting the terminal.
+  useEffect(() => {
+    const xterm = xtermRef.current
+    if (!xterm) return
+    const palette = getActivePalette()
+    xterm.options.theme = palette
+      ? {
+          background: palette.background,
+          foreground: palette.foreground,
+          cursor: palette.cursor,
+          selectionBackground: palette.selectionBackground,
+          selectionForeground: palette.selectionForeground,
+          black: palette.black,
+          red: palette.red,
+          green: palette.green,
+          yellow: palette.yellow,
+          blue: palette.blue,
+          magenta: palette.magenta,
+          cyan: palette.cyan,
+          white: palette.white,
+          brightBlack: palette.brightBlack,
+          brightRed: palette.brightRed,
+          brightGreen: palette.brightGreen,
+          brightYellow: palette.brightYellow,
+          brightBlue: palette.brightBlue,
+          brightMagenta: palette.brightMagenta,
+          brightCyan: palette.brightCyan,
+          brightWhite: palette.brightWhite,
+        }
+      : { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' }
+  }, [paletteId])
 
   // Route keyboard to this xterm only when focused AND in insert mode.
   useEffect(() => {
