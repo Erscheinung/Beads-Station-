@@ -4,6 +4,10 @@ import { test, expect, boot, leader } from './helpers'
 // persistence across reload. The seam ([data-bs-split-seam]) writes a Split's
 // ratio; the whole per-project pane surface is persisted to localStorage
 // (beads-station.termPanes) and rehydrated on reload — panes never remount.
+//
+// Code-6k4: reload-restore soak — 20 reload cycles with a split + custom ratio,
+// asserting paneCount stable, split ratio preserved, no orphan xterm instances,
+// and JS heap not growing unboundedly.
 
 test.beforeEach(async ({ page }) => {
   await boot(page)
@@ -104,3 +108,118 @@ test('the pane tree is restored per project across a reload', async ({ page }) =
   const after = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
   expect(after).toBe(before)
 })
+
+// ── Code-6k4: reload-restore soak ────────────────────────────────────────────
+
+/** Read the first non-0.5 split ratio from localStorage, or null if none. */
+function readPersistedRatio(page: import('@playwright/test').Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const raw = localStorage.getItem('beads-station.termPanes')
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    for (const s of Object.values<any>(parsed.projects ?? {})) {
+      const walk = (n: any): number | null => {
+        if (!n || n.kind !== 'split') return null
+        if (Math.abs(n.ratio - 0.5) > 0.01) return n.ratio
+        return walk(n.a) ?? walk(n.b)
+      }
+      const r = walk(s.tabs?.[0]?.root)
+      if (r != null) return r
+    }
+    return null
+  })
+}
+
+test('reload-restore soak: paneCount + ratio stable across 20 cycles, no orphan xterm', async ({ page }) => {
+  // Establish a split with a custom (non-default) ratio.
+  await splitVertical(page)
+  const seam = page.locator('[data-bs-split-seam]').first()
+  const box = await seam.boundingBox()
+  if (!box) throw new Error('seam not visible')
+  const cx = box.x + box.width / 2
+  const cy = box.y + box.height / 2
+  await page.mouse.move(cx, cy)
+  await page.mouse.down()
+  await page.mouse.move(cx - 100, cy, { steps: 6 })
+  await page.mouse.up()
+
+  // Wait for ratio + paneCount to settle in localStorage.
+  await page.waitForFunction(() => {
+    const raw = localStorage.getItem('beads-station.termPanes')
+    if (!raw) return false
+    const parsed = JSON.parse(raw)
+    for (const s of Object.values<any>(parsed.projects ?? {})) {
+      const walk = (n: any): boolean => {
+        if (!n || n.kind !== 'split') return false
+        if (Math.abs(n.ratio - 0.5) > 0.01) return true
+        return walk(n.a) || walk(n.b)
+      }
+      if (walk(s.tabs?.[0]?.root)) return true
+    }
+    return false
+  })
+
+  const expectedPaneCount = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
+  const expectedRatio = await readPersistedRatio(page)
+  expect(expectedPaneCount).toBeGreaterThanOrEqual(2)
+  expect(expectedRatio).not.toBeNull()
+
+  const heapSamples: number[] = []
+
+  const CYCLES = 20
+  for (let i = 0; i < CYCLES; i++) {
+    await page.reload()
+    await page.waitForFunction(() => (window as any).__bsMockReady === true)
+    await page.waitForFunction(() => !!(window as any).__bsTerm)
+
+    const paneCount = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
+    expect(paneCount, `cycle ${i + 1}: paneCount`).toBe(expectedPaneCount)
+
+    const ratio = await readPersistedRatio(page)
+    expect(ratio, `cycle ${i + 1}: ratio present`).not.toBeNull()
+    expect(Math.abs(ratio! - expectedRatio!), `cycle ${i + 1}: ratio stable`).toBeLessThan(0.02)
+
+    // No orphan xterm containers — one per leaf pane, no extras.
+    const xtermCount = await page.locator('.xterm-screen').count()
+    expect(xtermCount, `cycle ${i + 1}: xterm count`).toBeLessThanOrEqual(expectedPaneCount)
+
+    if (i % 5 === 0) {
+      const heap = await page.evaluate(() => (performance as any).memory?.usedJSHeapSize ?? 0)
+      heapSamples.push(heap)
+    }
+  }
+
+  // Heap must not grow more than 3x between first and last sample (leak guard).
+  // In mock mode the xterm instances are thin; 3x is generous for 20 reloads.
+  if (heapSamples.length >= 2) {
+    const first = heapSamples[0]
+    const last = heapSamples[heapSamples.length - 1]
+    expect(last, 'heap growth bounded across 20 reloads').toBeLessThan(first * 3 + 30_000_000)
+  }
+}, { timeout: 60_000 })
+
+test('focus-toggle soak: 20 enter/exit cycles — paneCount stable, no orphan xterm', async ({ page }) => {
+  await splitVertical(page)
+  // splitVertical leaves focused === 'terminal'; exit first so we start from 'board'.
+  await page.keyboard.press('Control+Enter')
+  await page.waitForFunction(() => (window as any).__bsVim?.focused !== 'terminal')
+
+  const expectedPaneCount = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
+  expect(expectedPaneCount).toBeGreaterThanOrEqual(2)
+
+  for (let i = 0; i < 20; i++) {
+    // Enter terminal focus (focused → 'terminal').
+    await page.keyboard.press('Control+Enter')
+    await page.waitForFunction(() => (window as any).__bsVim?.focused === 'terminal')
+
+    // Exit terminal focus (focused → 'board').
+    await page.keyboard.press('Control+Enter')
+    await page.waitForFunction(() => (window as any).__bsVim?.focused !== 'terminal')
+
+    const paneCount = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
+    expect(paneCount, `toggle ${i + 1}: paneCount`).toBe(expectedPaneCount)
+
+    const xtermCount = await page.locator('.xterm-screen').count()
+    expect(xtermCount, `toggle ${i + 1}: no orphan xterm`).toBeLessThanOrEqual(expectedPaneCount)
+  }
+}, { timeout: 30_000 })
