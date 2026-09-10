@@ -11,13 +11,13 @@ export default defineConfig({
   retries: 0,
   reporter: process.env.CI ? 'line' : 'list',
   use: {
-    baseURL: 'http://localhost:1420',
+    baseURL: 'http://localhost:1422',
     trace: 'on-first-retry',
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'VITE_LIVE_MOCK=1 npm run dev',
-    url: 'http://localhost:1420',
+    command: 'VITE_LIVE_MOCK=1 npm run dev -- --port 1422',
+    url: 'http://localhost:1422',
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },

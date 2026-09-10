@@ -2,7 +2,7 @@
 //
 // A Rust-side append-only writer for the durable log the conductor pulse
 // (RV4.1) writes back to. One file per day at
-//   ~/Documents/Beads/Daily/{YYYY-MM-DD}.md
+//   ~/Documents/Beads Station/Daily/{YYYY-MM-DD}.md
 // with an `# {YYYY-MM-DD} — Beads Update` H1 and `## HH:MM — <title>`
 // subsections appended in arrival order. No frontmatter (the vault convention;
 // these files are read as plain notes, not dataview-queried).
@@ -22,14 +22,22 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 use serde::Serialize;
 
-/// Default vault location for daily logs. Resolved relative to $HOME so it
-/// survives a different macOS user, with a hardcoded fallback matching the
-/// established path when $HOME is somehow unset.
-fn default_daily_dir() -> PathBuf {
-    match std::env::var_os("HOME") {
-        Some(home) => Path::new(&home).join("Documents/Beads/Daily"),
-        None => PathBuf::from("~/Documents/Beads/Daily"),
+/// Optional notes location, shared with sensors. No assumptions about a
+/// previous user's Obsidian installation. An override can use ~/.
+pub(crate) fn notes_root() -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("BEADS_STATION_VAULT") {
+        let expanded = crate::binresolve::expand_home(&path).ok_or("HOME not set")?;
+        if !expanded.is_absolute() {
+            return Err("BEADS_STATION_VAULT must be an absolute path or start with ~/.".into());
+        }
+        return Ok(expanded);
     }
+    std::env::var_os("HOME")
+        .map(|home| Path::new(&home).join("Documents/Beads Station"))
+        .ok_or_else(|| "Set HOME or BEADS_STATION_VAULT to enable notes.".into())
+}
+fn default_daily_dir() -> Result<PathBuf, String> {
+    Ok(notes_root()?.join("Daily"))
 }
 
 /// Result surfaced to the FE / caller: which file was touched and whether this
@@ -95,7 +103,7 @@ pub fn append_section(
 
     let dir = match dir_override {
         Some(d) => d.to_path_buf(),
-        None => default_daily_dir(),
+        None => default_daily_dir()?,
     };
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
 
@@ -166,7 +174,10 @@ mod tests {
 
     #[test]
     fn has_header_matches_both_forms() {
-        assert!(has_header("# 2026-08-12 — Beads Update\n\n## 09:00 — x", "2026-08-12"));
+        assert!(has_header(
+            "# 2026-08-12 — Beads Update\n\n## 09:00 — x",
+            "2026-08-12"
+        ));
         assert!(has_header("# 2026-08-12\n\n## 09:00 — x", "2026-08-12")); // bare legacy form
         assert!(!has_header("# 2026-08-11 — Beads Update", "2026-08-12"));
         assert!(!has_header("", "2026-08-12"));
@@ -174,8 +185,14 @@ mod tests {
 
     #[test]
     fn render_section_shapes() {
-        assert_eq!(render_section("09:30", "Title", "body"), "\n## 09:30 — Title\n\nbody\n");
-        assert_eq!(render_section("09:30", " Title ", "  "), "\n## 09:30 — Title\n");
+        assert_eq!(
+            render_section("09:30", "Title", "body"),
+            "\n## 09:30 — Title\n\nbody\n"
+        );
+        assert_eq!(
+            render_section("09:30", " Title ", "  "),
+            "\n## 09:30 — Title\n"
+        );
     }
 
     #[test]
@@ -255,7 +272,10 @@ mod tests {
         // At most a small number of headers (ideally 1; the same-instant race
         // can add a few, but never data loss). Assert it never explodes.
         let headers = contents.lines().filter(|l| l.starts_with("# ")).count();
-        assert!(headers >= 1 && headers <= n, "unexpected header count {headers}");
+        assert!(
+            headers >= 1 && headers <= n,
+            "unexpected header count {headers}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

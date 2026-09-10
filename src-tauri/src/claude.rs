@@ -126,6 +126,155 @@ static SESSIONS: Lazy<Mutex<HashMap<String, ClaudeSession>>> =
 static MODES: Lazy<Mutex<HashMap<String, String>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Short-lived, ticket-bound provider runs used by the designer surface. These
+/// deliberately use each installed CLI's supported non-interactive JSONL mode;
+/// authentication remains owned by the CLI and no credentials enter the app.
+struct NativeRun {
+    child: Child,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+static NATIVE_RUNS: Lazy<Mutex<HashMap<String, NativeRun>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProviderAvailability {
+    provider: String,
+    available: bool,
+    executable: Option<String>,
+    detail: String,
+}
+
+#[tauri::command]
+pub fn native_provider_status() -> Vec<NativeProviderAvailability> {
+    ["claude", "codex"]
+        .into_iter()
+        .map(|provider| match crate::binresolve::resolve_bin(provider) {
+            Ok(path) => NativeProviderAvailability {
+                provider: provider.into(),
+                available: true,
+                executable: Some(path.display().to_string()),
+                detail: "Installed; login is managed by the native CLI".into(),
+            },
+            Err(error) => NativeProviderAvailability {
+                provider: provider.into(),
+                available: false,
+                executable: None,
+                detail: error,
+            },
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn native_run_start(
+    window: Window,
+    run_id: String,
+    provider: String,
+    cwd: String,
+    prompt: String,
+) -> Result<(), String> {
+    if run_id.trim().is_empty() || prompt.trim().is_empty() {
+        return Err("run_id and prompt are required".into());
+    }
+    // Hold the registry lock through spawn+insert so two concurrent calls with
+    // the same identity cannot both pass an optimistic contains check.
+    let mut runs = NATIVE_RUNS.lock().await;
+    if runs.contains_key(&run_id) {
+        return Err(format!("run {run_id} is already active"));
+    }
+
+    let binary = match provider.as_str() {
+        "claude" | "codex" => crate::binresolve::resolve_bin(&provider)
+            .map_err(|e| format!("{provider} is unavailable: {e}"))?,
+        _ => return Err(format!("unsupported provider {provider}")),
+    };
+    let mut cmd = Command::new(binary);
+    match provider.as_str() {
+        "claude" => {
+            cmd.arg("--print")
+                .arg("--verbose")
+                .arg("--output-format=stream-json")
+                .arg("--permission-mode=acceptEdits")
+                .arg("--add-dir")
+                .arg(&cwd)
+                .arg(&prompt);
+        }
+        "codex" => {
+            cmd.arg("exec")
+                .arg("--json")
+                .arg("--sandbox=workspace-write")
+                .arg("--ask-for-approval=never")
+                .arg("--cd")
+                .arg(&cwd)
+                .arg(&prompt);
+        }
+        _ => unreachable!(),
+    }
+    let permit = crate::spawngov::agent_permit()?;
+    let mut child = cmd
+        .current_dir(&cwd)
+        .env("PATH", augmented_path())
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to start {provider}: {e}"))?;
+    let stdout = child.stdout.take().ok_or("provider stdout not captured")?;
+    let stderr = child.stderr.take().ok_or("provider stderr not captured")?;
+    runs.insert(run_id.clone(), NativeRun { child, _permit: permit });
+    drop(runs);
+
+    let channel = format!("native_run_event:{}", chan_id(&run_id));
+    let _ = window.emit(&channel, json!({ "kind": "status", "status": "running", "provider": provider }));
+    let output_window = window.clone();
+    let output_channel = channel.clone();
+    let output_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let parsed = serde_json::from_str::<Value>(&line).ok();
+            let _ = output_window.emit(&output_channel, json!({ "kind": "output", "line": line, "parsed": parsed }));
+        }
+    });
+    let error_window = window.clone();
+    let error_channel = channel.clone();
+    let error_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = error_window.emit(&error_channel, json!({ "kind": "stderr", "line": line }));
+        }
+    });
+    tokio::spawn(async move {
+        // Drain both pipes before the terminal status so the UI never marks a
+        // run reviewable while its final explanation is still in flight.
+        let _ = tokio::join!(output_task, error_task);
+        let run = NATIVE_RUNS.lock().await.remove(&run_id);
+        let Some(mut run) = run else { return }; // cancellation owns the status
+        let status = match run.child.wait().await {
+            Ok(exit) if exit.success() => "needs_review",
+            Ok(_) | Err(_) => "failed",
+        };
+        let _ = window.emit(&channel, json!({ "kind": "status", "status": status }));
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn native_run_cancel(window: Window, run_id: String) -> Result<(), String> {
+    let run = NATIVE_RUNS.lock().await.remove(&run_id);
+    let Some(mut run) = run else { return Err(format!("run {run_id} is not active")); };
+    let kill_requested = run.child.start_kill().is_ok();
+    let exit = run.child.wait().await.map_err(|e| format!("wait for run {run_id}: {e}"))?;
+    let channel = format!("native_run_event:{}", chan_id(&run_id));
+    // If the child beat cancellation to exit, preserve its real outcome rather
+    // than labelling completed work cancelled.
+    let status = if kill_requested { "cancelled" } else if exit.success() { "needs_review" } else { "failed" };
+    let _ = window.emit(&channel, json!({ "kind": "status", "status": status }));
+    Ok(())
+}
+
 /// Whitelist for the --permission-mode flag. Anything else is rejected at
 /// the boundary so we don't pass garbage to claude.
 fn validate_permission_mode(mode: &str) -> Result<(), String> {
@@ -264,7 +413,7 @@ pub async fn claude_start(
     // is the one long-lived-child slot the old bd-only cap never counted — the
     // biggest fd/fork consumer. On the lost-race branch below the permit drops
     // with the redundant child, freeing the slot immediately.
-    let permit = crate::spawngov::permit().await;
+    let permit = crate::spawngov::agent_permit()?;
 
     let mut child = cmd
         .spawn()
@@ -521,7 +670,13 @@ pub async fn kill_all_sessions() -> usize {
         let _ = session.child.start_kill();
         let _ = session.child.wait().await;
     }
-    n
+    let native: Vec<NativeRun> = NATIVE_RUNS.lock().await.drain().map(|(_, run)| run).collect();
+    let total = n + native.len();
+    for mut run in native {
+        let _ = run.child.start_kill();
+        let _ = run.child.wait().await;
+    }
+    total
 }
 
 /// Code-4je — return the CLI-assigned session_id for a running bridge. The

@@ -43,7 +43,13 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
   switch (cmd) {
     // --- reads the app makes on mount (must all succeed, else InvokeErrorBoundary toasts) ---
     case 'projects_list':
-      return PROJECTS
+      return { projects: PROJECTS, roots: ['/tmp'], warnings: [] }
+    case 'projects_set_roots':
+      return { projects: PROJECTS, roots: args?.roots ?? [], warnings: [] }
+    case 'projects_open': {
+      const path = args?.path as string
+      return PROJECTS.find(p => p.path === path) ?? { id: path, name: path.split('/').pop(), path, hasGit: false, hasBeads: false, claudeSessionId: 'opened-session' }
+    }
     case 'projects_get':
       return PROJECTS.find(p => p.id === (args?.id as string)) ?? PROJECTS[0]
     case 'bd_snapshot':
@@ -193,7 +199,7 @@ export function installMockIpc(): void {
         const msg = val.slice(THROW_SENTINEL.length).replace(/^:/, '') || `mock ${cmd} rejected`
         throw new Error(msg)
       }
-      return val
+      return cmd === 'projects_list' && Array.isArray(val) ? { projects: val, roots: [], warnings: [] } : val
     }
     return route(cmd, args as Record<string, unknown> | undefined)
   }, {

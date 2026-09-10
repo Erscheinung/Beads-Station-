@@ -7,6 +7,7 @@ import { test, expect } from '@playwright/test'
 // builder frames via __bsMockEmit and assert the cards + per-card Stop wiring.
 
 async function bootDesigner(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => { localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a'], activeId: 'proj-a' })) })
   await page.goto('/?ui=designer')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
   await expect(page.locator('#root')).toBeVisible()

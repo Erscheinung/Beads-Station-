@@ -9,6 +9,7 @@ import { test, expect } from './helpers'
 // mirrors exist in the designer skin) — just navigate + wait for mock IPC.
 
 async function bootDesigner(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => { localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a'], activeId: 'proj-a' })) })
   await page.goto('/?ui=designer')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
   await expect(page.locator('#root')).toBeVisible()

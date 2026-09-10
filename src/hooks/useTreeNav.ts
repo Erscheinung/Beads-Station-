@@ -56,39 +56,28 @@ export function useTreeNav(issues: Issue[]): UseTreeNavResult {
   const roots = useMemo(() => buildTree(issues), [issues]);
   const ids = useMemo(() => collectIds(roots), [roots]);
 
-  // Default expanded set: every project + every status group; parent issues
-  // start collapsed so the tree opens on a tidy two-level outline.
+  // Open all groups and parent beads on first discovery.
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     const s = new Set<string>();
     for (const id of ids.projectIds) s.add(id);
     for (const id of ids.statusIds) s.add(id);
+    for (const id of ids.parentIssueIds) s.add(id);
     return s;
   });
 
   // When the tree shape changes (new project / new status bucket appears),
   // grow the default-expanded set to include the new groups, but never undo
   // a user collapse on existing ids.
-  const knownIdsRef = useRef<Set<string>>(new Set([...ids.projectIds, ...ids.statusIds]));
+  const knownIdsRef = useRef<Set<string>>(new Set([...ids.projectIds, ...ids.statusIds, ...ids.parentIssueIds]));
   useEffect(() => {
     const known = knownIdsRef.current;
-    let dirty = false;
+    const added = [...ids.projectIds, ...ids.statusIds, ...ids.parentIssueIds].filter(id => !known.has(id));
+    if (added.length === 0) return;
+    for (const id of added) known.add(id);
     setExpanded((prev) => {
       const next = new Set(prev);
-      for (const id of ids.projectIds) {
-        if (!known.has(id)) {
-          next.add(id);
-          known.add(id);
-          dirty = true;
-        }
-      }
-      for (const id of ids.statusIds) {
-        if (!known.has(id)) {
-          next.add(id);
-          known.add(id);
-          dirty = true;
-        }
-      }
-      return dirty ? next : prev;
+      for (const id of added) next.add(id);
+      return next;
     });
   }, [ids]);
 

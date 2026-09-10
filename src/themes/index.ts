@@ -4,6 +4,33 @@ import { parseGhosttyTheme, type ThemePalette } from '../lib/themeImport'
 
 const RAW_THEMES: Array<{ id: string; source: string }> = [
   {
+    // Verified against https://raw.githubusercontent.com/mbadolato/iTerm2-Color-Schemes/master/ghostty/Fahrenheit
+    id: 'fahrenheit',
+    source: `
+background = #000000
+foreground = #ffffce
+cursor-color = #bbbbbb
+selection-background = #4e739f
+selection-foreground = #ffffce
+palette = 0=#1d1d1d
+palette = 1=#cda074
+palette = 2=#9e744d
+palette = 3=#fecf75
+palette = 4=#7f0e0f
+palette = 5=#734c4d
+palette = 6=#979797
+palette = 7=#ffffce
+palette = 8=#404040
+palette = 9=#fecea0
+palette = 10=#cc734d
+palette = 11=#fd9f4d
+palette = 12=#cb4a05
+palette = 13=#4e739f
+palette = 14=#fed04d
+palette = 15=#ffffff
+`,
+  },
+  {
     id: 'tokyonight-storm',
     source: `
 background = #24283b

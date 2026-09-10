@@ -8,7 +8,7 @@ import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
 import { IssueDetail } from './components/IssueDetail'
 import { Statusline } from './components/Statusline'
-import { Dashboard } from './components/Dashboard'
+import { WorkspacePicker } from './components/WorkspacePicker'
 import { WhichKey } from './components/WhichKey'
 import { DebugOverlay } from './components/DebugOverlay'
 import { MorningConfirm, shouldConfirm, recordConfirmation } from './components/MorningConfirm'
@@ -16,11 +16,13 @@ import { CommandPalette } from './components/CommandPalette'
 import { useProjects } from './state/projects'
 import { useVim, setFocused } from './state/vim'
 import { useTheme } from './state/theme'
-import { useSkin } from './state/skin'
+import { useSkin, setSkin } from './state/skin'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
 import { DesignerShell } from './components/designer/DesignerShell'
+import { openPalette } from './state/palette'
+import { setBeadsView, setUiPreferences, useUiPreferences, type BeadsView } from './state/uiPreferences'
 
 // Code-mkv — per-project terminal strip height. Falls back to the legacy global
 // key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
@@ -47,14 +49,18 @@ export default function App() {
   const vim = useVim()
   const theme = useTheme()
   const skin = useSkin()
-  const { projects, activeId, setActive, refresh, loaded, error: projectsError } = useProjects()
+  const { projects, activeId, setActive, refresh, closeProject } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const closePicker = useCallback(() => setPickerOpen(false), [])
+  const [requestedChats, setRequestedChats] = useState<Set<string>>(() => new Set())
+  const uiPrefs = useUiPreferences()
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
   // Code-qqt (RV1-focus) — fullscreen terminal focus. When true, the terminal
   // region covers the whole content area (Board stays mounted underneath, so no
   // shell respawn). Toggled by Cmd/Ctrl+Enter via the `terminal:focus-toggle`
   // event. Not persisted: it's a transient working mode, not a saved layout.
-  const [terminalFocus, setTerminalFocus] = useState(false)
+  const [terminalFocus, setTerminalFocus] = useState(uiPrefs.terminalFocus)
   // Code-mkv — strip height is now PER-PROJECT. The old global key
   // `beads-station.terminalHeight` is the fallback/default source; per-project
   // values live under `...terminalHeight.<projectId>`. Seeded from the global
@@ -63,13 +69,18 @@ export default function App() {
     const saved = Number(localStorage.getItem('beads-station.terminalHeight'))
     return saved >= 80 && saved <= 700 ? saved : 280
   })
+  const [terminalHeightOwner, setTerminalHeightOwner] = useState<string | undefined>(undefined)
   // Sidebar is collapsible + drag-resizable (was a fixed 320px). Width persists
   // in localStorage; collapse toggles via leader-b. Clamped to a sane range.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(uiPrefs.sidebarCollapsed)
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     const saved = Number(localStorage.getItem('beads-station.sidebarWidth'))
     return saved >= 180 && saved <= 640 ? saved : 320
   })
+
+  useEffect(() => {
+    setSidebarCollapsed(uiPrefs.sidebarCollapsed)
+  }, [uiPrefs.sidebarCollapsed])
   // Phase 6 — track which projectId the user has already confirmed THIS day.
   // Persisted state lives in localStorage (see MorningConfirm.tsx); the
   // in-memory copy here is a per-render shortcut so React knows when to
@@ -98,7 +109,7 @@ export default function App() {
   // keeps useVimNav decoupled from project state.
   useEffect(() => {
     const onCycle = (e: Event) => {
-      if (projects.length === 0) return
+      if (projects.length === 0) { setPickerOpen(true); return }
       const dir = (e as CustomEvent<{ dir?: number }>).detail?.dir ?? 1
       const idx = projects.findIndex(p => p.id === activeId)
       const n = projects.length
@@ -109,10 +120,16 @@ export default function App() {
     return () => window.removeEventListener('project:cycle', onCycle)
   }, [projects, activeId, setActive])
 
+  useEffect(() => {
+    const onOpen = () => setPickerOpen(true)
+    window.addEventListener('workspace:open', onOpen)
+    return () => window.removeEventListener('workspace:open', onOpen)
+  }, [])
+
   // Sidebar collapse toggle (leader-b, dispatched by the vim keymap) + width
   // persistence. Drag-resize is handled inline on the divider (startResize).
   useEffect(() => {
-    const onToggle = () => setSidebarCollapsed(c => !c)
+    const onToggle = () => setSidebarCollapsed(c => { const next = !c; setUiPreferences({ sidebarCollapsed: next }); return next })
     window.addEventListener('sidebar:toggle', onToggle)
     return () => window.removeEventListener('sidebar:toggle', onToggle)
   }, [])
@@ -122,8 +139,9 @@ export default function App() {
   // terminal so it's usable immediately; leaving restores board focus.
   useEffect(() => {
     const onToggle = () => {
-      setTerminalFocus(f => {
-        const next = !f
+        setTerminalFocus(f => {
+          const next = !f
+          setUiPreferences({ terminalFocus: next })
         if (next) {
           setTerminalCollapsed(false)
           setFocused('terminal')
@@ -159,16 +177,17 @@ export default function App() {
 
   // Code-mkv — on project switch, load that project's persisted strip height.
   useEffect(() => {
+    setTerminalHeightOwner(active?.id)
     setTerminalHeight(loadTerminalHeight(active?.id))
   }, [active?.id])
 
   // Persist the strip height under the active project's key (Code-mkv). Also
   // mirror to the legacy global key so a fresh project inherits a sane default.
   useEffect(() => {
-    if (!active?.id) return
+    if (!active?.id || terminalHeightOwner !== active.id) return
     localStorage.setItem(`beads-station.terminalHeight.${active.id}`, String(terminalHeight))
     localStorage.setItem('beads-station.terminalHeight', String(terminalHeight))
-  }, [terminalHeight, active?.id])
+  }, [terminalHeight, active?.id, terminalHeightOwner])
 
   const startSidebarResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault()
@@ -309,18 +328,12 @@ export default function App() {
   // shell. The skin now lives in a runtime store (seeded from the ?ui=designer
   // param on first run) so an in-app control can flip it live. This check lives
   // after every hook so the hook count is unconditionally stable.
-  if (skin === 'designer') {
-    return <DesignerShell />
-  }
-
-  if (loaded && projects.length === 0) {
-    return <Dashboard error={projectsError} />
-  }
-
   if (!active) {
-    // First load before projects_list resolves — render Dashboard so the
-    // viewport doesn't flicker.
-    return <Dashboard error={projectsError} />
+    return <BdLiveProvider><WorkspacePicker /><CommandPalette repoPath="" /></BdLiveProvider>
+  }
+
+  if (skin === 'designer') {
+    return <BdLiveProvider><DesignerShell /><CommandPalette repoPath={active.path} /><IssueDetail repoPath={active.path} />{pickerOpen && <WorkspacePicker onClose={closePicker} />}</BdLiveProvider>
   }
 
   const activeTerminalHeight = terminalCollapsed ? 24 : terminalHeight
@@ -328,12 +341,17 @@ export default function App() {
   // Show MorningConfirm at most once per app launch: the first unconfirmed
   // project prompts, and confirming it seeds confirmedFor with every project
   // id (see handleResume/handleNew) so subsequent switches stay silent.
-  const needsConfirm = !confirmedFor.has(active.id) && shouldConfirm(active.id)
+  const chatRequested = requestedChats.has(active.id)
+  const needsConfirm = chatRequested && !confirmedFor.has(active.id) && shouldConfirm(active.id)
+
+  const showExplorer = uiPrefs.view === 'explorer' || uiPrefs.view === 'both'
+  const showBoard = uiPrefs.view === 'board' || uiPrefs.view === 'both'
+  const switchView = (view: BeadsView) => setBeadsView(view)
 
   return (
     <BdLiveProvider>
-    <div className={`bs-grid-1px${theme === 'light' ? ' du-theme' : ''}`} style={{ display: 'grid', gridTemplateColumns: `${sidebarCollapsed ? 0 : sidebarWidth}px 1fr`, gridTemplateRows: `1fr ${activeTerminalHeight}px 22px`, height: '100vh' }}>
-      <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: sidebarCollapsed ? 'none' : 'flex', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
+    <div className={`bs-grid-1px${theme === 'light' ? ' du-theme' : ''}`} style={{ display: 'grid', gridTemplateColumns: `${showExplorer && !sidebarCollapsed ? sidebarWidth : 0}px 1fr`, gridTemplateRows: `1fr ${chatRequested ? activeTerminalHeight : 0}px 22px`, height: '100vh' }}>
+      <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: showExplorer && !sidebarCollapsed ? 'flex' : 'none', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
         </div>
@@ -345,31 +363,48 @@ export default function App() {
         />
       </aside>
       <main style={{ background: 'var(--bs-bg)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <TabBar projects={projects} activeId={activeId} onSelect={setActive} />
+        <header className="bs-toolbar">
+          <span className="bs-toolbar__brand">BEADS STATION</span>
+          <button onClick={openPalette} title="Open command palette">Commands <kbd>Cmd+K</kbd></button>
+          <button onClick={() => setSkin('designer')}>Designer</button>
+          <label className="bs-toolbar__select">View
+            <select aria-label="Beads view" value={uiPrefs.view} onChange={e => switchView(e.target.value as BeadsView)}>
+              <option value="terminal-only">Terminal only</option><option value="explorer">Explorer</option><option value="board">Board</option><option value="both">Both</option>
+            </select>
+          </label>
+          <button onClick={() => setRequestedChats(prev => new Set([...prev, active.id]))}>Start Claude chat</button>
+          <button className="bs-toolbar__settings" onClick={openPalette} title="Open settings">Settings</button>
+        </header>
+        <TabBar projects={projects} activeId={activeId} onSelect={setActive} onOpen={() => setPickerOpen(true)} onClose={id => {
+          setRequestedChats(prev => { const next = new Set(prev); next.delete(id); return next })
+          void closeProject(id)
+        }} />
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
           {/* Board stays MOUNTED under the fullscreen terminal (no remount /
               no shell respawn); we only hide it visually while focused. */}
-          <div style={{ flex: 1, minHeight: 0, ...(terminalFocus ? { visibility: 'hidden' as const } : null) }}>
-            <Board key={active.id} repoPath={active.path} projectId={active.id} />
+          <div style={{ flex: 1, minHeight: 0, display: showBoard ? 'block' : 'none', ...(terminalFocus ? { visibility: 'hidden' as const } : null) }}>
+            <Board key={active.id} repoPath={active.path} projectId={active.id} projectName={active.name} />
           </div>
           <div
             data-terminal-focus={terminalFocus ? 'true' : 'false'}
             style={{
-              height: terminalFocus ? undefined : activeTerminalHeight,
+              height: terminalFocus || !showBoard ? undefined : activeTerminalHeight,
               borderTop: '1px solid var(--bs-border)',
+              position: terminalFocus ? 'absolute' : 'relative',
               display: 'flex',
               flexDirection: 'column',
               flexShrink: 0,
+              flex: !showBoard && !terminalFocus ? 1 : undefined,
               transition: terminalFocus ? undefined : 'height 120ms ease',
               // RV1-focus: cover the whole content area, Board mounted beneath.
               ...(terminalFocus
-                ? { position: 'absolute' as const, inset: 0, zIndex: 10, background: 'var(--bs-bg)' }
+                ? { inset: 0, zIndex: 10, background: 'var(--bs-bg)' }
                 : null),
             }}
           >
             {/* Drag handle on the terminal's top border — mirrors sidebar
                 resize. Hidden in fullscreen focus (height is not user-dragged). */}
-            {!terminalCollapsed && !terminalFocus && (
+            {showBoard && !terminalCollapsed && !terminalFocus && (
               <div
                 onMouseDown={startTerminalResize}
                 title="Drag to resize terminal (C-w +/- to step)"
@@ -413,7 +448,7 @@ export default function App() {
         </div>
       </main>
       <section style={{ background: 'var(--bs-bg)', overflow: 'hidden' }}>
-        {needsConfirm ? (
+        {chatRequested && (needsConfirm ? (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--bs-fg-muted)', fontSize: 11 }}>
             awaiting confirmation
           </div>
@@ -425,7 +460,7 @@ export default function App() {
             sessionId={active.claudeSessionId}
             permissionMode={permissionApi.mode}
           />
-        )}
+        ))}
       </section>
       <div style={{ gridColumn: '1 / span 2' }}>
         <Statusline repoPath={active.path} projectPath={active.path} />
@@ -433,8 +468,9 @@ export default function App() {
       <WhichKey />
       <IssueDetail repoPath={active.path} />
       <CommandPalette repoPath={active.path} />
+      {pickerOpen && <WorkspacePicker onClose={closePicker} />}
       {import.meta.env.DEV && <DebugOverlay />}
-      {!needsConfirm && <PermissionModePicker projectId={active.id} />}
+      {chatRequested && !needsConfirm && <PermissionModePicker projectId={active.id} />}
       {needsConfirm && (
         <MorningConfirm
           projectId={active.id}
@@ -442,7 +478,7 @@ export default function App() {
           onResume={handleResume}
           onNew={handleNew}
         />
-      )}
+        )}
     </div>
     </BdLiveProvider>
   )

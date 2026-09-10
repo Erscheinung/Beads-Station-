@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import '../../theme/designer-light.css'
 import { BeadGraph } from './BeadGraph'
 import { GateCockpit } from './GateCockpit'
@@ -11,25 +12,33 @@ import { useProjects } from '../../state/projects'
 import { setSkin } from '../../state/skin'
 import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
+import { bdCreate, bdNote, type Issue } from '../../types/issue'
+import { cancelNativeRun, startNativeRun, useNativeRun, type NativeProvider } from './nativeRuns'
 
 type Tier = 'everyday' | 'heavy'
-type NavItem = 'board' | 'graph' | 'agents' | 'timeline'
+type NavItem = 'requests' | 'graph' | 'agents' | 'timeline'
+interface ProviderAvailability {
+  provider: NativeProvider
+  available: boolean
+  detail: string
+}
 
 const NAV_ITEMS: { id: NavItem; label: string }[] = [
-  { id: 'board',    label: 'Board' },
+  { id: 'requests', label: 'Requests' },
   { id: 'graph',    label: 'Bead graph' },
   { id: 'agents',   label: 'Agents' },
   { id: 'timeline', label: 'Timeline' },
 ]
 
 const TIER_META = {
-  everyday: { model: 'Sonnet', effort: 'medium effort', heavy: 'Switch to Heavy for ultracode (Opus · xhigh) on gnarly work' },
-  heavy:    { model: 'Opus',   effort: 'xhigh effort',  heavy: 'Running in ultracode mode. Switch to Everyday for routine work.' },
+  everyday: { model: 'standard routing', effort: 'Provider decides model and effort', heavy: 'Switch to Heavy to request more capable routing for difficult work.' },
+  heavy:    { model: 'heavy routing', effort: 'Provider decides model and effort', heavy: 'Heavy is a routing preference, not a claim about the model that ran.' },
 }
 
 export function DesignerShell() {
   const [tier, setTier] = useState<Tier>('everyday')
-  const [nav, setNav]   = useState<NavItem>('graph')
+  const [nav, setNav]   = useState<NavItem>('requests')
+  const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
 
   // Code-9z4 — gate the whole shell on project availability. Without this every
   // right-panel surface independently renders "No project selected." on a fresh
@@ -66,6 +75,7 @@ export function DesignerShell() {
           <span style={styles.wordmarkText}>Beads Station</span>
         </div>
         <div style={styles.topbarRight}>
+          <button style={styles.skinBtn} onClick={() => window.dispatchEvent(new Event('workspace:open'))}>Open workspace</button>
           <button
             style={styles.skinBtn}
             onClick={() => setSkin('terminal')}
@@ -121,7 +131,7 @@ export function DesignerShell() {
 
         {/* Center — main view */}
         <main style={styles.main}>
-          <CenterView nav={nav} />
+          <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} />
         </main>
 
         {/* Right — gate cockpit (RV5.0) + sensors (RV5.1) + conductor (Code-9ud) + agents placeholder (DU3) */}
@@ -194,11 +204,19 @@ function ConductorFooter() {
   )
 }
 
-function CenterView({ nav }: { nav: NavItem }) {
-  if (nav === 'graph') {
+function CenterView({ nav, selectedIssue, onSelectIssue }: {
+  nav: NavItem
+  selectedIssue: Issue | null
+  onSelectIssue: (issue: Issue | null) => void
+}) {
+  if (nav === 'requests' || nav === 'graph') {
     return (
       <div id="du-bead-graph" style={styles.graphSlot}>
-        <BeadGraph />
+        {selectedIssue
+          ? <TicketRun issue={selectedIssue} onBack={() => onSelectIssue(null)} />
+          : nav === 'requests'
+            ? <RequestBrowser onSelect={onSelectIssue} />
+            : <BeadGraph onSelect={onSelectIssue} />}
       </div>
     )
   }
@@ -214,6 +232,116 @@ function CenterView({ nav }: { nav: NavItem }) {
       <p style={styles.graphPlaceholderText}>{nav.charAt(0).toUpperCase() + nav.slice(1)}</p>
       <p style={styles.graphPlaceholderSub}>Coming in a later DU phase.</p>
     </div>
+  )
+}
+
+function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
+  const { projects, activeId } = useProjects()
+  const project = projects.find(p => p.id === activeId) ?? projects[0] ?? null
+  const [creating, setCreating] = useState(false)
+  const [title, setTitle] = useState('')
+  const [context, setContext] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const create = async () => {
+    if (!project || !title.trim()) return
+    setError(null)
+    try {
+      const id = await bdCreate(project.path, title.trim())
+      if (context.trim()) await bdNote(project.path, id, `Designer request context:\n${context.trim()}`)
+      setTitle(''); setContext(''); setCreating(false)
+    } catch (e) { setError(String(e)) }
+  }
+  return <div style={styles.requestBrowser}>
+    <div style={styles.requestBrowserHeader}>
+      <div><h2 style={styles.requestTitle}>Requests</h2><p style={styles.requestMeta}>Choose a ready request or capture a new outcome.</p></div>
+      <button style={styles.primaryBtn} onClick={() => setCreating(v => !v)}>New request</button>
+    </div>
+    {creating && <div style={styles.reviewBox}>
+      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="What outcome do you need?" style={styles.providerSelect} />
+      <textarea value={context} onChange={e => setContext(e.target.value)} placeholder="Context, constraints, acceptance criteria, references" style={styles.feedback} />
+      {error && <span style={{ color: 'var(--bs-red)' }}>{error}</span>}
+      <button style={styles.primaryBtn} disabled={!title.trim()} onClick={create}>Create request</button>
+    </div>}
+    <div style={{ flex: 1, minHeight: 0 }}><BeadGraph onSelect={onSelect} /></div>
+  </div>
+}
+
+function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
+  const { projects, activeId } = useProjects()
+  const project = projects.find(p => p.id === activeId) ?? projects[0] ?? null
+  const [provider, setProvider] = useState<NativeProvider>('claude')
+  const [providers, setProviders] = useState<ProviderAvailability[]>([])
+  const [feedback, setFeedback] = useState('')
+  const runKey = `${project?.id ?? 'missing'}:${issue.id}`
+  const run = useNativeRun(runKey)
+  const { status, output } = run
+  const availability = providers.find(p => p.provider === provider)
+  const prompt = useMemo(() => [
+    `Work on ticket ${issue.id}: ${issue.title}`,
+    issue.description ? `Request context:\n${issue.description}` : 'No additional description was provided.',
+    issue.acceptance_criteria ? `Acceptance criteria:\n${issue.acceptance_criteria}` : '',
+    issue.notes ? `Notes:\n${issue.notes}` : '',
+    'Keep the work scoped to this ticket. Run relevant checks and report changed files, evidence, and limitations.',
+  ].filter(Boolean).join('\n\n'), [issue])
+
+  useEffect(() => {
+    invoke<ProviderAvailability[]>('native_provider_status').then(value => setProviders(Array.isArray(value) ? value : [])).catch(error => {
+      setProviders([
+        { provider: 'claude', available: false, detail: String(error) },
+        { provider: 'codex', available: false, detail: String(error) },
+      ])
+    })
+  }, [])
+
+  const start = async (revisionFeedback?: string) => {
+    if (!project || availability?.available !== true || status === 'starting' || status === 'running' || status === 'unknown') return
+    const nextRunId = `${project.id}:${issue.id}:${crypto.randomUUID()}`
+    await startNativeRun(runKey, {
+        runId: nextRunId,
+        provider,
+        cwd: project.path,
+        prompt: revisionFeedback ? `${prompt}\n\nRequested revision:\n${revisionFeedback}` : prompt,
+    })
+  }
+
+  const cancel = async () => {
+    await cancelNativeRun(runKey)
+  }
+
+  return (
+    <section style={styles.requestDetail} data-testid="designer-ticket-run">
+      <button style={styles.skinBtn} onClick={onBack}>← Back to requests</button>
+      <div>
+        <p style={styles.requestEyebrow}>REQUEST · {issue.id}</p>
+        <h2 style={styles.requestTitle}>{issue.title}</h2>
+        <p style={styles.requestBody}>{issue.description || 'No additional request context was provided.'}</p>
+      </div>
+      <div style={styles.providerRow}>
+        <label htmlFor="designer-provider">Run with</label>
+        <select id="designer-provider" disabled={status === 'running' || status === 'starting'} value={status === 'running' || status === 'starting' ? run.provider : provider} onChange={e => setProvider(e.target.value as NativeProvider)} style={styles.providerSelect}>
+          <option value="claude">Claude (native login)</option>
+          <option value="codex">Codex (native login)</option>
+        </select>
+        <span style={styles.requestMeta}>{availability?.detail ?? 'Checking installation…'}</span>
+        <span style={styles.requestMeta}>Effective model and usage: unknown until reported by the CLI.</span>
+      </div>
+      <div style={styles.runActions}>
+        <button style={styles.primaryBtn} disabled={!availability?.available || status === 'running' || status === 'starting' || status === 'unknown'} onClick={() => start()}>
+          {status === 'idle' ? 'Start work' : status === 'failed' || status === 'cancelled' ? 'Try again' : 'Run started'}
+        </button>
+        {(status === 'running' || status === 'starting') && <button style={styles.skinBtn} onClick={cancel}>Cancel</button>}
+        <span style={styles.requestMeta}>Status: {status.replace('_', ' ')}</span>
+      </div>
+      <div style={styles.runOutput} aria-live="polite">
+        {output.length === 0 ? 'Provider output will appear here. No work starts until you choose Start work.' : output.map((line, i) => <p key={i}>{line}</p>)}
+      </div>
+      {status === 'needs_review' && <div style={styles.reviewBox}>
+        <strong>Run finished; review is required.</strong>
+        <span>Approval is unavailable until this run has a captured artifact revision. Completion has not been claimed.</span>
+        <textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="Describe what should change" style={styles.feedback} />
+        <button style={styles.skinBtn} disabled={!feedback.trim()} onClick={() => { void start(feedback.trim()); setFeedback('') }}>Request changes</button>
+      </div>}
+    </section>
   )
 }
 
@@ -392,6 +520,20 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     minHeight: 0,
   },
+  requestDetail: { display: 'flex', flexDirection: 'column', gap: 20, padding: 28, maxWidth: 900, width: '100%', margin: '0 auto', boxSizing: 'border-box' },
+  requestBrowser: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
+  requestBrowserHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 8px' },
+  requestEyebrow: { margin: '0 0 6px', fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--bs-orange)' },
+  requestTitle: { margin: 0, fontSize: 24, color: 'var(--bs-fg)' },
+  requestBody: { margin: '10px 0 0', whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--bs-fg-muted)' },
+  requestMeta: { fontSize: 12, color: 'var(--bs-fg-muted)' },
+  providerRow: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  providerSelect: { padding: '7px 10px', borderRadius: 7, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg)' },
+  runActions: { display: 'flex', alignItems: 'center', gap: 10 },
+  primaryBtn: { padding: '8px 14px', borderRadius: 8, border: 'none', background: 'var(--bs-orange)', color: '#fff', fontWeight: 600, cursor: 'pointer' },
+  runOutput: { minHeight: 160, maxHeight: 360, overflow: 'auto', padding: 16, borderRadius: 10, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg-muted)', whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.55 },
+  reviewBox: { display: 'flex', flexDirection: 'column', gap: 10, padding: 16, borderRadius: 10, border: '1px solid var(--bs-yellow)', color: 'var(--bs-fg)' },
+  feedback: { minHeight: 72, padding: 10, borderRadius: 7, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg)', fontFamily: 'var(--du-font-sans)', resize: 'vertical' },
   viewPlaceholder: {
     flex: 1,
     display: 'flex',

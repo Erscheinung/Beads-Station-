@@ -14,6 +14,8 @@ export interface Issue {
   id: string;
   title: string;
   description: string | null;
+  notes?: string | null;
+  acceptance_criteria?: string | null;
   status: string;
   priority: number;
   issue_type: string;

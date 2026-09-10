@@ -1,7 +1,8 @@
-import { useSyncExternalStore } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
+import { invoke } from '@tauri-apps/api/core'
 import { safeInvoke } from '../lib/invokeErrorBoundary'
+import { migrateProjectSurface, removeProjectSurface, setActiveProject as activateSurface } from './termPanes'
 
-// Mirrors the Rust `Project` struct (serde camelCase).
 export interface Project {
   id: string
   name: string
@@ -10,118 +11,151 @@ export interface Project {
   hasBeads: boolean
   claudeSessionId: string
 }
-
-const ACTIVE_KEY = 'beads-station.activeProjectId'
-
-function loadPersistedActive(): string | null {
-  try {
-    return localStorage.getItem(ACTIVE_KEY)
-  } catch {
-    return null
-  }
-}
-
-function persistActive(id: string | null) {
-  try {
-    if (id) localStorage.setItem(ACTIVE_KEY, id)
-    else localStorage.removeItem(ACTIVE_KEY)
-  } catch {
-    /* ignore */
-  }
-}
-
-// Code-bqz — shared project store.
-//
-// useProjects USED to be a per-component hook: own useState + a fetch-on-mount
-// effect. The designer skin mounts ~8 surfaces (DesignerShell, BeadGraph,
-// Timeline, ActiveAgents, GateCockpit, SensorsPanel, ConductorControl) that all
-// call it, so a single designer render fired ~8 independent `projects_list`
-// invokes and kept ~8 divergent copies of the list. That fan-out (compounded on
-// every skin flip / project switch) was a measurable slowdown. Hoisted into one
-// module-level external store: the list is fetched ONCE (lazy, deduped) and
-// fanned out via useSyncExternalStore. Same return shape as before.
-
-interface ProjectsState {
+export interface Discovery {
   projects: Project[]
-  activeId: string | null
+  roots: string[]
+  warnings: string[]
+}
+const WORKSPACES_KEY = 'beads-station.workspaces.v2'
+const LEGACY_ACTIVE_KEY = 'beads-station.activeProjectId'
+interface WorkspaceSelection { openIds: string[]; activeId: string | null }
+
+export function restoreSelection(projects: Project[], saved: string | null, legacy: string | null): WorkspaceSelection {
+  const resolve = (id: unknown): string | undefined => {
+    if (typeof id !== 'string') return
+    if (projects.some(p => p.id === id)) return id
+    const pathMatch = projects.find(p => p.path === id)
+    if (pathMatch) return pathMatch.id
+    const matches = projects.filter(p => p.name === id)
+    return matches.length === 1 ? matches[0].id : undefined
+  }
+  try {
+    if (saved !== null) {
+      const value = JSON.parse(saved)
+      if (!Array.isArray(value.openIds)) return { openIds: [], activeId: null }
+      const openIds = [...new Set<string>(value.openIds.map(resolve).filter((id: unknown): id is string => typeof id === 'string'))]
+      const active = resolve(value.activeId)
+      return { openIds, activeId: active && openIds.includes(active) ? active : openIds[0] ?? null }
+    }
+  } catch { return { openIds: [], activeId: null } }
+  // Old versions opened every discovered folder. Only preserve their active one.
+  const activeId = resolve(legacy) ?? null
+  return { openIds: activeId ? [activeId] : [], activeId }
+}
+
+interface ProjectsState extends WorkspaceSelection {
+  availableProjects: Project[]
+  roots: string[]
+  warnings: string[]
   loaded: boolean
   error: string | null
 }
-
-let state: ProjectsState = { projects: [], activeId: null, loaded: false, error: null }
+let state: ProjectsState = { availableProjects: [], openIds: [], activeId: null, roots: [], warnings: [], loaded: false, error: null }
 const listeners = new Set<() => void>()
 let inFlight: Promise<void> | null = null
 
-function emit(): void {
+function setState(patch: Partial<ProjectsState>) {
+  state = { ...state, ...patch }
   listeners.forEach(l => l())
 }
-
-function setState(patch: Partial<ProjectsState>): void {
-  state = { ...state, ...patch }
-  emit()
+function persistSelection() {
+  try {
+    localStorage.setItem(WORKSPACES_KEY, JSON.stringify({ openIds: state.openIds, activeId: state.activeId }))
+    localStorage.removeItem(LEGACY_ACTIVE_KEY)
+  } catch { /* private browsing / quota: the current session still works */ }
+}
+function applyDiscovery(result: Discovery) {
+  let selection: WorkspaceSelection = { openIds: state.openIds, activeId: state.activeId }
+  if (!state.loaded) {
+    try { selection = restoreSelection(result.projects, localStorage.getItem(WORKSPACES_KEY), localStorage.getItem(LEGACY_ACTIVE_KEY)) }
+    catch { selection = { openIds: [], activeId: null } }
+    for (const project of result.projects) {
+      migrateProjectSurface(project.path, project.id)
+      if (project.name !== project.id && result.projects.filter(p => p.name === project.name).length === 1) {
+        migrateProjectSurface(project.name, project.id)
+        for (const prefix of ['beads-station.terminalHeight.', 'beads-station.lastConfirmed.', 'bs.claude.session:']) {
+          try {
+            const old = localStorage.getItem(prefix + project.name)
+            if (old !== null && localStorage.getItem(prefix + project.id) === null) localStorage.setItem(prefix + project.id, old)
+          } catch { /* optional migration */ }
+        }
+      }
+    }
+  }
+  // A missing scan root must not evict already-open workspaces in this session.
+  const retained = state.availableProjects.filter(p => state.openIds.includes(p.id) && !result.projects.some(n => n.id === p.id))
+  const active = result.projects.find(p => p.id === selection.activeId)
+  if (active) activateSurface(active.id, active.path)
+  setState({ ...selection, availableProjects: [...result.projects, ...retained], roots: result.roots, warnings: result.warnings, loaded: true, error: null })
+  persistSelection()
 }
 
-function pickActive(items: Project[], prev: string | null): string | null {
-  if (prev && items.some(p => p.id === prev)) return prev
-  const persisted = loadPersistedActive()
-  if (persisted && items.some(p => p.id === persisted)) return persisted
-  return items.length > 0 ? items[0].id : null
-}
-
-// Deduped refresh: concurrent callers share ONE in-flight invoke.
 export function refreshProjects(): Promise<void> {
   if (inFlight) return inFlight
   inFlight = (async () => {
     try {
-      // safeInvoke with rethrow: fires a global toast on reject AND lets us
-      // record an error flag so callers can distinguish a failed load from a
-      // genuinely empty project list (both otherwise leave projects=[]).
-      const list = await safeInvoke<Project[]>('projects_list', undefined, { rethrow: true })
-      const items = list ?? []
-      setState({ error: null, projects: items, activeId: pickActive(items, state.activeId), loaded: true })
-    } catch (err) {
-      console.error('projects_list failed', err)
-      setState({ error: String(err), loaded: true })
-    } finally {
-      inFlight = null
-    }
+      const result = await safeInvoke<Discovery>('projects_list', undefined, { rethrow: true })
+      if (!result) throw new Error('Project discovery returned no result')
+      applyDiscovery(result)
+    } catch (error) {
+      setState({ error: String(error), loaded: true })
+    } finally { inFlight = null }
   })()
   return inFlight
 }
 
-export function setActiveProject(id: string): void {
-  persistActive(id)
-  setState({ activeId: id })
+export async function openFolder(path: string): Promise<void> {
+  const project = await invoke<Project>('projects_open', { path })
+  const availableProjects = [...state.availableProjects.filter(p => p.id !== project.id), project]
+  activateSurface(project.id, project.path)
+  setState({ availableProjects, openIds: state.openIds.includes(project.id) ? state.openIds : [...state.openIds, project.id], activeId: project.id })
+  persistSelection()
 }
 
-function subscribe(listener: () => void): () => void {
-  // First subscriber triggers the one lazy load.
-  if (!state.loaded && !inFlight) void refreshProjects()
-  listeners.add(listener)
-  return () => {
-    listeners.delete(listener)
+export function setActiveProject(id: string): void {
+  // Opening a discovered project is explicit; selecting an open one is synchronous.
+  if (state.openIds.includes(id)) {
+    const project = state.availableProjects.find(p => p.id === id)
+    if (project) activateSurface(project.id, project.path)
+    setState({ activeId: id })
+    persistSelection()
+  } else {
+    const project = state.availableProjects.find(p => p.id === id)
+    if (project) void openFolder(project.path).catch(error => setState({ error: String(error) }))
   }
 }
 
-function getSnapshot(): ProjectsState {
-  // state is replaced (never mutated) so its reference is stable between
-  // changes — required for useSyncExternalStore to avoid a re-render loop.
-  return state
+export async function closeProject(id: string): Promise<void> {
+  // Closing is distinct from switching. Stop only this workspace's resources.
+  const resources = removeProjectSurface(id)
+  const openIds = state.openIds.filter(p => p !== id)
+  const activeId = state.activeId === id ? openIds[0] ?? null : state.activeId
+  const active = state.availableProjects.find(p => p.id === activeId)
+  if (active) activateSurface(active.id, active.path)
+  setState({ openIds, activeId })
+  persistSelection()
+  await Promise.allSettled([
+    ...resources.ptyIds.map(ptyId => invoke('pty_kill', { id: ptyId })),
+    ...resources.bridgeIds.map(projectId => invoke('claude_kill', { projectId })),
+    invoke('claude_kill', { projectId: id }),
+  ])
 }
 
-/**
- * Subscribe to the shared project store. All callers see one list, backed by a
- * single deduped `projects_list` fetch. Exposes the same surface the old
- * per-component hook did: { projects, activeId, setActive, refresh, loaded, error }.
- */
+export async function saveRoots(roots: string[]): Promise<void> {
+  applyDiscovery(await invoke<Discovery>('projects_set_roots', { roots }))
+}
+function subscribe(listener: () => void) {
+  listeners.add(listener)
+  if (!state.loaded && !inFlight) void refreshProjects()
+  return () => { listeners.delete(listener) }
+}
+function getSnapshot() { return state }
 export function useProjects() {
   const snap = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  const projects = useMemo(() => snap.openIds.flatMap(id => { const project = snap.availableProjects.find(p => p.id === id); return project ? [project] : [] }), [snap.openIds, snap.availableProjects])
   return {
-    projects: snap.projects,
-    activeId: snap.activeId,
-    setActive: setActiveProject,
-    refresh: refreshProjects,
-    loaded: snap.loaded,
-    error: snap.error,
+    ...snap,
+    projects,
+    setActive: setActiveProject, refresh: refreshProjects, openFolder, closeProject, saveRoots,
   }
 }

@@ -1,11 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
-// RV8.4 — bead-pane duality. Clicking a READY node in the graph must spawn a
-// Claude agent pane targeting the active project (plan posture); non-ready nodes
-// (blocked/in_progress/closed) are inert. We mock the four seams (projects,
-// bd snapshot, live provider, spawnAgent) and drive clicks through the DOM.
+// A ready request must retain its issue identity when activated; non-ready
+// requests remain inert. Execution is owned by DesignerShell after selection.
 
 interface FakeIssue {
   id: string
@@ -21,17 +19,6 @@ const BLOCKED = {
   status: 'open',
   dependencies: [{ issue_id: 'Code-blocked', depends_on_id: 'Code-ready' }],
 }
-
-const spawnAgentMock = vi.fn()
-const setSkinMock = vi.fn()
-
-vi.mock('../../state/termPanes', () => ({
-  spawnAgent: (...args: unknown[]) => spawnAgentMock(...args),
-}))
-
-vi.mock('../../state/skin', () => ({
-  setSkin: (...args: unknown[]) => setSkinMock(...args),
-}))
 
 vi.mock('../../state/projects', () => ({
   useProjects: () => ({
@@ -63,35 +50,26 @@ if (!globalThis.crypto?.randomUUID) {
 
 import { BeadGraph } from './BeadGraph'
 
-describe('BeadGraph bead-pane duality', () => {
-  beforeEach(() => {
-    spawnAgentMock.mockClear()
-    setSkinMock.mockClear()
-  })
+describe('BeadGraph request selection', () => {
 
-  it('clicking a READY node spawns an agent pane and switches to the terminal skin', () => {
-    render(<BeadGraph />)
+  it('clicking a READY node passes the concrete issue to the designer flow', () => {
+    const onSelect = vi.fn()
+    render(<BeadGraph onSelect={onSelect} />)
     const node = document.querySelector('[data-bs-bead-node="Code-ready"]') as HTMLElement
     expect(node).toBeTruthy()
     expect(node.getAttribute('data-bs-bead-state')).toBe('ready')
     node.click()
-    expect(spawnAgentMock).toHaveBeenCalledTimes(1)
-    const [projectId, cwd, sessionId, mode] = spawnAgentMock.mock.calls[0]
-    expect(projectId).toBe('proj-1')
-    expect(cwd).toBe('/repo/beads')
-    expect(typeof sessionId).toBe('string')
-    expect(mode).toBe('plan')
-    // Agent panes render in the terminal skin, so the click lands you on the pane.
-    expect(setSkinMock).toHaveBeenCalledWith('terminal')
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'Code-ready', title: 'Ready bead' }))
   })
 
   it('clicking a BLOCKED node is inert (no spawn)', () => {
-    render(<BeadGraph />)
+    const onSelect = vi.fn()
+    render(<BeadGraph onSelect={onSelect} />)
     const node = document.querySelector('[data-bs-bead-node="Code-blocked"]') as HTMLElement
     expect(node).toBeTruthy()
     expect(node.getAttribute('data-bs-bead-state')).toBe('blocked')
     node.click()
-    expect(spawnAgentMock).not.toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
   })
 
   it('renders the state locator attr on every node', () => {

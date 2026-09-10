@@ -10,6 +10,7 @@ const PROJECT_IDS = ['proj-a', 'proj-b']
  *  the browser so it always matches the app's own todayYMD(). */
 export async function seedConfirmed(page: Page): Promise<void> {
   await page.addInitScript((ids: string[]) => {
+    if (localStorage.getItem('beads-station.workspaces.v2') === null) localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ids, activeId: ids[0] }))
     const d = new Date()
     const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     for (const id of ids) localStorage.setItem('beads-station.lastConfirmed.' + id, ymd)
@@ -24,6 +25,7 @@ export async function boot(page: Page): Promise<void> {
   await page.goto('/')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
   await expect(page.locator('#root')).toBeVisible()
+  await page.getByRole('button', { name: 'Start Claude chat', exact: true }).click()
   await page.waitForFunction(
     () => !!(window as any).__bsVim && !!(window as any).__bsTerm,
   )
@@ -73,6 +75,12 @@ export async function spawnAgentPane(page: Page): Promise<void> {
   await leader(page)
   await page.keyboard.press('a')
   await expect(page.locator('[data-bs-agent-pane]')).toHaveCount(before + 1)
+  // A mounted pane focuses on the next animation frame. Wait for that before
+  // the next helper blurs it; otherwise autofocus can race the leader chord.
+  await page.waitForFunction(() => {
+    const bridge = (window as any).__bsTerm?.activeAgentBridgeId
+    return !!bridge && document.activeElement?.closest('[data-bs-agent-pane]')?.getAttribute('data-bs-agent-pane') === bridge
+  })
 }
 
 export { test, expect }

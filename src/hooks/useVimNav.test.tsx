@@ -69,6 +69,29 @@ describe('useVimNav — RV3.4 Cmd-P leader escape hatch', () => {
     setFocused('board')
   })
 
+  it('leaves form typing and modal traversal alone while terminal has logical focus', () => {
+    const { getByTestId } = render(<Harness />)
+    const input = getByTestId('chat-input') as HTMLInputElement
+    setFocused('terminal')
+    input.focus()
+    for (const key of ['a', ' ', 'i', 'Enter', 'Escape']) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+      input.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(false)
+      expect(document.activeElement).toBe(input)
+    }
+    const dialog = document.createElement('dialog')
+    dialog.setAttribute('open', '')
+    document.body.append(dialog)
+    const originalParent = input.parentElement!
+    dialog.append(input)
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    input.dispatchEvent(tab)
+    expect(tab.defaultPrevented).toBe(false)
+    originalParent.append(input)
+    dialog.remove()
+  })
+
   it('Cmd-P arms leader even while a text input holds focus', () => {
     const { getByTestId } = render(<Harness />)
     const input = getByTestId('chat-input') as HTMLInputElement

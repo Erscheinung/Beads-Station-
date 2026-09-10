@@ -890,3 +890,10 @@ Commits `e6fe7c7` (soak), `7b9bb44` (theme), `717e3bd` (bd). Gates: 112 vitest, 
 - When tech debt accrues or burns down: edit the deferred-work list.
 
 When you edit the in-repo copy, also write the same change to `~/Documents/Beads/BEADS-CONTEXT.md`. The two should be byte-identical.
+
+
+## 2026-09-09 — Portable workspace and terminal foundation
+
+Implementation branch `feat/daily-driver-foundation` from `7a027c6`, work uncommitted. Delivered explicit workspace picker/open-close restore, canonical identities, portable roots and native auth defaults, persistent xterm views across navigation, Unicode-safe native output, and separate process capacity pools. bd tickets `Code-vnb` and `Code-ecs` closed after verification.
+
+Checks: 121 frontend unit tests, 58 Chromium mock tests, 84 Rust tests, production build and cargo check passed. Native debug preview shell PID 77119 survived collapse, workspace switching and designer/terminal skin switching; disposable workspace PID 77943 was reaped on close. This is not a packaged release or soak result. Window-close runtime continuity, structured Codex integration, designer preview/review, conductor routing and pulses remain in the plan. See `docs/FOUNDATION-VERIFICATION.md` for evidence and limits. Existing user lockfile delta preserved.

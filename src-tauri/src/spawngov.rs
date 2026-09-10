@@ -1,60 +1,58 @@
-// Beads Station — EXP backbone: one process-global subprocess spawn governor.
-//
-// The whole app spawns three kinds of child: the `bd` CLI (a ~130MB Go binary
-// that itself forks git/dolt), `git`, and `claude --print` (long-lived, with
-// three pipe fds). Before this module each of those had its own (or no)
-// throttle: bd had a module-private Semaphore(3) that `bd_prime`/`bd_git_branch`
-// bypassed, and claude/conductor spawns were entirely ungoverned. Under real
-// load (agent panes + board refresh + conductor fanout) the aggregate fork/fd
-// count overran the launchd fd ceiling -> EMFILE ("Too many open files",
-// os error 24) -> a cascading toast storm.
-//
-// This is the single choke point every spawn now passes through. The permit is
-// OWNED and meant to be held for the child's WHOLE lifetime (not just the fork
-// instant), so a persistent `claude --print` counts against the cap until it is
-// reaped — those long-lived children are the real load generators, and the old
-// bd-only cap never saw them.
-
+//! Separate lifetime budgets keep persistent agents from starving UI reads.
+//! A permit covers the complete child lifetime, not merely the fork operation.
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// Default cap on concurrent governed spawns. Deliberately small: each `bd`
-/// invocation forks git+dolt underneath, and each `claude` holds three pipe
-/// fds for its whole life, so the effective fd/fork multiplier per permit is
-/// well above one. 6 keeps the board responsive (its snapshot wants 2) while
-/// leaving headroom for a conductor pulse + an interactive agent, all under the
-/// launchd fd ceiling. Tunable via `BS_MAX_SPAWNS` for the packaged `.app`,
-/// where the real ceiling is only known at runtime.
-const DEFAULT_MAX_SPAWNS: usize = 6;
-
-fn max_spawns() -> usize {
-    std::env::var("BS_MAX_SPAWNS")
+struct Pools {
+    utilities: Arc<Semaphore>,
+    agents: Arc<Semaphore>,
+    terminals: Arc<Semaphore>,
+}
+impl Pools {
+    fn new(utilities: usize, agents: usize, terminals: usize) -> Self {
+        Self {
+            utilities: Arc::new(Semaphore::new(utilities)),
+            agents: Arc::new(Semaphore::new(agents)),
+            terminals: Arc::new(Semaphore::new(terminals)),
+        }
+    }
+}
+fn limit(key: &str, fallback: usize, maximum: usize) -> usize {
+    std::env::var(key)
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .filter(|n| *n >= 1)
-        .unwrap_or(DEFAULT_MAX_SPAWNS)
+        .filter(|n| *n > 0)
+        .unwrap_or(fallback)
+        .min(maximum)
 }
+static POOLS: Lazy<Pools> = Lazy::new(|| {
+    Pools::new(
+        limit("BS_MAX_SPAWNS", 3, 16),
+        limit("BS_MAX_AGENTS", 4, 32),
+        limit("BS_MAX_TERMINALS", 16, 64),
+    )
+});
 
-/// The one global governor. `Arc`-backed so we can hand out `OwnedSemaphorePermit`s
-/// that outlive any single call frame (they ride inside a spawned child's owning
-/// struct/task and drop exactly when that child is reaped).
-static GOVERNOR: Lazy<std::sync::Arc<Semaphore>> =
-    Lazy::new(|| std::sync::Arc::new(Semaphore::new(max_spawns())));
-
-/// Acquire a permit for a child spawn. Hold the returned permit for the child's
-/// entire lifetime — bind it into the owning struct (e.g. `ClaudeSession`) or
-/// keep it in scope across the `wait`/`select` that reaps the child. Dropping it
-/// early defeats the point (the fd stays open while the permit is already freed).
-///
-/// Acquire never fails: the governor is never closed, so `acquire_owned` only
-/// errors on a closed semaphore, which cannot happen here — we unwrap that
-/// impossible case into a clear panic rather than threading a Result everywhere.
+/// Short bd/git operations have reserved capacity even at the agent limit.
 pub(crate) async fn permit() -> OwnedSemaphorePermit {
-    GOVERNOR
+    POOLS
+        .utilities
         .clone()
         .acquire_owned()
         .await
-        .expect("spawn governor semaphore is never closed")
+        .expect("utility pool is never closed")
+}
+/// Fail explicitly instead of leaving a UI invoke waiting behind long-lived chats.
+pub(crate) fn agent_permit() -> Result<OwnedSemaphorePermit, String> {
+    POOLS.agents.clone().try_acquire_owned().map_err(|_| {
+        "Agent capacity reached. Stop an agent before starting another (BS_MAX_AGENTS).".into()
+    })
+}
+pub(crate) fn terminal_permit() -> Result<OwnedSemaphorePermit, String> {
+    POOLS.terminals.clone().try_acquire_owned().map_err(|_| {
+        "Terminal capacity reached. Close a pane before opening another (BS_MAX_TERMINALS).".into()
+    })
 }
 
 /// True when an error string indicates resource exhaustion we should back off
@@ -140,18 +138,20 @@ mod tests {
     }
 
     #[test]
-    fn default_cap_when_env_unset() {
-        // Only asserts the parse/clamp logic, not the live static (other tests
-        // may hold permits). An empty/invalid var falls back to the default.
-        std::env::remove_var("BS_MAX_SPAWNS");
-        assert_eq!(max_spawns(), DEFAULT_MAX_SPAWNS);
-        std::env::set_var("BS_MAX_SPAWNS", "0"); // below floor -> default
-        assert_eq!(max_spawns(), DEFAULT_MAX_SPAWNS);
-        std::env::set_var("BS_MAX_SPAWNS", "not-a-number");
-        assert_eq!(max_spawns(), DEFAULT_MAX_SPAWNS);
-        std::env::set_var("BS_MAX_SPAWNS", "10");
-        assert_eq!(max_spawns(), 10);
-        std::env::remove_var("BS_MAX_SPAWNS");
+    fn configured_cap_has_a_floor_and_ceiling() {
+        // Dedicated test variable avoids racing initialization of the live pools.
+        const KEY: &str = "BS_TEST_CAP";
+        std::env::remove_var(KEY);
+        assert_eq!(limit(KEY, 3, 16), 3);
+        for value in ["0", "invalid"] {
+            std::env::set_var(KEY, value);
+            assert_eq!(limit(KEY, 3, 16), 3);
+        }
+        std::env::set_var(KEY, "10");
+        assert_eq!(limit(KEY, 3, 16), 10);
+        std::env::set_var(KEY, "1000");
+        assert_eq!(limit(KEY, 3, 16), 16);
+        std::env::remove_var(KEY);
     }
 
     #[tokio::test]
@@ -163,10 +163,9 @@ mod tests {
         let p2 = permit().await;
         drop(p1);
         // A fresh acquire must not deadlock now that a slot freed.
-        let p3 =
-            tokio::time::timeout(std::time::Duration::from_secs(1), permit())
-                .await
-                .expect("permit should be available after a drop");
+        let p3 = tokio::time::timeout(std::time::Duration::from_secs(1), permit())
+            .await
+            .expect("permit should be available after a drop");
         drop(p2);
         drop(p3);
     }
@@ -199,5 +198,29 @@ mod tests {
     async fn with_retry_succeeds_first_try() {
         let r: Result<i32, String> = with_retry(|| async { Ok(42) }).await;
         assert_eq!(r.unwrap(), 42);
+    }
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    #[tokio::test]
+    async fn occupied_agent_and_terminal_slots_never_block_utility_reads() {
+        let pools = Pools::new(2, 1, 1);
+        let agent = pools.agents.clone().try_acquire_owned().unwrap();
+        let terminal = pools.terminals.clone().try_acquire_owned().unwrap();
+        assert!(pools.agents.clone().try_acquire_owned().is_err());
+        assert!(pools.terminals.clone().try_acquire_owned().is_err());
+        let read = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            pools.utilities.clone().acquire_owned(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(pools.utilities.available_permits(), 1);
+        drop((agent, terminal, read));
+        assert_eq!(pools.agents.available_permits(), 1);
+        assert_eq!(pools.terminals.available_permits(), 1);
     }
 }

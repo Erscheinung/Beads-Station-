@@ -33,21 +33,12 @@ use crate::bd::{run_bd_verb, Issue};
 /// `Daily/2026-08-12.md`), so it's stable across machines/users.
 const SRC_LABEL_PREFIX: &str = "sense:src=";
 
-/// Vault root for the watched Obsidian folders. Resolved off `$HOME` the same
-/// way `daily.rs::default_daily_dir()` does, with the identical hardcoded
-/// fallback, so the two stay in lockstep.
-fn vault_root() -> PathBuf {
-    match std::env::var_os("HOME") {
-        Some(home) => Path::new(&home).join("Documents/Beads"),
-        None => PathBuf::from("~/Documents/Beads"),
-    }
-}
-
-/// The two folders the sensor watches. Returned as absolute paths for the
-/// watcher; `source_rel` re-derives the vault-relative label form.
+/// Watch existing notes directories under the same configurable root as the
+/// daily writer. An unavailable home directory leaves sensing disabled.
 pub(crate) fn watched_dirs() -> Vec<PathBuf> {
-    let root = vault_root();
-    vec![root.join("Implementation Prompts"), root.join("Daily")]
+    crate::daily::notes_root()
+        .map(|root| vec![root.join("Implementation Prompts"), root.join("Daily")])
+        .unwrap_or_default()
 }
 
 /// A sensed wisp surfaced in the Sensors panel. snake_case to match bd's JSON
@@ -67,10 +58,10 @@ pub struct Wisp {
 
 /// Pull the `sense:src=<path>` value out of an issue's labels, if present.
 fn source_from_labels(labels: &Option<Vec<String>>) -> Option<String> {
-    labels.as_ref()?.iter().find_map(|l| {
-        l.strip_prefix(SRC_LABEL_PREFIX)
-            .map(|s| s.to_string())
-    })
+    labels
+        .as_ref()?
+        .iter()
+        .find_map(|l| l.strip_prefix(SRC_LABEL_PREFIX).map(|s| s.to_string()))
 }
 
 /// Pure: keep only the open ephemeral wisps and project them into `Wisp`.
@@ -94,10 +85,13 @@ fn wisps_from_issues(issues: Vec<Issue>) -> Vec<Wisp> {
 /// Falls back to the file name when the path isn't under the root (defensive —
 /// the watcher only feeds it in-vault paths).
 fn source_rel(abs: &Path) -> String {
-    let root = vault_root();
-    abs.strip_prefix(&root)
+    crate::daily::notes_root()
         .ok()
-        .map(|p| p.to_string_lossy().into_owned())
+        .and_then(|root| {
+            abs.strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| {
             abs.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -251,9 +245,14 @@ mod tests {
     #[test]
     fn only_open_ephemeral_kept() {
         let issues = vec![
-            issue("Code-1", false, "open", None),          // permanent -> drop
-            issue("Code-wisp-a", true, "open", Some(vec!["sense:src=Daily/a.md".into()])),
-            issue("Code-wisp-b", true, "closed", None),     // dismissed -> drop
+            issue("Code-1", false, "open", None), // permanent -> drop
+            issue(
+                "Code-wisp-a",
+                true,
+                "open",
+                Some(vec!["sense:src=Daily/a.md".into()]),
+            ),
+            issue("Code-wisp-b", true, "closed", None), // dismissed -> drop
         ];
         let wisps = wisps_from_issues(issues);
         assert_eq!(wisps.len(), 1);

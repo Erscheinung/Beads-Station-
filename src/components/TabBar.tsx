@@ -6,6 +6,8 @@ interface TabBarProps {
   projects: Project[]
   activeId: string | null
   onSelect: (id: string) => void
+  onOpen?: () => void
+  onClose?: (id: string) => void
 }
 
 // Phase 6 — per-tab Claude status dot. Mounted as a child component so each
@@ -43,7 +45,7 @@ function TabStatusDot({ projectId }: { projectId: string }) {
  * horizontally with a thin custom scrollbar, and the active tab is scrolled
  * into view on selection change.
  */
-export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
+export function TabBar({ projects, activeId, onSelect, onOpen, onClose }: TabBarProps) {
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
 
   useEffect(() => {
@@ -72,8 +74,8 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
       {projects.map(p => {
         const active = p.id === activeId
         return (
+          <div key={p.id} style={{ display: 'flex', flexShrink: 0, background: active ? 'var(--bs-bg-elev)' : 'transparent' }}>
           <button
-            key={p.id}
             ref={el => {
               if (el) tabRefs.current.set(p.id, el)
               else tabRefs.current.delete(p.id)
@@ -132,8 +134,11 @@ export function TabBar({ projects, activeId, onSelect }: TabBarProps) {
             />
             <TabStatusDot projectId={p.id} />
           </button>
+          {onClose && <button onClick={() => onClose(p.id)} aria-label={`Close workspace ${p.name}`} title="Close workspace and stop its terminals" style={{ border: 0, background: 'transparent', color: 'var(--bs-fg-muted)', padding: '0 8px', cursor: 'pointer' }}><span className="codicon codicon-close" aria-hidden /></button>}
+          </div>
         )
       })}
+      {onOpen && <button onClick={onOpen} aria-label="Open workspace" title="Open workspace" style={{ border: 0, background: 'transparent', color: 'var(--bs-blue)', padding: '0 12px', cursor: 'pointer', flexShrink: 0 }}><span className="codicon codicon-add" aria-hidden /></button>}
     </div>
   )
 }

@@ -1,134 +1,75 @@
 # Beads Station
 
-A single-user macOS desktop app for managing [bd (beads)](https://github.com/gastownhall/beads) issue trackers across the projects under `~/Code/`. Sidebar lists every project as a tab; main pane is a Jira-style 4-column drag-drop board (Ready / In Progress / Blocked / Done) plus a hierarchical issue tree; bottom strip is a per-project Claude CLI chat (resumable across sessions); a collapsible terminal sits over the working directory of the active project.
+A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
-**Status:** Phase 5 of 10 shipped (issue tree + indent guides + devicons). Phases 6, 7, 8, 9 are queued; phase 10 is signed-dmg polish.
+## Current foundation
 
-![tauri](https://img.shields.io/badge/Tauri-2-blue) ![rust](https://img.shields.io/badge/Rust-1.90.0-orange) ![react](https://img.shields.io/badge/React-19-green) ![macOS](https://img.shields.io/badge/macOS-aarch64-lightgrey)
+- **Explicit workspaces:** search discovered projects or enter any folder path. Discovery does not open tabs or start agents. Only explicitly opened workspaces are restored.
+- **Portable discovery:** configurable roots in the workspace picker. The initial suggestion prefers `~/Desktop/Code` when present, otherwise an existing `~/Code`. Missing roots appear as recoverable warnings.
+- **Independent identity:** deterministic IDs based on canonical folder paths keep same-name projects separate. Opening a project remembers its folder and allocates its session; discovery is read-only.
+- **Terminal navigation:** split panes, tabs, zoom, and saved layouts. Shells and their xterm screens survive project/tab switches, collapse/expand, and skin changes within the running app. Closing a workspace stops its terminals.
+- **Agents on intent:** the optional Claude chat starts when requested. Installed `codex`, `claude`, and `nvim` can also run directly in the terminal. Persistent agents have a separate capacity budget from short bd/git operations.
+- **Tickets and appearance:** bd issue board/tree, command palette, palette-driven surfaces and Ghostty-style theme import.
+- **Designer workspace:** available from the landing screen or command palette, and through `?ui=designer` on a fresh profile. Graph/timeline, gates, sensors, and conductor controls exist; the complete request/preview/review experience is still planned.
 
-## What it does today
+This branch is foundation work, not a completed CMUX replacement. Closing the native window still stops local processes; saved layout restoration is not live process persistence. Durable runtime attachment, a structured Codex adapter, designer previews, and external GitHub/Jira pulses remain in the [Astra plan](docs/ASTRA-DAILY-DRIVER-PLAN.md).
 
-- **Project picker** — scans `~/Code/`, plus extras configured in bd's `repos.additional`; shows each as a tab in a bufferline-style strip with a "has-bd" dot.
-- **Per-project Claude session** — the bottom chat pane talks to the local `claude` CLI with a stable `--session-id` per project, so closing the app and reopening replays the conversation. Gateway-routed via `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` from a gitignored `.env` at the repo root.
-- **Issue board** — 4 columns, drag-drop with optimistic UI + rollback toast. Cards show priority bar (P1 red / P2 yellow / P3 blue), id, title, label chips. Live-updates in 250ms when bd writes happen externally (FSEvents on `<repo>/.beads/`).
-- **Issue tree** — sidebar groups by project → status → parent, with 1px hairline indent guides (lit on the cursor's ancestor branch), codicon chevrons, devicons per issue type (rocket = epic, sparkle = feature, checklist = task, bug = bug, tools = chore), 6px status dots, and a yellow ring on open issues that have downstream dependents.
-- **Vim modal navigation** — `Space` is the leader (1s window). `<leader>p/b/c/s/q` cycle project / focus board / focus chat / focus sidebar / quit. In sidebar: `j`/`k` move cursor, `h`/`l` collapse/expand, `Enter`/`o` open issue, `gg`/`G` first/last row, `zR`/`zM` expand-all/collapse-all. `INPUT`/`TEXTAREA`/`xterm`/`ProseMirror` always bypass.
-- **LazyVim aesthetic** — tokyonight Storm token set, 1px gap CSS grid, lualine-style statusline, ANSI-Shadow `BEADS` empty-state dashboard, which-key overlay, JetBrains Mono everywhere. Locked rule: purple is for syntax constructs only, never as a primary surface; `--bs-blue` is the dominant accent.
+## Development
 
-## Install
+Prerequisites: macOS, Node/npm, Rust/toolchain from `rust-toolchain.toml`, and Xcode command-line tools. Install `bd`, `claude`, `codex`, or `nvim` for the integrations you use. Log into the agent CLIs using their own terminal login flows; a gateway key is not required.
 
-```bash
-open artifacts/Beads-Station.dmg
-# drag to /Applications
-# right-click "Beads Station" in /Applications → Open → confirm Gatekeeper warning ONCE
-# subsequent launches work normally
-```
-
-The dmg is unsigned and aarch64-only (Apple Silicon). Code signing + universal binary land in Phase 10.
-
-## Build from source
-
-```bash
-git clone https://remote.example/Beads-Station.git
-cd Beads-Station
-cp .env.example .env             # fill in ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL for Gateway
+```sh
 npm install
-source ~/.cargo/env              # if cargo isn't already on PATH
-npm run tauri build
-cp 'src-tauri/target/release/bundle/dmg/Beads Station_0.1.0_aarch64.dmg' artifacts/Beads-Station.dmg
-```
-
-For dev (hot-reload):
-
-```bash
 npm run tauri dev
 ```
 
-The frontend `predev`/`prebuild` hooks run `scripts/audit-emoji.mjs`, which fails the build if any emoji glyphs land in JSX text (Codicons via the `codicon` font are fine; literal emoji are not).
+The native app uses port 1420. Open a project from the picker, then use the terminal or start an agent explicitly. The `+` beside workspace tabs and **Open workspace** in the command palette return to the picker. **Discovery roots** accepts one root per line. Folder paths can start with `~/` and may contain spaces; no shell interpolation is used to open them.
 
-## Architecture
+Application workspace settings and session IDs are stored with Tauri's plugin store. The frontend stores the explicit open-workspace list, active workspace, layout, and appearance locally. The legacy active-project setting is migrated only when unambiguous; old discovery results are not treated as an open-workspace list.
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  Tauri 2 shell (Rust 1.90.0, target aarch64-apple-darwin)                    │
-│                                                                              │
-│  src-tauri/src/                                                              │
-│    lib.rs        — registers ~25 Tauri commands; loads plugin-store +        │
-│                    .env at startup                                           │
-│    projects.rs   — scans ~/Code/, persists per-project session UUIDs         │
-│    claude.rs     — per-project Claude CLI subprocess (HashMap), event        │
-│                    stream namespaced as claude_event:{projectId}             │
-│    pty.rs        — portable-pty bindings for the embedded terminal           │
-│    bd.rs         — subprocess bridge to bd CLI; reads (--json) and writes    │
-│                    via current_dir(repo_path) (NOT -C)                       │
-│    watcher.rs    — macOS FSEvents on .beads/ → bd_changed event              │
-│    binresolve.rs — canonical-dir-first resolver for bd / claude              │
-│    envloader.rs  — KEY=value parser; sets process env at startup             │
-└──────────────────────────────────────────────────────────────────────────────┘
-                                      ↕  invoke / event
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  React 19 + Vite 7 + TypeScript                                              │
-│                                                                              │
-│  src/                                                                        │
-│    App.tsx               — outer 2-col grid: sidebar (320px) + main pane     │
-│                            (TabBar + Board + Terminal stack); bottom strip   │
-│                            = ClaudeChat; statusline below                    │
-│    components/                                                               │
-│      IssueList.tsx       — sidebar wrapper: bdList + useBdLive + buildTree   │
-│                            + useTreeNav + IssueTree                          │
-│      IssueTree.tsx       — tree visual primitive (P5)                        │
-│      Board.tsx           — 4-column drag-drop (dnd-kit)                      │
-│      Card.tsx            — priority bar + tokyonight token usage             │
-│      ClaudeChat.tsx      — per-project chat, status dot, raw-event drawer    │
-│      TabBar.tsx          — bufferline strip with diagonal slash separator    │
-│      Terminal.tsx        — xterm.js bound to a per-project PTY               │
-│      Statusline.tsx      — lualine: mode | path | branch | counts | clock    │
-│      Dashboard.tsx       — empty-state (ANSI-Shadow BEADS ASCII)             │
-│      WhichKey.tsx        — leader-overlay                                    │
-│    hooks/                                                                    │
-│      useBdLive.ts        — listens bd_changed:{repoPath} (debounced)         │
-│      useTreeNav.ts       — sidebar cursor + expand state                     │
-│      useVimNav.ts        — global window keymap (modal)                      │
-│    state/                                                                    │
-│      projects.ts         — useProjects() + activeId in localStorage          │
-│      tree.ts             — pure tree shaping (no React)                      │
-│      projectLabel.ts     — label resolver                                    │
-│      vim.ts              — useSyncExternalStore-backed mode/focus store      │
-└──────────────────────────────────────────────────────────────────────────────┘
+## Authentication and optional notes
+
+Native CLI authentication is the default. At startup, native mode removes inherited Anthropic gateway API-key/base-URL overrides so they do not override the CLI's local account. The app does not read or copy the CLI's credentials. Gateway spending lookups are disabled in native mode; unavailable usage is not represented as a fabricated quota.
+
+To opt into a gateway on a machine that needs it:
+
+```sh
+BS_AUTH_PROFILE=gateway BEADS_STATION_ENV=/absolute/path/to/private.env npm run tauri dev
 ```
 
-### Locked design decisions
+The explicit file can contain the gateway's Anthropic environment variables. Do not commit credentials. No `.env` file is searched automatically beside the executable or on another user's filesystem. Gateway mode can also use explicitly inherited environment variables.
 
-| Decision                  | Choice                                                                 |
-|---------------------------|------------------------------------------------------------------------|
-| Aesthetic                 | LazyVim *patterns* ported to web (Lua → TS); not a code port           |
-| Color palette             | tokyonight Storm; `--bs-blue` dominant, purple is syntax-only          |
-| Default Claude permission | `acceptEdits`; per-project override lands in Phase 6                   |
-| Multi-project model       | Federated bd: per-repo `.beads/` + `~/.beads-planning/` shared planning |
-| Daily file shape          | `/Documents/Beads/Daily/{YYYY-MM-DD}.md`, append `## HH:MM`        |
-| Packaging                 | macOS only for v1                                                      |
-| bd integration            | Subprocess + `--json`; never read `embeddeddolt/`, never write JSONL   |
-| Claude integration        | `claude --print --input-format=stream-json --output-format=stream-json`|
+Optional daily notes and sensors share `~/Documents/Beads Station`. Override the root with `BEADS_STATION_VAULT=/path/to/vault` (or a quoted `~/...` path). Daily entries go to `Daily/`; sensors inspect `Daily/` and `Implementation Prompts/`. This integration is independent of project discovery.
 
-### File-on-disk hardcodes (deliberately deferred)
+## Resource limits
 
-- `~/.local/bin/claude` is a fallback for the Claude binary; canonical-dir resolver checks first
-- `~/Code/` as project scan root; `repos.additional` in bd's config can extend it
-- aarch64 dmg only (Phase 10 will add `--target universal-apple-darwin`)
-- bd data does not sync to a remote (planning repo has no remote)
+- `BS_MAX_SPAWNS`: short bd/git operations, default 3, maximum 16.
+- `BS_MAX_AGENTS`: persistent Claude/conductor processes, default 4, maximum 32.
+- `BS_MAX_TERMINALS`: local PTYs, default 16, maximum 64.
 
-## Issue tracking
+At agent/terminal capacity, a new request reports a clear error instead of waiting indefinitely. UI reads retain their own capacity. These are local resource limits, not token budgets.
 
-This project uses **bd (beads)** internally to track its own roadmap. The bd workspace is at `.beads/` in this repo and federates with `~/.beads-planning/`, where the actual phase tickets live.
+## Verification
 
-```bash
-git config beads.role maintainer    # one-time, prevents silent write loss
-bd ready                            # see what's next
-bd show Code-ky4.6                  # next phase: Claude tool surface
+```sh
+npm run build
+npm test
+npx playwright install chromium  # once per Playwright browser version
+npm run test:live
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml --quiet
 ```
 
-See `CLAUDE.md` for AI-agent-specific workflow and `BEADS-CONTEXT.md` for the canonical phase plan and recovery context.
+The build includes the emoji audit. Unit tests use two workers and jsdom storage, including on Node 25. Browser tests run on **port 1422** with mock IPC so they can coexist with native development on 1420. They verify browser focus and UI behavior, not WKWebView, native authentication, actual PTYs, or process persistence. Use the native app for those checks.
 
-## License
+For an app bundle:
 
-Internal / personal use. Not packaged for redistribution.
+```sh
+npm run tauri build
+```
+
+Old DMG artifacts may predate this branch. Build the current source before evaluating these changes; signing and distribution polish remain future work.
+
+## Agent workflow
+
+Read [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md), and the [implementation plan](docs/ASTRA-DAILY-DRIVER-PLAN.md). `BEADS-CONTEXT.md` records historical work and should not be treated as a current machine setup guide. Track implementation with bd from this repository, using verified writes; do not edit the database or passive JSONL export by hand.

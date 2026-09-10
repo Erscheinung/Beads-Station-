@@ -99,7 +99,7 @@ test('sidebar issue list still populates after pane churn + project switch (no "
 // project must NOT appear under another project's surface, and must be restored
 // on a round-trip switch. (The baseline single [data-bs-agent-pane] is the
 // legacy bottom chat, which is keyed by active.id and re-renders on every
-// project, so it is present on both — the DELTA is the per-project agent leaves.)
+// project only when explicitly requested.)
 test('agent panes are per-project: hidden on switch, restored on return', async ({ page }) => {
   const base = await pane(page).count() // legacy bottom chat only
 
@@ -109,10 +109,10 @@ test('agent panes are per-project: hidden on switch, restored on return', async 
   await expect(pane(page)).toHaveCount(base + 2)
 
   // leader-p cycles to proj-b — its own fresh surface has no agent leaves, so
-  // only the legacy bottom chat remains.
+  // no chat is automatically started.
   await leader(page)
   await page.keyboard.press('p')
-  await expect(pane(page)).toHaveCount(base)
+  await expect(pane(page)).toHaveCount(0) // this project has no explicitly requested chat
 
   // leader-p again returns to proj-a — its two agent panes are restored.
   await leader(page)

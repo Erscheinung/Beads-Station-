@@ -119,6 +119,9 @@ fn api_get<T: for<'de> Deserialize<'de>>(path: &str, token: &str) -> Result<T, S
 /// `available: false` value so the CostMeter row is simply omitted.
 #[tauri::command]
 pub fn gateway_spending() -> GatewaySpend {
+    if !crate::envloader::gateway_enabled() {
+        return GatewaySpend::unavailable("native CLI login; gateway spending disabled");
+    }
     let token = match read_valid_token() {
         Some(t) => t,
         None => {

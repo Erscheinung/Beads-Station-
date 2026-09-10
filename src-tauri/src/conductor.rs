@@ -80,7 +80,9 @@ impl Tier {
         match self {
             Tier::Small => "light review, auto-proceed",
             Tier::Medium => "one review pass; gate if the change touches shared files",
-            Tier::Large => "plan first, adversarial self-review, MANDATORY human gate before and after",
+            Tier::Large => {
+                "plan first, adversarial self-review, MANDATORY human gate before and after"
+            }
         }
     }
 
@@ -187,36 +189,72 @@ struct ConductorState {
 static CONDUCTOR: Lazy<Mutex<Option<ConductorState>>> = Lazy::new(|| Mutex::new(None));
 
 // Code-jx3.3 (RV6.3) — per-builder cancel registry. A fanout tick registers one
-// cancel `Notify` per in-flight builder keyed by its bead id; `conductor_stop_agent`
+// cancel `Notify` per unique in-flight attempt keyed by its bead id; `conductor_stop_agent`
 // fires the matching `Notify`, and the builder's `tokio::select!` bails + kills its
 // claude child (kill_on_drop). The registry is the ONLY shared cancel surface — the
 // Rust side still invents no locking beyond this bookkeeping; bd remains the source
 // of truth, and an aborted builder's in-flight step is durable (next tick re-derives).
-static IN_FLIGHT: Lazy<Mutex<HashMap<String, Arc<tokio::sync::Notify>>>> =
+#[derive(Clone)]
+struct InFlightAttempt {
+    id: String,
+    cancel: Arc<tokio::sync::Notify>,
+}
+
+static IN_FLIGHT: Lazy<Mutex<HashMap<String, InFlightAttempt>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// Register a cancel handle for an in-flight builder. Returns the `Notify` the
-/// builder selects on. Overwrites any stale entry for the same bead (a prior tick's
-/// builder that never deregistered) — the newest in-flight builder owns the key.
-fn register_in_flight(bead_id: &str) -> Arc<tokio::sync::Notify> {
-    let notify = Arc::new(tokio::sync::Notify::new());
-    if let Ok(mut map) = IN_FLIGHT.lock() {
-        map.insert(bead_id.to_string(), notify.clone());
-    }
-    notify
+fn new_attempt_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
-/// Remove a builder's cancel handle once it finishes (success, failure, or cancel).
-fn deregister_in_flight(bead_id: &str) {
+/// Register one live attempt for a bead. A duplicate pulse must not replace a
+/// live registry entry: doing so would make the original un-cancellable and can
+/// launch duplicate work. The attempt ID also protects cleanup from removing a
+/// newer attempt for the same bead.
+fn register_in_flight(bead_id: &str) -> Option<InFlightAttempt> {
+    let attempt = InFlightAttempt {
+        id: new_attempt_id(),
+        cancel: Arc::new(tokio::sync::Notify::new()),
+    };
     if let Ok(mut map) = IN_FLIGHT.lock() {
-        map.remove(bead_id);
+        if map.contains_key(bead_id) {
+            return None;
+        }
+        map.insert(bead_id.to_string(), attempt.clone());
+        return Some(attempt);
+    }
+    None
+}
+
+/// Remove a builder's cancel handle only when it still owns that exact attempt.
+fn deregister_in_flight(bead_id: &str, attempt_id: &str) {
+    if let Ok(mut map) = IN_FLIGHT.lock() {
+        if map
+            .get(bead_id)
+            .is_some_and(|attempt| attempt.id == attempt_id)
+        {
+            map.remove(bead_id);
+        }
     }
 }
 
-/// Look up + remove a builder's cancel handle. `Some` means a builder was in flight
-/// and is now told to stop; `None` means nothing was running for that bead.
-fn take_in_flight(bead_id: &str) -> Option<Arc<tokio::sync::Notify>> {
-    IN_FLIGHT.lock().ok()?.remove(bead_id)
+/// Look up an in-flight builder without removing it. Retaining the entry until
+/// the task exits prevents a second pulse from starting the same bead while the
+/// original process is still observing its cancellation request.
+fn in_flight(bead_id: &str) -> Option<InFlightAttempt> {
+    IN_FLIGHT.lock().ok()?.get(bead_id).cloned()
+}
+
+/// A timed-out Herdr RPC can have reached the daemon, so releasing its registry
+/// entry would let the next pulse create duplicate work. Retain that attempt for
+/// operator reconciliation instead. Known local subprocess failures are safe to
+/// clean up because this process owns and reaps their child.
+fn retain_unknown_attempt(herdr_mode: bool, result: &Result<PulseOutcome, String>) -> bool {
+    herdr_mode
+        && result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.contains("outcome is unknown"))
 }
 
 /// RV8.2 — the holder tag a builder acquires the merge slot under (mirrors the
@@ -382,7 +420,13 @@ fn defer_args(id: &str) -> Vec<String> {
 }
 
 fn note_args(id: &str, note: &str) -> Vec<String> {
-    vec!["note".into(), id.into(), note.into(), "--actor".into(), bd::ACTOR.into()]
+    vec![
+        "note".into(),
+        id.into(),
+        note.into(),
+        "--actor".into(),
+        bd::ACTOR.into(),
+    ]
 }
 
 /// The pulse prompt: a single autonomous heartbeat that advances exactly one
@@ -509,7 +553,11 @@ async fn pulse(app: &AppHandle, repo: &str, dry_run: bool, interval_secs: u64, h
                     &note_args(&bead.id, "conductor: deferred — bd doctor unhealthy"),
                 )
                 .await;
-                status("deferred", Some(bead.id), Some("bd doctor unhealthy".into()));
+                status(
+                    "deferred",
+                    Some(bead.id),
+                    Some("bd doctor unhealthy".into()),
+                );
                 return;
             }
         }
@@ -592,7 +640,28 @@ async fn pulse_bead(
         tier.ceremony(),
     );
     let mode = if dry_run { "plan" } else { "acceptEdits" };
-    let outcome = match run_pulse_claude(repo, &prompt, mode, work_model, None, herdr_mode).await {
+    let Some(attempt) = register_in_flight(&top.id) else {
+        status(
+            "deferred",
+            Some(top.id.clone()),
+            Some("attempt already in flight or awaiting reconciliation".to_string()),
+        );
+        return;
+    };
+    let result = run_pulse_claude(
+        repo,
+        &prompt,
+        mode,
+        work_model,
+        &attempt.id,
+        Some(&attempt.cancel),
+        herdr_mode,
+    )
+    .await;
+    if !retain_unknown_attempt(herdr_mode, &result) {
+        deregister_in_flight(&top.id, &attempt.id);
+    }
+    let outcome = match result {
         Ok(o) => o,
         Err(e) => {
             tracing::warn!("conductor: claude pulse failed: {e}");
@@ -635,6 +704,20 @@ async fn pulse_bead(
                 interval_secs,
                 repo_path: repo.to_string(),
                 agent_status: None,
+                model: Some(work_model.to_string()),
+                tier: Some(tier.tag().to_string()),
+            },
+        ),
+        PulseOutcome::Cancelled => emit_status(
+            app,
+            ConductorStatus {
+                state: "cancelled",
+                bead_id: Some(top.id.clone()),
+                detail: Some("agent cancelled".to_string()),
+                last_pulse_ms: Some(now_ms()),
+                interval_secs,
+                repo_path: repo.to_string(),
+                agent_status: Some("cancelled".to_string()),
                 model: Some(work_model.to_string()),
                 tier: Some(tier.tag().to_string()),
             },
@@ -698,19 +781,28 @@ async fn fanout_pulse(
     // tick), so nothing starves; the batch is just this tick's slice.
     let batch: Vec<bd::SwarmNode> = swarm.ready.into_iter().take(MAX_FANOUT).collect();
     if batch.is_empty() {
-        emit("idle", Some(format!("epic {} has no ready children", epic.id)));
+        emit(
+            "idle",
+            Some(format!("epic {} has no ready children", epic.id)),
+        );
         return;
     }
 
     let mode = if dry_run { "plan" } else { "acceptEdits" };
-    let n = batch.len();
-    emit("waking", Some(format!("fanning out {n} builder(s) for {}", epic.id)));
+    let requested = batch.len();
+    emit(
+        "waking",
+        Some(format!(
+            "fanning out {requested} builder(s) for {}",
+            epic.id
+        )),
+    );
 
     // Spawn all builders concurrently; each is a full claude run. join_all waits
     // for the whole batch so the tick doesn't overlap the next (PULSE_TIMEOUT
     // bounds each). Merge-slot serialization happens INSIDE the builders (in bd),
     // not here — the Rust side only fans out.
-    let mut handles = Vec::with_capacity(n);
+    let mut handles = Vec::with_capacity(requested);
     for child in batch {
         // RV4.3: resolve each child's work tier from its own labels (a `bd show`
         // read, semaphore-bounded). Fanout children default to [S] like any
@@ -718,19 +810,34 @@ async fn fanout_pulse(
         let (tier, override_model) = match bd::bd_show(repo.to_string(), child.id.clone()).await {
             Ok(issue) => resolve_tier(&issue.labels.unwrap_or_default()),
             Err(e) => {
-                tracing::warn!("conductor: bd show {} for tier failed: {e}; defaulting [S]", child.id);
+                tracing::warn!(
+                    "conductor: bd show {} for tier failed: {e}; defaulting [S]",
+                    child.id
+                );
                 (Tier::Small, None)
             }
         };
         let work_model = override_model.unwrap_or_else(|| tier.model().to_string());
-        let prompt =
-            build_builder_prompt(primer, &epic.id, &child.id, &child.title, tier.tag(), tier.ceremony());
+        let prompt = build_builder_prompt(
+            primer,
+            &epic.id,
+            &child.id,
+            &child.title,
+            tier.tag(),
+            tier.ceremony(),
+        );
         let repo_owned = repo.to_string();
         let mode_owned = mode.to_string();
         // Code-jx3.3: register a cancel handle so `conductor_stop_agent(child.id)`
         // can stop just this builder. Deregister on completion (ok/err/cancel) so a
         // stale handle never lingers past the tick.
-        let cancel = register_in_flight(&child.id);
+        let Some(attempt) = register_in_flight(&child.id) else {
+            tracing::warn!(
+                "conductor: skipping duplicate in-flight builder {}",
+                child.id
+            );
+            continue;
+        };
         // RV8.1: this builder's own status rides the separate `conductor_builder`
         // channel. Clone app + owned fields into the task so each builder emits its
         // live transitions (waking -> awake/blocked/error) independently.
@@ -742,9 +849,26 @@ async fn fanout_pulse(
         handles.push(async move {
             emit_builder(
                 &app_owned,
-                builder_status_from(&child_id, &child_title, &epic_id, tier, &model_owned, "waking", None),
+                builder_status_from(
+                    &child_id,
+                    &child_title,
+                    &epic_id,
+                    tier,
+                    &model_owned,
+                    "waking",
+                    None,
+                ),
             );
-            let r = run_pulse_claude(&repo_owned, &prompt, &mode_owned, &model_owned, Some(&cancel), herdr_mode).await;
+            let r = run_pulse_claude(
+                &repo_owned,
+                &prompt,
+                &mode_owned,
+                &model_owned,
+                &attempt.id,
+                Some(&attempt.cancel),
+                herdr_mode,
+            )
+            .await;
             // RV8.2: a cancelled/timed-out subprocess builder may have died holding
             // the shared merge slot (its prompt-driven release never ran). Release it
             // server-side, but ONLY if this bead still holds it (holder-verified) so a
@@ -753,9 +877,14 @@ async fn fanout_pulse(
             let (state, detail): (&'static str, Option<String>) = match &r {
                 Ok(PulseOutcome::Completed) => ("awake", None),
                 Ok(PulseOutcome::Blocked) => ("blocked", Some("needs gate input".to_string())),
+                Ok(PulseOutcome::Cancelled) => {
+                    if !herdr_mode {
+                        release_merge_slot_if_held(&repo_owned, &child_id).await;
+                    }
+                    ("cancelled", Some("cancelled by operator".to_string()))
+                }
                 Err(e) => {
-                    if !herdr_mode
-                        && (e == "cancelled" || e.starts_with("claude pulse timed out"))
+                    if !herdr_mode && (e == "cancelled" || e.starts_with("claude pulse timed out"))
                     {
                         release_merge_slot_if_held(&repo_owned, &child_id).await;
                     }
@@ -764,11 +893,35 @@ async fn fanout_pulse(
             };
             emit_builder(
                 &app_owned,
-                builder_status_from(&child_id, &child_title, &epic_id, tier, &model_owned, state, detail),
+                builder_status_from(
+                    &child_id,
+                    &child_title,
+                    &epic_id,
+                    tier,
+                    &model_owned,
+                    state,
+                    detail,
+                ),
             );
-            deregister_in_flight(&child_id);
+            if !retain_unknown_attempt(herdr_mode, &r) {
+                deregister_in_flight(&child_id, &attempt.id);
+            }
             (child_id, r)
         });
+    }
+    // A child can already be in-flight from a prior pulse. It is intentionally
+    // skipped above rather than launched again, so only scheduled attempts take
+    // part in this pulse's completion accounting.
+    let n = handles.len();
+    if n == 0 {
+        emit(
+            "deferred",
+            Some(format!(
+                "all {requested} ready builder(s) already in flight for {}",
+                epic.id
+            )),
+        );
+        return;
     }
     let results = futures_join_all(handles).await;
 
@@ -779,6 +932,7 @@ async fn fanout_pulse(
     // ok+failed+lost always == n and the status line can't silently undercount).
     let mut ok = 0usize;
     let mut blocked: Vec<String> = Vec::new();
+    let mut cancelled: Vec<String> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for (id, r) in &results {
         match r {
@@ -786,6 +940,7 @@ async fn fanout_pulse(
             // RV7.3: a blocked builder ran its step but is waiting on gate input.
             // Counted apart from ok/failed so the aggregate can surface it.
             Ok(PulseOutcome::Blocked) => blocked.push(id.clone()),
+            Ok(PulseOutcome::Cancelled) => cancelled.push(id.clone()),
             Err(e) => {
                 tracing::warn!("conductor: builder {id} failed: {e}");
                 failed.push(id.clone());
@@ -799,12 +954,15 @@ async fn fanout_pulse(
         tracing::warn!("conductor: heartbeat failed: {e}");
     }
 
-    if failed.is_empty() && lost == 0 {
+    if failed.is_empty() && lost == 0 && cancelled.is_empty() {
         // RV7.3: if any builder is blocked (herdr gate wait), report `blocked`
         // with agent_status so the panel flags the epic as needing input; the
         // completed builders are still counted in the detail.
         if blocked.is_empty() {
-            emit("awake", Some(format!("{ok} builder(s) advanced for {}", epic.id)));
+            emit(
+                "awake",
+                Some(format!("{ok} builder(s) advanced for {}", epic.id)),
+            );
         } else {
             emit_status(
                 app,
@@ -830,7 +988,7 @@ async fn fanout_pulse(
         emit(
             "error",
             Some(format!(
-                "{ok} ok, {} failed ({}){}{}",
+                "{ok} ok, {} failed ({}){}{}{}",
                 failed.len(),
                 failed.join(","),
                 if !blocked.is_empty() {
@@ -838,7 +996,16 @@ async fn fanout_pulse(
                 } else {
                     String::new()
                 },
-                if lost > 0 { format!(", {lost} lost") } else { String::new() }
+                if !cancelled.is_empty() {
+                    format!(", {} cancelled ({})", cancelled.len(), cancelled.join(","))
+                } else {
+                    String::new()
+                },
+                if lost > 0 {
+                    format!(", {lost} lost")
+                } else {
+                    String::new()
+                }
             )),
         );
     }
@@ -854,10 +1021,7 @@ where
     F: std::future::Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    let handles: Vec<_> = futs
-        .into_iter()
-        .map(tauri::async_runtime::spawn)
-        .collect();
+    let handles: Vec<_> = futs.into_iter().map(tauri::async_runtime::spawn).collect();
     let mut out = Vec::with_capacity(handles.len());
     for h in handles {
         match h.await {
@@ -879,8 +1043,8 @@ where
 /// RV4.3 size-tier work model (MODEL_SMALL/Haiku for [S]/default; escalates for [M]/[L]).
 ///
 /// Code-jx3.3: `cancel` is an optional per-builder stop signal. When it fires
-/// mid-run the child claude is killed (kill_on_drop) and the call returns the
-/// `cancelled` marker Err. The single-pulse path passes `None`; fanout builders
+/// mid-run the locally-owned child claude is killed (kill_on_drop) and the call
+/// returns `PulseOutcome::Cancelled`. The single-pulse path passes `None`; fanout builders
 /// pass their registered `Notify`. The in-flight bd step is durable regardless —
 /// a cancelled builder costs at most one retried step (same idempotency contract).
 /// RV7.3: terminal state of a single pulse. The subprocess path always resolves
@@ -891,6 +1055,10 @@ where
 enum PulseOutcome {
     Completed,
     Blocked,
+    /// The locally-owned subprocess was stopped and reaped. This is distinct
+    /// from a failed or remote-unknown request and must never be rendered as a
+    /// completed work attempt.
+    Cancelled,
 }
 
 impl PulseOutcome {
@@ -900,8 +1068,24 @@ impl PulseOutcome {
     fn agent_status(self) -> Option<String> {
         match self {
             PulseOutcome::Blocked => Some("blocked".to_string()),
+            PulseOutcome::Cancelled => Some("cancelled".to_string()),
             PulseOutcome::Completed => None,
         }
+    }
+}
+
+/// Herdr's wait response is authoritative only for the terminal states we
+/// explicitly requested. A daemon reporting Idle, Working, or Unknown after a
+/// request is not a completed work attempt and must be reconciled before retry.
+fn herdr_terminal_outcome(status: herdr_bridge::AgentStatus) -> Result<PulseOutcome, String> {
+    match status {
+        herdr_bridge::AgentStatus::Blocked => Ok(PulseOutcome::Blocked),
+        herdr_bridge::AgentStatus::Done => Ok(PulseOutcome::Completed),
+        herdr_bridge::AgentStatus::Idle
+        | herdr_bridge::AgentStatus::Working
+        | herdr_bridge::AgentStatus::Unknown => Err(format!(
+            "herdr returned non-terminal status {status}; remote outcome is unknown and will not be retried automatically"
+        )),
     }
 }
 
@@ -915,11 +1099,12 @@ async fn run_pulse_claude(
     prompt: &str,
     permission_mode: &str,
     model: &str,
+    attempt_id: &str,
     cancel: Option<&tokio::sync::Notify>,
     herdr_mode: bool,
 ) -> Result<PulseOutcome, String> {
     if herdr_mode {
-        return run_pulse_via_herdr(repo, prompt, permission_mode, model, cancel).await;
+        return run_pulse_via_herdr(repo, prompt, permission_mode, model, attempt_id, cancel).await;
     }
     run_pulse_subprocess(repo, prompt, permission_mode, model, cancel).await
 }
@@ -937,19 +1122,20 @@ async fn run_pulse_via_herdr(
     prompt: &str,
     permission_mode: &str,
     model: &str,
+    attempt_id: &str,
     cancel: Option<&tokio::sync::Notify>,
 ) -> Result<PulseOutcome, String> {
     use herdr_bridge::{
-        AgentStartParams, AgentStatus, AgentPromptParams, AgentPromptWaitOptions,
-        PaneSplitParams, SplitDirection,
+        AgentPromptParams, AgentPromptWaitOptions, AgentStartParams, AgentStatus, PaneSplitParams,
+        SplitDirection,
     };
 
     let pulse_timeout_ms: u64 = PULSE_TIMEOUT.as_millis() as u64;
-    let pane_name = format!("conductor-{repo}");
+    // Herdr names are daemon-global. A repository path alone collides across
+    // pulses, so every start is namespaced by a fresh attempt identity.
+    let pane_name = format!("conductor-{attempt_id}");
 
-    tracing::info!(
-        "conductor: herdr pulse repo={repo} model={model} mode={permission_mode}"
-    );
+    tracing::info!("conductor: herdr pulse repo={repo} model={model} mode={permission_mode}");
 
     // 1. Split a new pane for this pulse. cwd=repo so the claude process inherits
     //    the right working directory.
@@ -979,9 +1165,10 @@ async fn run_pulse_via_herdr(
     .await
     .map_err(|e| format!("herdr agent.start: {e}"))?;
 
-    // 3. Send the prompt and wait for Blocked or Done. If the cancel signal fires
-    //    first we still get Ok (the prompt was sent; the conductor treats cancel as
-    //    a normal stop, same as the subprocess path).
+    // 3. Send the prompt and wait for Blocked or Done. The currently verified
+    // protocol slice has no stop/exit acknowledgement method. If cancellation
+    // races this call, dropping the client request cannot prove the daemon did
+    // not accept it, so report an explicit unknown outcome and never replay it.
     let prompt_future = herdr_bridge::agent_prompt(AgentPromptParams {
         target: pane_name.clone(),
         text: prompt.to_string(),
@@ -1003,18 +1190,14 @@ async fn run_pulse_via_herdr(
         r = &mut prompt_future => r.map_err(|e| format!("herdr agent.prompt: {e}"))?,
         _ = cancelled => {
             tracing::info!("conductor: herdr pulse cancelled for {pane_name}");
-            return Ok(PulseOutcome::Completed);
+            return Err(format!(
+                "herdr cancellation requested for attempt {attempt_id}; remote outcome is unknown and will not be retried automatically"
+            ));
         }
     };
 
     tracing::info!("conductor: herdr pulse finished repo={repo} status={status}");
-    // RV7.3: a Blocked terminal state means the agent is waiting on gate input;
-    // surface it so the operator sees the pane needs them. Any other terminal
-    // state (Done and the should-not-happen idle/working/unknown) is a completion.
-    Ok(match status {
-        AgentStatus::Blocked => PulseOutcome::Blocked,
-        _ => PulseOutcome::Completed,
-    })
+    herdr_terminal_outcome(status)
 }
 
 /// Original subprocess path (fallback when herdr_mode=false).
@@ -1030,7 +1213,7 @@ async fn run_pulse_subprocess(
     // fire MAX_FANOUT of these, each a full claude subprocess forking bd/git/
     // dolt — and it used to bypass the cap entirely. Held to end of scope so the
     // child counts against the global cap until it exits/cancels/times out.
-    let _permit = crate::spawngov::permit().await;
+    let _permit = crate::spawngov::agent_permit()?;
 
     let claude_path = binresolve::resolve_bin("claude")?;
     // Code-0vd (RV-live): surface the resolved work model + posture per pulse so
@@ -1069,13 +1252,17 @@ async fn run_pulse_subprocess(
         }
     }
 
-    // Spawn + reap the child, racing three arms: completion, PULSE_TIMEOUT, and
-    // (if present) the per-builder cancel. Cancel/timeout drop the child future,
-    // and kill_on_drop reaps the process — no orphan claude survives.
-    let child = cmd.spawn().map_err(|e| format!("failed to spawn claude: {e}"))?;
-    let output = {
-        let wait = child.wait_with_output();
-        tokio::pin!(wait);
+    // Keep kill_on_drop as the abort-safety net, but explicitly terminate and
+    // reap on normal cancellation/timeout before the caller may reclaim a lease.
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn claude: {e}"))?;
+    enum LocalExit {
+        Exited(std::process::ExitStatus),
+        TimedOut,
+        Cancelled,
+    }
+    let exit = {
         let cancelled = async {
             match cancel {
                 Some(n) => n.notified().await,
@@ -1084,27 +1271,39 @@ async fn run_pulse_subprocess(
             }
         };
         tokio::select! {
-            r = &mut wait => r.map_err(|e| format!("failed to spawn claude: {e}"))?,
+            r = child.wait() => LocalExit::Exited(r.map_err(|e| format!("failed to wait for claude: {e}"))?),
             _ = tokio::time::sleep(PULSE_TIMEOUT) => {
-                return Err(format!("claude pulse timed out after {}s", PULSE_TIMEOUT.as_secs()));
+                LocalExit::TimedOut
             }
             _ = cancelled => {
-                return Err("cancelled".into());
+                LocalExit::Cancelled
             }
         }
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "claude exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ));
+    match exit {
+        LocalExit::Exited(status) if status.success() => Ok(PulseOutcome::Completed),
+        LocalExit::Exited(status) => Err(format!("claude exited with {status}")),
+        LocalExit::TimedOut => {
+            child.kill().await.map_err(|e| {
+                format!(
+                    "claude pulse timed out after {}s; failed to kill/reap child: {e}",
+                    PULSE_TIMEOUT.as_secs()
+                )
+            })?;
+            Err(format!(
+                "claude pulse timed out after {}s",
+                PULSE_TIMEOUT.as_secs()
+            ))
+        }
+        LocalExit::Cancelled => {
+            child
+                .kill()
+                .await
+                .map_err(|e| format!("claude cancellation failed to kill/reap child: {e}"))?;
+            Ok(PulseOutcome::Cancelled)
+        }
     }
-    // A subprocess exit is always a completion — the subprocess path has no
-    // Blocked concept (that lives only in the herdr wait protocol).
-    Ok(PulseOutcome::Completed)
 }
 
 /// Start the conductor for `repo_path`. Idempotent for the same repo; starting
@@ -1124,7 +1323,9 @@ pub async fn conductor_start(
     // handle out of the lock before notifying (never hold the guard across the
     // notify, though notify_waiters itself doesn't await).
     let old_stop = {
-        let mut guard = CONDUCTOR.lock().map_err(|e| format!("conductor lock: {e}"))?;
+        let mut guard = CONDUCTOR
+            .lock()
+            .map_err(|e| format!("conductor lock: {e}"))?;
         if let Some(s) = guard.as_ref() {
             if s.repo_path == repo_path {
                 return Ok(());
@@ -1187,7 +1388,9 @@ pub async fn conductor_start(
 #[tauri::command]
 pub async fn conductor_stop(app: AppHandle) -> Result<(), String> {
     let taken = {
-        let mut guard = CONDUCTOR.lock().map_err(|e| format!("conductor lock: {e}"))?;
+        let mut guard = CONDUCTOR
+            .lock()
+            .map_err(|e| format!("conductor lock: {e}"))?;
         guard.take()
     };
     if let Some(state) = taken {
@@ -1246,7 +1449,11 @@ pub async fn conductor_pulse_now(
     // default interval since no loop cadence applies.
     let (dry, interval, herdr_mode) = match running_posture(&repo_path) {
         Some((loop_dry, loop_interval, loop_herdr)) => (loop_dry, loop_interval, loop_herdr),
-        None => (dry_run.unwrap_or(true), DEFAULT_INTERVAL_SECS, herdr_bridge::is_available()),
+        None => (
+            dry_run.unwrap_or(true),
+            DEFAULT_INTERVAL_SECS,
+            herdr_bridge::is_available(),
+        ),
     };
 
     let emit = |state: &'static str, bead: Option<String>, detail: Option<String>| {
@@ -1284,10 +1491,17 @@ pub async fn conductor_pulse_now(
         let _ = bd_verb(&repo_path, &defer_args(&bead_id)).await;
         let _ = bd_verb(
             &repo_path,
-            &note_args(&bead_id, "conductor: deferred — bd doctor unhealthy (run now)"),
+            &note_args(
+                &bead_id,
+                "conductor: deferred — bd doctor unhealthy (run now)",
+            ),
         )
         .await;
-        emit("deferred", Some(bead_id), Some("bd doctor unhealthy".into()));
+        emit(
+            "deferred",
+            Some(bead_id),
+            Some("bd doctor unhealthy".into()),
+        );
         return Ok(());
     }
 
@@ -1300,23 +1514,24 @@ pub async fn conductor_pulse_now(
     Ok(())
 }
 
-/// Code-jx3.3 (RV6.3) — stop ONE in-flight builder by bead id. Fires its
-/// registered cancel `Notify`; the builder's `run_pulse_claude` bails and its
-/// claude child is killed (kill_on_drop). No-op if nothing is running for that
-/// bead. The gate stays authoritative: a stop only halts a dry-run/gated pulse
-/// that was already in flight, and the in-flight bd step is durable (next tick
-/// re-derives). Emits a `deferred` status so the feed shows the stop landed.
+/// Code-jx3.3 (RV6.3) — request cancellation of ONE in-flight builder by bead
+/// ID. The entry remains registered until that exact attempt exits, preventing a
+/// duplicate launch during cancellation. Local subprocesses report `cancelled`;
+/// Herdr attempts report an explicit unknown outcome until its stop/exit protocol
+/// is verified. The in-flight bd step is durable and is not treated as complete.
 #[tauri::command]
 pub async fn conductor_stop_agent(app: AppHandle, bead_id: String) -> Result<(), String> {
-    match take_in_flight(&bead_id) {
-        Some(cancel) => {
-            cancel.notify_waiters();
+    match in_flight(&bead_id) {
+        Some(attempt) => {
+            // notify_one retains a permit if the worker has not reached its
+            // select yet; notify_waiters could lose that early cancellation.
+            attempt.cancel.notify_one();
             emit_status(
                 &app,
                 ConductorStatus {
-                    state: "deferred",
+                    state: "cancelling",
                     bead_id: Some(bead_id),
-                    detail: Some("stopped by operator".into()),
+                    detail: Some(format!("cancellation requested for attempt {}", attempt.id)),
                     last_pulse_ms: Some(now_ms()),
                     interval_secs: DEFAULT_INTERVAL_SECS,
                     repo_path: String::new(),
@@ -1346,7 +1561,11 @@ pub async fn conductor_defer_bead(
     bead_id: String,
 ) -> Result<(), String> {
     bd_verb(&repo_path, &defer_args(&bead_id)).await?;
-    let _ = bd_verb(&repo_path, &note_args(&bead_id, "conductor: deferred by operator")).await;
+    let _ = bd_verb(
+        &repo_path,
+        &note_args(&bead_id, "conductor: deferred by operator"),
+    )
+    .await;
     emit_status(
         &app,
         ConductorStatus {
@@ -1392,7 +1611,8 @@ mod tests {
     static TIER_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn resolve_interval_defaults_and_floors() {        assert_eq!(resolve_interval(None), DEFAULT_INTERVAL_SECS);
+    fn resolve_interval_defaults_and_floors() {
+        assert_eq!(resolve_interval(None), DEFAULT_INTERVAL_SECS);
         assert_eq!(resolve_interval(Some(0)), MIN_INTERVAL_SECS);
         assert_eq!(resolve_interval(Some(5)), MIN_INTERVAL_SECS);
         assert_eq!(resolve_interval(Some(60)), 60);
@@ -1411,7 +1631,14 @@ mod tests {
     fn heartbeat_args_shape() {
         assert_eq!(
             heartbeat_args("123"),
-            vec!["remember", "123", "--key", "heartbeat", "--actor", "Beads Station"]
+            vec![
+                "remember",
+                "123",
+                "--key",
+                "heartbeat",
+                "--actor",
+                "Beads Station"
+            ]
         );
     }
 
@@ -1422,7 +1649,14 @@ mod tests {
 
     #[test]
     fn prompt_locks_the_safety_contract() {
-        let p = build_prompt("PRIMER", "Code-xyz", "Do a thing", "the description", "M", "one review pass");
+        let p = build_prompt(
+            "PRIMER",
+            "Code-xyz",
+            "Do a thing",
+            "the description",
+            "M",
+            "one review pass",
+        );
         assert!(p.contains("Code-xyz"));
         assert!(p.contains("PRIMER"));
         assert!(p.contains("[M]"));
@@ -1437,7 +1671,14 @@ mod tests {
         // RV4.2 — a builder MUST be told to serialize through bd merge-slot and
         // stay on its own bead. Pin those clauses so a prompt edit can't quietly
         // drop the "no monkey knife fights" discipline.
-        let p = build_builder_prompt("PRIMER", "Code-epic", "Code-child", "Child title", "S", "light review, auto-proceed");
+        let p = build_builder_prompt(
+            "PRIMER",
+            "Code-epic",
+            "Code-child",
+            "Child title",
+            "S",
+            "light review, auto-proceed",
+        );
         assert!(p.contains("Code-epic"));
         assert!(p.contains("Code-child"));
         assert!(p.contains("[S]"));
@@ -1516,14 +1757,20 @@ mod tests {
         assert_ne!(Tier::Medium.model(), Tier::Large.model());
         // [L] ceremony must carry the mandatory-gate contract.
         assert!(Tier::Large.ceremony().to_lowercase().contains("gate"));
-        assert!(Tier::Large.ceremony().to_lowercase().contains("adversarial"));
+        assert!(Tier::Large
+            .ceremony()
+            .to_lowercase()
+            .contains("adversarial"));
     }
 
     #[test]
     fn fanout_cap_is_bounded() {
         // The batch is `ready.take(MAX_FANOUT)` — assert the cap is a small,
         // positive bound so a wide epic never spawns an unbounded claude burst.
-        assert!(MAX_FANOUT >= 1 && MAX_FANOUT <= 8, "MAX_FANOUT {MAX_FANOUT} out of sane range");
+        assert!(
+            MAX_FANOUT >= 1 && MAX_FANOUT <= 8,
+            "MAX_FANOUT {MAX_FANOUT} out of sane range"
+        );
     }
 
     // Code-jx3.2 — the CONDUCTOR global is process-shared; serialize the two tests
@@ -1569,23 +1816,25 @@ mod tests {
         clear_conductor();
     }
 
-    // Code-jx3.3 — the in-flight registry bookkeeping (register/take/deregister).
-    // The abort itself needs a live runtime + child process, so we test only the
-    // bookkeeping: a registered bead is takeable exactly once, and deregister is a
-    // clean no-op-after. Serialized so parallel tests can't cross-pollute the map.
+    // Code-jx3.3 — the in-flight registry bookkeeping. The abort itself needs a
+    // live runtime + child process, so test the identity guards here. Serialized
+    // so parallel tests can't cross-pollute the map.
     static IN_FLIGHT_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn in_flight_register_take_is_once() {
+    fn in_flight_rejects_duplicate_and_retains_cancelled_attempt() {
         let _g = IN_FLIGHT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         IN_FLIGHT.lock().unwrap().clear();
 
-        let _n = register_in_flight("Code-b1");
-        // First take finds it; second take (after removal) is None.
-        assert!(take_in_flight("Code-b1").is_some());
-        assert!(take_in_flight("Code-b1").is_none());
-        // Nothing registered for an unknown bead.
-        assert!(take_in_flight("Code-nope").is_none());
+        let first = register_in_flight("Code-b1").expect("first attempt registers");
+        assert!(
+            register_in_flight("Code-b1").is_none(),
+            "duplicate must not launch"
+        );
+        assert_eq!(in_flight("Code-b1").unwrap().id, first.id);
+        assert!(in_flight("Code-nope").is_none());
+        deregister_in_flight("Code-b1", &first.id);
+        assert!(in_flight("Code-b1").is_none());
     }
 
     #[test]
@@ -1593,16 +1842,51 @@ mod tests {
         let _g = IN_FLIGHT_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         IN_FLIGHT.lock().unwrap().clear();
 
-        let _n = register_in_flight("Code-b2");
-        deregister_in_flight("Code-b2");
-        // After deregister, a stop finds nothing in flight.
-        assert!(take_in_flight("Code-b2").is_none());
-        // Re-registering the same bead overwrites cleanly (newest builder owns it).
-        let _a = register_in_flight("Code-b3");
-        let _b = register_in_flight("Code-b3");
-        assert_eq!(IN_FLIGHT.lock().unwrap().get("Code-b3").is_some(), true);
-        assert_eq!(IN_FLIGHT.lock().unwrap().len() >= 1, true);
+        let first = register_in_flight("Code-b2").unwrap();
+        // Cleanup from a stale attempt must not remove the current entry.
+        deregister_in_flight("Code-b2", "wrong-attempt");
+        assert_eq!(in_flight("Code-b2").unwrap().id, first.id);
+        deregister_in_flight("Code-b2", &first.id);
+        assert!(in_flight("Code-b2").is_none());
         IN_FLIGHT.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn ambiguous_herdr_errors_hold_the_attempt_for_reconciliation() {
+        let unknown = Err(
+            "herdr agent.prompt timed out; request outcome is unknown, do not retry automatically"
+                .to_string(),
+        );
+        assert!(retain_unknown_attempt(true, &unknown));
+        assert!(!retain_unknown_attempt(false, &unknown));
+        assert!(!retain_unknown_attempt(
+            true,
+            &Err("herdr connect: refused".to_string())
+        ));
+        assert!(!retain_unknown_attempt(true, &Ok(PulseOutcome::Completed)));
+    }
+
+    #[test]
+    fn only_done_is_a_completed_herdr_outcome() {
+        use herdr_bridge::AgentStatus;
+
+        assert_eq!(
+            herdr_terminal_outcome(AgentStatus::Done),
+            Ok(PulseOutcome::Completed)
+        );
+        assert_eq!(
+            herdr_terminal_outcome(AgentStatus::Blocked),
+            Ok(PulseOutcome::Blocked)
+        );
+        for status in [
+            AgentStatus::Idle,
+            AgentStatus::Working,
+            AgentStatus::Unknown,
+        ] {
+            let err = herdr_terminal_outcome(status).unwrap_err();
+            assert!(err.contains("outcome is unknown"), "{status}: {err}");
+            assert!(retain_unknown_attempt(true, &Err(err)));
+        }
     }
 
     // RV7.3: PulseOutcome maps to the ConductorStatus.agent_status wire field.
@@ -1610,7 +1894,14 @@ mod tests {
     // carries None (the FE renders the ordinary awake card, herdr or not).
     #[test]
     fn pulse_outcome_agent_status_wire() {
-        assert_eq!(PulseOutcome::Blocked.agent_status(), Some("blocked".to_string()));
+        assert_eq!(
+            PulseOutcome::Blocked.agent_status(),
+            Some("blocked".to_string())
+        );
+        assert_eq!(
+            PulseOutcome::Cancelled.agent_status(),
+            Some("cancelled".to_string())
+        );
         assert_eq!(PulseOutcome::Completed.agent_status(), None);
     }
 
@@ -1639,7 +1930,15 @@ mod tests {
 
     #[test]
     fn builder_status_serializes_to_wire_shape() {
-        let b = builder_status_from("Code-c", "t", "Code-e", Tier::Small, "claude-haiku-4-5-20251001", "awake", Some("done".into()));
+        let b = builder_status_from(
+            "Code-c",
+            "t",
+            "Code-e",
+            Tier::Small,
+            "claude-haiku-4-5-20251001",
+            "awake",
+            Some("done".into()),
+        );
         let json = serde_json::to_value(&b).unwrap();
         assert_eq!(json["bead_id"], "Code-c");
         assert_eq!(json["state"], "awake");
@@ -1680,8 +1979,14 @@ mod tests {
             tier: None,
         };
         let j2 = serde_json::to_value(&without).unwrap();
-        assert!(j2.get("model").is_none(), "model key must be absent when None");
-        assert!(j2.get("tier").is_none(), "tier key must be absent when None");
+        assert!(
+            j2.get("model").is_none(),
+            "model key must be absent when None"
+        );
+        assert!(
+            j2.get("tier").is_none(),
+            "tier key must be absent when None"
+        );
     }
 
     // RV8.2 — the holder-verified slot reclaim guard. Release ONLY when the slot is

@@ -21,6 +21,7 @@ import { useBdSnapshot, invalidate } from '../lib/bdCache'
 interface BoardProps {
   repoPath: string
   projectId: string
+  projectName?: string
 }
 
 type ColumnId = 'ready' | 'in_progress' | 'blocked' | 'done'
@@ -63,7 +64,7 @@ let toastCounter = 0
  * filter to those; otherwise we display every issue in the repo. Phase 8
  * will tighten this once labels are reliably present.
  */
-export function Board({ repoPath, projectId }: BoardProps) {
+export function Board({ repoPath, projectId, projectName }: BoardProps) {
   const [state, setState] = useState<BoardState>(EMPTY_STATE)
   // RV3.3 — board data now flows from the shared bd snapshot cache (one deduped
   // fetch feeds Board + IssueList + Statusline). `error`/`loaded` are read from
@@ -99,10 +100,10 @@ export function Board({ repoPath, projectId }: BoardProps) {
     const { ready, all } = snap
 
     // Project filter: prefer label-based when present anywhere in the repo.
-    const projectLabel = `project=${projectId}`
-    const anyLabeled = all.some(i => (i.labels ?? []).includes(projectLabel))
-    const filterIssue = (i: Issue) =>
-      !anyLabeled || (i.labels ?? []).includes(projectLabel)
+    const projectLabels = [`project=${projectId}`, ...(projectName ? [`project=${projectName}`] : [])]
+    const matchesProject = (i: Issue) => projectLabels.some(label => (i.labels ?? []).includes(label))
+    const anyLabeled = all.some(matchesProject)
+    const filterIssue = (i: Issue) => !anyLabeled || matchesProject(i)
 
     const filteredReady = ready.filter(filterIssue)
     const filteredAll = all.filter(filterIssue)
@@ -119,7 +120,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
       }
     }
     setState(next)
-  }, [snap, projectId])
+  }, [snap, projectId, projectName])
 
   const findIssue = useCallback(
     (id: string): { issue: Issue; column: ColumnId } | null => {
@@ -247,7 +248,7 @@ export function Board({ repoPath, projectId }: BoardProps) {
           flexShrink: 0,
         }}
       >
-        <span>BOARD · {projectId}</span>
+        <span>BOARD · {projectName ?? projectId}</span>
         <span style={{ opacity: 0.5 }}>· {headerStatus}</span>
         {error && (
           <span style={{ marginLeft: 'auto', color: 'var(--bs-red)' }}>{error}</span>

@@ -7,21 +7,25 @@ import { test, expect } from '@playwright/test'
 // waits on in helpers.ts).
 
 async function bootDesigner(page: import('@playwright/test').Page): Promise<void> {
+  await page.addInitScript(() => { localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a'], activeId: 'proj-a' })) })
   await page.goto('/?ui=designer')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
   await expect(page.locator('#root')).toBeVisible()
+  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
   // The graph renders the mock SNAPSHOT (Code-aaa/Code-bbb are ready).
   await expect(page.locator('[data-bs-bead-node]').first()).toBeVisible()
 }
 
-test('clicking a ready bead node spawns an agent pane (and lands on the terminal skin)', async ({ page }) => {
+test('clicking a ready bead opens ticket-bound work without starting an agent', async ({ page }) => {
   await bootDesigner(page)
   const ready = page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first()
   await expect(ready).toBeVisible()
   await ready.click()
   // Agent panes render in the terminal skin; the click switches skins and lands
   // on the freshly-spawned pane. At least one agent pane is now mounted.
-  await expect(page.locator('[data-bs-agent-pane]').first()).toBeVisible()
+  await expect(page.getByTestId('designer-ticket-run')).toBeVisible()
+  await expect(page.locator('[data-bs-agent-pane]')).toHaveCount(0)
+  expect(await page.evaluate(() => (window as any).__bsInvokeLog.filter((entry: any) => entry.cmd === 'native_run_start'))).toEqual([])
 })
 
 test('a non-ready bead node does not spawn a pane', async ({ page }) => {

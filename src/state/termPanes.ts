@@ -187,6 +187,35 @@ const BOOT_PROJECT = ''
 let activeProjectId = BOOT_PROJECT
 const PROJECTS = new Map<string, TermPanesState>()
 
+/** One-time migration from the old basename project keys. */
+export function migrateProjectSurface(oldId: string, newId: string): void {
+  const previous = PROJECTS.get(oldId)
+  if (!previous || PROJECTS.has(newId)) return
+  const migrate = (node: Node): Node => node.kind === 'split'
+    ? { ...node, a: migrate(node.a), b: migrate(node.b) }
+    : { ...node, ...(node.agent ? { agent: { ...node.agent, projectId: newId } } : {}) }
+  PROJECTS.set(newId, { ...previous, tabs: previous.tabs.map(t => ({ ...t, root: migrate(t.root) })) })
+  PROJECTS.delete(oldId)
+  schedulePersist()
+}
+
+/** Remove a closed workspace and return its resources for the caller to stop. */
+export function removeProjectSurface(projectId: string): { ptyIds: number[]; bridgeIds: string[] } {
+  const previous = projectId === activeProjectId ? state : PROJECTS.get(projectId)
+  const leaves = previous?.tabs.flatMap(t => leavesOf(t.root)) ?? []
+  for (const leaf of leaves) window.dispatchEvent(new CustomEvent('terminal:dispose', { detail: { paneId: leaf.paneId } }))
+  PROJECTS.delete(projectId)
+  if (projectId === activeProjectId) {
+    activeProjectId = BOOT_PROJECT
+    state = makeInitialState('')
+  }
+  emit()
+  return {
+    ptyIds: leaves.flatMap(l => l.ptyId === null ? [] : [l.ptyId]),
+    bridgeIds: leaves.flatMap(l => l.agent ? [l.agent.bridgeId] : []),
+  }
+}
+
 let state: TermPanesState = makeInitialState('')
 PROJECTS.set(BOOT_PROJECT, state)
 
@@ -546,7 +575,19 @@ function replaceTab(s: TermPanesState, tabId: string, next: Tab): TermPanesState
 /** Called by a <Terminal> leaf once it has spawned its pty. */
 export function registerPty(paneId: string, ptyId: number): void {
   const tab = state.tabs.find(t => findLeaf(t.root, paneId))
-  if (!tab) return
+  if (!tab) {
+    // Spawn can complete after switching projects. Register with its owner,
+    // rather than losing the handle and leaking the process on workspace close.
+    for (const [projectId, project] of PROJECTS) {
+      const owner = project.tabs.find(t => findLeaf(t.root, paneId))
+      if (!owner) continue
+      const next = { ...owner, root: mapLeaf(owner.root, paneId, l => ({ ...l, ptyId })) }
+      PROJECTS.set(projectId, replaceTab(project, owner.id, next))
+      emit()
+      return
+    }
+    return
+  }
   const next = { ...tab, root: mapLeaf(tab.root, paneId, l => ({ ...l, ptyId })) }
   state = replaceTab(state, tab.id, next)
   emit()
@@ -672,6 +713,7 @@ export function spawnFileNav(rootPath: string): void {
 export function closeActivePane(): { killPtyId: number | null; killBridgeId: string | null } {
   const tab = activeTab(state)
   const leaf = findLeaf(tab.root, tab.activePaneId)
+  if (leaf) window.dispatchEvent(new CustomEvent('terminal:dispose', { detail: { paneId: leaf.paneId } }))
   const killPtyId = leaf?.ptyId ?? null
   // RV2 — an agent leaf has ptyId:null; the caller kills its claude session
   // via killBridgeId (claude_kill) instead of killing a pty.

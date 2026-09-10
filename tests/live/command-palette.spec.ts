@@ -28,7 +28,7 @@ test('grep filters issues and selecting one dispatches issue:open', async ({ pag
     })
   })
   await openPalette(page)
-  await page.getByText('Grep issues').click()
+  await page.getByText('Search beads / issue explorer').click()
   // cmdk fuzzy-filters the issue list; type part of a known fixture title.
   await page.locator('.bs-palette [cmdk-input]').fill('beta')
   await page.getByText('Code-bbb · ready beta').click()

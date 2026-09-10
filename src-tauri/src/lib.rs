@@ -63,6 +63,7 @@ pub fn run() {
     // ANTHROPIC_* vars from std::env. install_into_process_env returns
     // only the keys (never values) so the stderr line we print here is
     // safe to read in production logs.
+    envloader::prepare_auth_profile();
     let map = envloader::load_dotenv();
     let keys = envloader::install_into_process_env(&map);
     eprintln!("{}", envloader::loaded_summary(&keys));
@@ -76,7 +77,6 @@ pub fn run() {
             // returns can be watched live (release WKWebview is otherwise
             // un-inspectable). Gated on the BS_DEVTOOLS env var so a normal
             // launch stays clean; set BS_DEVTOOLS=1 to pop devtools.
-            #[cfg(feature = "devtools")]
             if std::env::var("BS_DEVTOOLS").is_ok() {
                 use tauri::Manager;
                 if let Some(w) = app.get_webview_window("main") {
@@ -132,6 +132,9 @@ pub fn run() {
             claude::claude_send,
             claude::claude_set_permission_mode,
             claude::claude_start,
+            claude::native_provider_status,
+            claude::native_run_start,
+            claude::native_run_cancel,
             conductor::conductor_start,
             conductor::conductor_stop,
             conductor::conductor_pulse_now,
@@ -143,6 +146,8 @@ pub fn run() {
             fs::read_file,
             projects::projects_get,
             projects::projects_list,
+            projects::projects_open,
+            projects::projects_set_roots,
             projects::projects_set_claude_session,
             pty::pty_kill,
             pty::pty_resize,

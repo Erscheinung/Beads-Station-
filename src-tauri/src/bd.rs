@@ -41,6 +41,10 @@ pub struct Issue {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Option<String>,
+    #[serde(default)]
     pub status: String,
     #[serde(default)]
     pub priority: i32,
@@ -82,9 +86,9 @@ pub struct Issue {
 pub struct Dependency {
     #[serde(default)]
     pub issue_id: String,
-    #[serde(default)]
+    #[serde(default, alias = "id")]
     pub depends_on_id: String,
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", alias = "dependency_type")]
     pub dep_type: String,
 }
 
@@ -215,8 +219,26 @@ pub async fn bd_ready(repo_path: String) -> Result<Vec<Issue>, String> {
 #[tauri::command]
 pub async fn bd_show(repo_path: String, id: String) -> Result<Issue, String> {
     let stdout = run_bd(&repo_path, &["show", &id, "--json", "--long"]).await?;
-    serde_json::from_slice::<Issue>(&stdout)
-        .map_err(|e| format!("failed to parse bd show JSON: {e}"))
+    parse_show(&stdout, &id)
+}
+
+/// Current bd returns an array even for one ID; older versions returned an object.
+fn parse_show(stdout: &[u8], requested_id: &str) -> Result<Issue, String> {
+    let value: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|e| format!("failed to parse bd show JSON: {e}"))?;
+    let issues: Vec<Issue> = if value.is_array() {
+        serde_json::from_value(value)
+    } else {
+        serde_json::from_value(value).map(|issue| vec![issue])
+    }.map_err(|e| format!("failed to parse bd show JSON: {e}"))?;
+    let mut issue = issues.into_iter().find(|issue| issue.id == requested_id)
+        .ok_or_else(|| format!("bd show returned no matching issue for {requested_id}"))?;
+    for dependency in &mut issue.dependencies {
+        if dependency.issue_id.is_empty() {
+            dependency.issue_id = issue.id.clone();
+        }
+    }
+    Ok(issue)
 }
 
 /// `bd list --json [--status <filter>]`. `status_filter = None` lists all.
@@ -662,6 +684,9 @@ pub(crate) struct MergeSlot {
     pub available: bool,
     #[serde(default)]
     pub holder: Option<String>,
+    // Parsed for diagnostics and covered by wire-format tests; the release
+    // guard currently needs only availability and holder.
+    #[allow(dead_code)]
     #[serde(default)]
     pub id: String,
 }
@@ -702,6 +727,20 @@ fn release_args(holder: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_accepts_current_array_and_legacy_object() {
+        for json in [r#"[{"id":"Code-oan","title":"Fix startup"}]"#, r#"{"id":"Code-oan","title":"Fix startup"}"#] {
+            assert_eq!(parse_show(json.as_bytes(), "Code-oan").unwrap().title, "Fix startup");
+        }
+        assert!(parse_show(b"[]", "Code-oan").is_err());
+        assert!(parse_show(br#"[{"id":"different"}]"#, "Code-oan").is_err());
+        assert!(parse_show(b"invalid", "Code-oan").is_err());
+        let detail = parse_show(br#"[{"id":"a","dependencies":[{"id":"b","dependency_type":"blocks"}]}]"#, "a").unwrap();
+        assert_eq!(detail.dependencies[0].issue_id, "a");
+        assert_eq!(detail.dependencies[0].depends_on_id, "b");
+        assert_eq!(detail.dependencies[0].dep_type, "blocks");
+    }
 
     #[test]
     fn classifies_missing_db() {

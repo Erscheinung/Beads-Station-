@@ -132,6 +132,13 @@ export function useVimNav(): void {
     let leaderChordActive = false
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return
+      // Forms and modal dialogs own their input even while the terminal remains
+      // the logical focused pane. Never run pane-normal commands against them.
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('dialog[open], [role="dialog"]')) return
+      const formInput = isEditableTarget(event.target) && !target?.closest('.xterm')
+      if (formInput && !(event.metaKey || event.ctrlKey)) return
       // ----- Phase 9: command palette -----
       // Cmd/Ctrl+K opens the palette from ANY focus (blur editable first so the
       // command lands cleanly, same idiom as the Cmd-P leader hatch below). We
@@ -217,18 +224,12 @@ export function useVimNav(): void {
       }
 
       if (termFocused) {
+        if (formInput) return
         const insert = !!termMirror?.insert
         // Insert mode: keystrokes belong to the shell. Only Esc is ours.
         if (insert) {
-          if (event.key === 'Escape') {
-            setInsert(false)
-            // Blur the xterm textarea so subsequent keys reach the window
-            // handler (pane-op mode) rather than the shell.
-            const ta = document.activeElement as HTMLElement | null
-            ta?.blur?.()
-            event.preventDefault()
-            return
-          }
+          // Escape belongs to Neovim and terminal applications too. Use the
+          // explicit Cmd/Ctrl-P pane-command chord to leave terminal input.
           return // let xterm have everything else
         }
 

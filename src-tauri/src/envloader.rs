@@ -1,4 +1,4 @@
-// Beads Station — Phase 2.6 .env loader.
+// Optional gateway configuration. Native CLI login needs no .env file.
 //
 // macOS GUI apps launched from Finder do not inherit the user's shell
 // environment. Without this loader, the spawned `claude` CLI has no
@@ -29,34 +29,36 @@ static FIRST_PATH: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None))
 /// loaded.
 static SEARCHED_PATHS: Lazy<Mutex<Vec<PathBuf>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
-/// Build the canonical list of probable .env locations, in priority order:
-/// 1. $BEADS_STATION_ENV (full path override)
-/// 2. <executable_dir>/.env  (next to the executable, e.g. dev `target/debug`)
-/// 3. <executable_dir>/../.env  (one level up, e.g. inside `Contents/MacOS`)
-/// 4. <executable_dir>/../Resources/.env  (bundled-resource layout for .app)
-/// 5. ~/Code/Beads-Station/.env  (dev-mode hardcoded fallback)
+/// Native CLI login is the default. Gateway files are loaded only by opt-in.
+pub fn gateway_enabled() -> bool {
+    std::env::var("BS_AUTH_PROFILE").as_deref() == Ok("gateway")
+}
+
+pub fn prepare_auth_profile() {
+    if !gateway_enabled() {
+        // Do this once at startup, before worker threads are created. The CLI
+        // retains its own local account credentials; stale gateway variables
+        // must not override that account on a cloned machine.
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+        ] {
+            std::env::remove_var(key);
+        }
+    }
+}
+
 fn candidate_paths() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-
-    if let Ok(override_path) = std::env::var("BEADS_STATION_ENV") {
-        if !override_path.is_empty() {
-            out.push(PathBuf::from(override_path));
-        }
+    if !gateway_enabled() {
+        return Vec::new();
     }
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            out.push(exe_dir.join(".env"));
-            if let Some(parent) = exe_dir.parent() {
-                out.push(parent.join(".env"));
-                out.push(parent.join("Resources").join(".env"));
-            }
-        }
-    }
-
-    out.push(PathBuf::from("~/Code/Beads-Station/.env"));
-
-    out
+    std::env::var("BEADS_STATION_ENV")
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .into_iter()
+        .collect()
 }
 
 /// Parse a single .env line into Some((key, value)) or None for malformed /
@@ -73,10 +75,7 @@ fn parse_line(raw: &str) -> Option<(String, String)> {
         return None;
     }
     let val_raw = line[eq + 1..].trim();
-    let val = if val_raw.len() >= 2
-        && val_raw.starts_with('"')
-        && val_raw.ends_with('"')
-    {
+    let val = if val_raw.len() >= 2 && val_raw.starts_with('"') && val_raw.ends_with('"') {
         val_raw[1..val_raw.len() - 1].to_string()
     } else {
         val_raw.to_string()

@@ -3,8 +3,6 @@ import type { Issue } from '../../types/issue'
 import { BdLiveProvider } from '../../lib/BdLiveProvider'
 import { useBdSnapshot } from '../../lib/bdCache'
 import { useProjects } from '../../state/projects'
-import { spawnAgent } from '../../state/termPanes'
-import { setSkin } from '../../state/skin'
 
 // Bead graph — the Designer UI centerpiece. Nodes are beads; edges are bd
 // dependency links from each Issue's `dependencies` array (a blocker edge
@@ -135,7 +133,7 @@ function isToday(iso: string | null): boolean {
   )
 }
 
-function GraphInner({ repoPath, projectId, cwd }: { repoPath: string; projectId: string; cwd: string }) {
+function GraphInner({ repoPath, onSelect }: { repoPath: string; onSelect: (issue: Issue) => void }) {
   const snap = useBdSnapshot(repoPath)
 
   const readyIds = useMemo(() => new Set(snap.ready.map(i => i.id)), [snap.ready])
@@ -176,16 +174,9 @@ function GraphInner({ repoPath, projectId, cwd }: { repoPath: string; projectId:
   if (snap.error) return <div style={styles.hint}>bd error: {snap.error}</div>
   if (nodes.length === 0) return <div style={styles.hint}>No beads to graph.</div>
 
-  // RV8.4 — bead-pane duality: clicking a READY node spawns a Claude agent pane
-  // targeting that bead (plan posture, matching App's spawn idiom) AND switches to
-  // the terminal skin, which is where agent panes render — so the click lands you
-  // ON the new pane. The reverse direction (agent closes bead -> graph re-derives)
-  // is already live via the bd FSEvents snapshot, closing the loop.
-  const onActivate = (issue: Issue) => {
-    spawnAgent(projectId, cwd, crypto.randomUUID(), 'plan')
-    setSkin('terminal')
-    void issue // the pane targets the active project; per-bead prompt pre-fill is deferred (RV8).
-  }
+  // Selecting work keeps the designer in this surface. DesignerShell owns the
+  // explicit provider launch so the issue id/title/description reach the run.
+  const onActivate = onSelect
 
   return (
     <div style={styles.wrap}>
@@ -294,7 +285,7 @@ function Stat({ label, value, tint }: { label: string; value: number; tint: stri
  * BdLiveProvider (the designer shell renders outside App's provider) and
  * resolves the active project's repoPath the same way App does.
  */
-export function BeadGraph() {
+export function BeadGraph({ onSelect = () => {} }: { onSelect?: (issue: Issue) => void }) {
   const { projects, activeId } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? projects[0] ?? null
 
@@ -302,7 +293,7 @@ export function BeadGraph() {
 
   return (
     <BdLiveProvider>
-      <GraphInner repoPath={active.path} projectId={active.id} cwd={active.path} />
+      <GraphInner repoPath={active.path} onSelect={onSelect} />
     </BdLiveProvider>
   )
 }

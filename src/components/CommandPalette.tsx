@@ -7,6 +7,9 @@ import { bdClaim, bdCreate } from '../types/issue'
 import { dailyAppend } from '../lib/dailyBridge'
 import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from '../state/theme'
 import { setSkin } from '../state/skin'
+import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
+import { newTab, splitActive } from '../state/termPanes'
+import { setFocused } from '../state/vim'
 import './CommandPalette.css'
 
 // Phase 9 (Code-ky4.9) — cmdk command palette. Opens on Cmd/Ctrl+K or leader-k
@@ -20,7 +23,7 @@ import './CommandPalette.css'
 // in the primary shell only (not the ?ui=designer skin) and needs the active
 // repo, so App mounts it inside the shell where `active` is known.
 
-type View = 'root' | 'projects' | 'ready' | 'grep' | 'newIssue' | 'themes'
+type View = 'root' | 'projects' | 'ready' | 'grep' | 'newIssue' | 'themes' | 'layout'
 
 export function CommandPalette({ repoPath }: { repoPath: string }) {
   const { open } = usePalette()
@@ -28,7 +31,9 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
   const snap = useBdSnapshot(repoPath)
   const activePaletteId = useThemePaletteId()
 
-  const [view, setView] = useState<View>('root')
+  const [view, updateView] = useState<View>('root')
+  const [search, setSearch] = useState('')
+  const setView = (next: View) => { updateView(next); setSearch('') }
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -108,6 +113,12 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
     dismiss()
   }, [dismiss])
 
+  const onAction = useCallback((event: string) => {
+    setSkin('terminal')
+    window.dispatchEvent(new Event(event))
+    dismiss()
+  }, [dismiss])
+
   return (
     <Command.Dialog
       open={open}
@@ -140,20 +151,31 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
         </>
       ) : (
         <>
-          <Command.Input placeholder="Type a command or search issues…" autoFocus />
+          <Command.Input value={search} onValueChange={setSearch} placeholder="Type a command or search issues…" autoFocus />
           <Command.List>
             <Command.Empty>No results.</Command.Empty>
 
             {view === 'root' && (
               <Command.Group heading="Commands">
+                <Command.Item onSelect={() => { dismiss(); window.dispatchEvent(new Event('workspace:open')) }}>Open workspace</Command.Item>
                 <Command.Item onSelect={() => setView('projects')}>Switch project</Command.Item>
-                <Command.Item onSelect={() => setView('newIssue')}>New issue</Command.Item>
-                <Command.Item onSelect={() => setView('ready')}>Claim ready</Command.Item>
-                <Command.Item onSelect={() => setView('grep')}>Grep issues</Command.Item>
+                <Command.Item disabled={!repoPath} onSelect={() => setView('newIssue')}>New issue</Command.Item>
+                <Command.Item disabled={!repoPath} onSelect={() => setView('ready')}>Claim ready</Command.Item>
+                <Command.Item disabled={!repoPath} keywords={['grep']} onSelect={() => setView('grep')}>Search beads / issue explorer</Command.Item>
                 <Command.Item onSelect={() => void onOpenObsidian()}>Open Obsidian update</Command.Item>
                 <Command.Item onSelect={onToggleTheme}>Toggle theme</Command.Item>
                 <Command.Item onSelect={() => setView('themes')}>Choose theme</Command.Item>
+                <Command.Item onSelect={() => setView('layout')}>View settings</Command.Item>
                 <Command.Item onSelect={onSwitchToDesigner}>Switch to designer skin</Command.Item>
+                <Command.Item onSelect={() => { setSkin('terminal'); dismiss() }}>Switch to terminal skin</Command.Item>
+                <Command.Item disabled={!repoPath} onSelect={() => { setSkin('terminal'); newTab(); setFocused('terminal'); dismiss() }}>New terminal tab</Command.Item>
+                <Command.Item disabled={!repoPath} onSelect={() => { setSkin('terminal'); splitActive('h'); setFocused('terminal'); dismiss() }}>Split terminal horizontally</Command.Item>
+                <Command.Item disabled={!repoPath} onSelect={() => { setSkin('terminal'); splitActive('v'); setFocused('terminal'); dismiss() }}>Split terminal vertically</Command.Item>
+                <Command.Item disabled={!repoPath} onSelect={() => onAction('agent:spawn')}>New Claude agent pane</Command.Item>
+                <Command.Item disabled={!repoPath} onSelect={() => onAction('filenav:spawn')}>Open files explorer</Command.Item>
+                <Command.Item onSelect={() => { window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: 'expandAll' } })); dismiss() }}>Expand all beads</Command.Item>
+                <Command.Item onSelect={() => { window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: 'collapseAll' } })); dismiss() }}>Collapse bead groups</Command.Item>
+                <Command.Item onSelect={() => { setUiPreferences({ sidebarCollapsed: true }); dismiss() }}>Collapse explorer</Command.Item>
               </Command.Group>
             )}
 
@@ -189,7 +211,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
             )}
 
             {view === 'grep' && (
-              <Command.Group heading="Grep issues">
+              <Command.Group heading="Search beads / issue explorer">
                 {snap.all.map(i => (
                   <Command.Item
                     key={i.id}
@@ -213,6 +235,16 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
                     {t.name}{t.name === activePaletteId ? ' · active' : ''}
                   </Command.Item>
                 ))}
+              </Command.Group>
+            )}
+            {view === 'layout' && (
+              <Command.Group heading="View settings">
+                {(['terminal-only', 'explorer', 'board', 'both'] as BeadsView[]).map(id => (
+                  <Command.Item key={id} onSelect={() => { setBeadsView(id); dismiss() }}>
+                    {id === 'terminal-only' ? 'Terminal only' : id[0].toUpperCase() + id.slice(1)}
+                  </Command.Item>
+                ))}
+                <Command.Item onSelect={() => { window.dispatchEvent(new Event('sidebar:toggle')); dismiss() }}>Toggle explorer collapse</Command.Item>
               </Command.Group>
             )}
           </Command.List>

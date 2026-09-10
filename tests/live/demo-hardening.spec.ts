@@ -15,6 +15,7 @@ async function bootDesignerWith(
   await page.addInitScript(o => {
     ;(window as any).__bsMockOverride = o
   }, override)
+  await page.addInitScript(() => { localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a'], activeId: 'proj-a' })) })
   await page.goto('/?ui=designer')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
   await expect(page.locator('#root')).toBeVisible()
@@ -70,7 +71,7 @@ test('Dashboard (terminal skin) shows the plain empty state when projects_list i
   page,
 }) => {
   await bootTerminalWith(page, { projects_list: [] })
-  await expect(page.getByText('to pick project')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Your work starts here.' })).toBeVisible()
   await expect(page.getByText(/Couldn't load projects/)).toHaveCount(0)
 })
 
@@ -90,7 +91,7 @@ test('Designer skin shows the first-run panel (not the shell) when projects_list
   await bootDesignerWith(page, { projects_list: [] })
   const empty = page.getByTestId('designer-empty-state')
   await expect(empty).toBeVisible()
-  await expect(empty.getByText('No projects yet')).toBeVisible()
+  await expect(empty.getByText(/No projects yet/)).toBeVisible()
   // The shell's surfaces must not render — no per-panel "No project selected." hang.
   await expect(page.getByText('No project selected.')).toHaveCount(0)
 })

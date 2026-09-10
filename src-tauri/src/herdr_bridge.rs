@@ -12,6 +12,12 @@
 //   agent.start, agent.read, agent.send_keys, agent.prompt, agent.wait,
 //   agent.focus, pane.split, worktree.create, worktree.remove
 
+// This module intentionally defines the complete protocol slice planned for
+// the bounded Herdr evaluation. The conductor currently consumes only the
+// launch/prompt path; keep the remaining typed operations available without
+// turning every ordinary Cargo invocation into a wall of dead-code warnings.
+#![allow(dead_code)]
+
 use std::env;
 use std::path::PathBuf;
 
@@ -19,6 +25,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+
+/// A conductor RPC must not hold a scheduling slot indefinitely. This bounds
+/// connect, write, and response handling as one operation. A timeout after a
+/// write is deliberately reported as ambiguous: callers must reconcile the
+/// named attempt instead of replaying a launch or prompt.
+pub const RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 // ---- AgentStatus (verbatim from herdr schema) ----
 
@@ -204,9 +216,7 @@ pub fn socket_path() -> Option<PathBuf> {
 }
 
 pub fn is_available() -> bool {
-    socket_path()
-        .map(|p| p.exists())
-        .unwrap_or(false)
+    socket_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 // ---- Low-level transport ----
@@ -215,39 +225,77 @@ pub fn is_available() -> bool {
 /// Returns the parsed `result` Value on success, or a String error.
 async fn call<P: Serialize>(method: &'static str, params: P) -> Result<Value, String> {
     let path = socket_path().ok_or_else(|| "HERDR_SOCKET_PATH not set".to_string())?;
-    let mut stream = UnixStream::connect(&path)
+    call_at_path(&path, method, params).await
+}
+
+async fn call_at_path<P: Serialize>(
+    path: &std::path::Path,
+    method: &'static str,
+    params: P,
+) -> Result<Value, String> {
+    call_at_path_with_timeout(path, method, params, RPC_TIMEOUT).await
+}
+
+async fn call_at_path_with_timeout<P: Serialize>(
+    path: &std::path::Path,
+    method: &'static str,
+    params: P,
+    timeout: std::time::Duration,
+) -> Result<Value, String> {
+    let request = async {
+        let mut stream = UnixStream::connect(path)
+            .await
+            .map_err(|e| format!("herdr connect {}: {e}", path.display()))?;
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let req = Request {
+            id: id.clone(),
+            method,
+            params,
+        };
+        let mut line = serde_json::to_string(&req).map_err(|e| format!("herdr serialize: {e}"))?;
+        line.push('\n');
+
+        stream
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| format!("herdr write: {e}"))?;
+
+        let mut reader = BufReader::new(stream);
+        let mut resp_line = String::new();
+        let bytes = reader
+            .read_line(&mut resp_line)
+            .await
+            .map_err(|e| format!("herdr read: {e}"))?;
+        if bytes == 0 {
+            return Err("herdr read: connection closed before a response".to_string());
+        }
+
+        let resp: Response = serde_json::from_str(resp_line.trim())
+            .map_err(|e| format!("herdr parse: {e} — raw: {resp_line}"))?;
+
+        if resp.id != id {
+            return Err(format!(
+                "herdr: response id mismatch: got {} want {id}",
+                resp.id
+            ));
+        }
+
+        if let Some(err) = resp.error {
+            return Err(format!("herdr error {}: {}", err.code, err.message));
+        }
+
+        Ok(resp.result.unwrap_or(Value::Null))
+    };
+
+    tokio::time::timeout(timeout, request)
         .await
-        .map_err(|e| format!("herdr connect {}: {e}", path.display()))?;
-
-    let id = uuid::Uuid::new_v4().to_string();
-    let req = Request { id: id.clone(), method, params };
-    let mut line = serde_json::to_string(&req).map_err(|e| format!("herdr serialize: {e}"))?;
-    line.push('\n');
-
-    stream
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| format!("herdr write: {e}"))?;
-
-    let mut reader = BufReader::new(stream);
-    let mut resp_line = String::new();
-    reader
-        .read_line(&mut resp_line)
-        .await
-        .map_err(|e| format!("herdr read: {e}"))?;
-
-    let resp: Response =
-        serde_json::from_str(resp_line.trim()).map_err(|e| format!("herdr parse: {e} — raw: {resp_line}"))?;
-
-    if resp.id != id {
-        return Err(format!("herdr: response id mismatch: got {} want {id}", resp.id));
-    }
-
-    if let Some(err) = resp.error {
-        return Err(format!("herdr error {}: {}", err.code, err.message));
-    }
-
-    Ok(resp.result.unwrap_or(Value::Null))
+        .map_err(|_| {
+            format!(
+                "herdr {method} timed out after {}s; request outcome is unknown, do not retry automatically",
+                timeout.as_secs()
+            )
+        })?
 }
 
 // ---- Public API methods ----
@@ -293,7 +341,13 @@ pub async fn agent_wait(params: AgentWaitParams) -> Result<AgentStatus, String> 
 }
 
 pub async fn agent_focus(target: &str) -> Result<(), String> {
-    call("agent.focus", AgentTargetParams { target: target.to_string() }).await?;
+    call(
+        "agent.focus",
+        AgentTargetParams {
+            target: target.to_string(),
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -390,7 +444,10 @@ mod tests {
             wait: None,
         };
         let json = serde_json::to_value(&params).unwrap();
-        assert!(json.get("wait").is_none(), "wait field should be absent when None");
+        assert!(
+            json.get("wait").is_none(),
+            "wait field should be absent when None"
+        );
     }
 
     #[test]
@@ -442,16 +499,49 @@ mod tests {
         assert_eq!(result["pane_id"], "pane-xyz");
     }
 
+    #[tokio::test]
+    async fn request_timeout_is_explicitly_ambiguous() {
+        use tokio::net::UnixListener;
+
+        // Unix-domain socket paths have a small platform limit; use /tmp rather
+        // than the often much longer per-user temporary-directory prefix.
+        let path = std::path::PathBuf::from("/tmp")
+            .join(format!("bs-herdr-{}.sock", uuid::Uuid::new_v4()));
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = tokio::spawn(async move {
+            let _connection = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let err = call_at_path_with_timeout(
+            &path,
+            "agent.start",
+            serde_json::json!({}),
+            std::time::Duration::from_millis(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("outcome is unknown"));
+        assert!(err.contains("do not retry automatically"));
+
+        server.abort();
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn is_available_false_without_env() {
         // Without HERDR_SOCKET_PATH pointing at a real socket, should be false.
         // (herdr may be running in CI; socket_path() can return Some but a
         // non-existent path. We only test the env-unset path here.)
         let orig = std::env::var("HERDR_SOCKET_PATH").ok();
-        unsafe { std::env::remove_var("HERDR_SOCKET_PATH"); }
+        unsafe {
+            std::env::remove_var("HERDR_SOCKET_PATH");
+        }
         assert!(!is_available(), "should be false when env var absent");
         if let Some(v) = orig {
-            unsafe { std::env::set_var("HERDR_SOCKET_PATH", v); }
+            unsafe {
+                std::env::set_var("HERDR_SOCKET_PATH", v);
+            }
         }
     }
 }

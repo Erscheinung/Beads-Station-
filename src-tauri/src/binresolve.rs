@@ -171,6 +171,7 @@ fn miss_message(name: &str) -> String {
 /// Like resolve_bin, but if the search fails fall back to `fallback_abs_path`
 /// when that path itself exists and is executable. Used for the historical
 /// CLAUDE_BIN-style hardcode pattern.
+#[allow(dead_code)]
 pub fn resolve_bin_or_default(
     name: &str,
     fallback_abs_path: &str,
