@@ -25,6 +25,11 @@ npm run tauri dev
 
 The native app uses port 1420. Open a project from the picker, then use the terminal or start an agent explicitly. The `+` beside workspace tabs and **Open workspace** in the command palette return to the picker. **Discovery roots** accepts one root per line. Folder paths can start with `~/` and may contain spaces; no shell interpolation is used to open them.
 
+To install the JavaScript dependencies, pinned Rust toolchain, and macOS
+development prerequisites before starting the app, run ./setup.sh.
+
+The frontend `predev`/`prebuild` hooks run `scripts/audit-emoji.mjs`, which fails the build if any emoji glyphs land in JSX text (Codicons via the `codicon` font are fine; literal emoji are not).
+
 Application workspace settings and session IDs are stored with Tauri's plugin store. The frontend stores the explicit open-workspace list, active workspace, layout, and appearance locally. The legacy active-project setting is migrated only when unambiguous; old discovery results are not treated as an open-workspace list.
 
 ## Authentication and optional notes

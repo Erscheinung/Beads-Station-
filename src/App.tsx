@@ -60,7 +60,22 @@ export default function App() {
   // region covers the whole content area (Board stays mounted underneath, so no
   // shell respawn). Toggled by Cmd/Ctrl+Enter via the `terminal:focus-toggle`
   // event. Not persisted: it's a transient working mode, not a saved layout.
-  const [terminalFocus, setTerminalFocus] = useState(uiPrefs.terminalFocus)
+  // Fullscreen terminal focus is never a launch state. Older builds persisted
+  // this flag and could reopen with Neovim covering the entire application.
+  const [terminalFocus, setTerminalFocus] = useState(false)
+  useEffect(() => {
+    // Remove the legacy persisted value as part of the migration.
+    try {
+      const raw = localStorage.getItem('beads-station.ui-preferences')
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>
+        if ('terminalFocus' in parsed) {
+          delete parsed.terminalFocus
+          localStorage.setItem('beads-station.ui-preferences', JSON.stringify(parsed))
+        }
+      }
+    } catch { /* storage is optional */ }
+  }, [])
   // Code-mkv — strip height is now PER-PROJECT. The old global key
   // `beads-station.terminalHeight` is the fallback/default source; per-project
   // values live under `...terminalHeight.<projectId>`. Seeded from the global
@@ -141,7 +156,7 @@ export default function App() {
     const onToggle = () => {
         setTerminalFocus(f => {
           const next = !f
-          setUiPreferences({ terminalFocus: next })
+          // Focus mode is intentionally transient; never persist it.
         if (next) {
           setTerminalCollapsed(false)
           setFocused('terminal')
@@ -329,7 +344,17 @@ export default function App() {
   // param on first run) so an in-app control can flip it live. This check lives
   // after every hook so the hook count is unconditionally stable.
   if (!active) {
-    return <BdLiveProvider><WorkspacePicker /><CommandPalette repoPath="" /></BdLiveProvider>
+    // Keep a concrete recovery surface visible for the whole discovery gap.
+    // Native WebViews can paint the previous explorer frame before the async
+    // project snapshot arrives; rendering an empty shell during that gap looks
+    // like the app disappeared and leaves no way to recover from a stale
+    // workspace selection.
+    return (
+      <BdLiveProvider>
+        <WorkspacePicker />
+        <CommandPalette repoPath="" />
+      </BdLiveProvider>
+    )
   }
 
   if (skin === 'designer') {
@@ -351,7 +376,7 @@ export default function App() {
   return (
     <BdLiveProvider>
     <div className={`bs-grid-1px${theme === 'light' ? ' du-theme' : ''}`} style={{ display: 'grid', gridTemplateColumns: `${showExplorer && !sidebarCollapsed ? sidebarWidth : 0}px 1fr`, gridTemplateRows: `1fr ${chatRequested ? activeTerminalHeight : 0}px 22px`, height: '100vh' }}>
-      <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridRow: '1 / span 2', overflow: 'hidden', display: showExplorer && !sidebarCollapsed ? 'flex' : 'none', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
+      <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridColumn: 1, gridRow: '1 / span 2', overflow: 'hidden', display: showExplorer && !sidebarCollapsed ? 'flex' : 'none', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
         </div>
@@ -362,7 +387,7 @@ export default function App() {
           style={{ position: 'absolute', top: 0, right: 0, width: 4, height: '100%', cursor: 'col-resize', zIndex: 5 }}
         />
       </aside>
-      <main style={{ background: 'var(--bs-bg)', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <main style={{ background: 'var(--bs-bg)', gridColumn: 2, gridRow: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <header className="bs-toolbar">
           <span className="bs-toolbar__brand">BEADS STATION</span>
           <button onClick={openPalette} title="Open command palette">Commands <kbd>Cmd+K</kbd></button>
@@ -447,7 +472,7 @@ export default function App() {
           </div>
         </div>
       </main>
-      <section style={{ background: 'var(--bs-bg)', overflow: 'hidden' }}>
+      <section style={{ background: 'var(--bs-bg)', gridColumn: 2, gridRow: 2, overflow: 'hidden' }}>
         {chatRequested && (needsConfirm ? (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--bs-fg-muted)', fontSize: 11 }}>
             awaiting confirmation
@@ -462,7 +487,7 @@ export default function App() {
           />
         ))}
       </section>
-      <div style={{ gridColumn: '1 / span 2' }}>
+      <div style={{ gridColumn: '1 / span 2', gridRow: 3 }}>
         <Statusline repoPath={active.path} projectPath={active.path} />
       </div>
       <WhichKey />

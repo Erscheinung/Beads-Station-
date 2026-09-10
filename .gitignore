@@ -22,6 +22,9 @@ playwright-report
 .env.*
 !.env.example
 
+# Local Codex operating instructions (machine/identity-specific; never commit).
+.codex-git-policy.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

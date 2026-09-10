@@ -4,6 +4,7 @@ export type BeadsView = 'terminal-only' | 'explorer' | 'board' | 'both'
 export interface UiPreferences {
   view: BeadsView
   sidebarCollapsed: boolean
+  /** Terminal focus is deliberately transient and is never restored on boot. */
   terminalFocus: boolean
 }
 
@@ -18,7 +19,9 @@ function load(): UiPreferences {
     return {
       view: parsed.view === 'terminal-only' || parsed.view === 'explorer' || parsed.view === 'board' || parsed.view === 'both' ? parsed.view : DEFAULTS.view,
       sidebarCollapsed: parsed.sidebarCollapsed === true,
-      terminalFocus: parsed.terminalFocus === true,
+      // Fullscreen terminal focus is a runtime interaction mode. Restoring it
+      // can cover the app chrome with a Neovim screen on the next launch.
+      terminalFocus: false,
     }
   } catch { return { ...DEFAULTS } }
 }
