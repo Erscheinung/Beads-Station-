@@ -68,6 +68,6 @@ export function WorkspacePicker({ onClose }: { onClose?: () => void }) {
     <footer className="workspace-picker__footer">{skin === 'designer' ? 'Requests, progress and review — in one place.' : 'Your terminal, editor and agents — in one place.'}</footer>
   </div>
   return onClose
-    ? <dialog ref={dialog} className={`workspace-dialog${skin === 'designer' ? ' du-theme' : ''}`} onCancel={e => { e.preventDefault(); onClose() }}>{content}</dialog>
-    : <main className={`workspace-welcome${skin === 'designer' ? ' du-theme' : ''}`}>{content}</main>
+    ? <dialog ref={dialog} aria-label="Open workspace" className="workspace-dialog" onCancel={e => { e.preventDefault(); onClose() }}>{content}</dialog>
+    : <main className="workspace-welcome">{content}</main>
 }

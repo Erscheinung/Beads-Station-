@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { parseGhosttyTheme } from './themeImport'
+import { applyPaletteToCSS, contrastRatio, parseGhosttyTheme } from './themeImport'
+import { BUNDLED_THEMES } from '../themes'
+
+it('gives every bundled palette readable labels on matching elevated surfaces', () => {
+  for (const palette of BUNDLED_THEMES) {
+    applyPaletteToCSS(palette)
+    const css = document.documentElement.style
+    expect(contrastRatio(css.getPropertyValue('--bs-fg-faint'), css.getPropertyValue('--bs-bg-elev'))).toBeGreaterThanOrEqual(4.5)
+    expect(css.getPropertyValue('--bs-bg')).toBe(palette.background)
+    expect(css.getPropertyValue('--bs-border')).not.toBe('')
+  }
+})
 
 describe('parseGhosttyTheme', () => {
   it('parses background/foreground/cursor', () => {

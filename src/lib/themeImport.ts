@@ -105,6 +105,19 @@ export function parseGhosttyTheme(name: string, source: string): ThemePalette {
 }
 
 /** Apply a ThemePalette to the document's CSS custom properties. */
+export function mixColor(background: string, foreground: string, amount: number): string {
+  const b = background.replace('#', ''), f = foreground.replace('#', '')
+  if (!/^[0-9a-f]{6}$/i.test(b) || !/^[0-9a-f]{6}$/i.test(f)) return foreground
+  return '#' + [0, 2, 4].map(i => Math.round(parseInt(b.slice(i, i + 2), 16) * (1 - amount) + parseInt(f.slice(i, i + 2), 16) * amount).toString(16).padStart(2, '0')).join('')
+}
+export function contrastRatio(a: string, b: string): number {
+  const luminance = (c: string) => {
+    const rgb = [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16) / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4)
+    return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722
+  }
+  const x = luminance(a), y = luminance(b)
+  return (Math.max(x, y) + .05) / (Math.min(x, y) + .05)
+}
 export function applyPaletteToCSS(p: ThemePalette): void {
   const r = document.documentElement.style
   r.setProperty('--bs-bg',       p.background)
@@ -113,8 +126,16 @@ export function applyPaletteToCSS(p: ThemePalette): void {
   // Derive surface/border/muted from palette slots rather than hardcoding.
   // bg-elev: a slightly lighter shade — use bright-black slot if it contrasts,
   // otherwise stay close to background (we don't have a dedicated slot for this).
-  r.setProperty('--bs-fg-muted', p.white)
-  r.setProperty('--bs-fg-faint', p.brightBlack)
+  r.setProperty('--bs-bg-elev', mixColor(p.background, p.foreground, .055))
+  r.setProperty('--bs-bg-float', mixColor(p.background, p.foreground, .035))
+  r.setProperty('--bs-border', mixColor(p.background, p.foreground, .18))
+  r.setProperty('--bs-border-faint', mixColor(p.background, p.foreground, .09))
+  const readable = (fraction: number) => {
+    const candidate = mixColor(p.background, p.foreground, fraction)
+    return contrastRatio(candidate, mixColor(p.background, p.foreground, .055)) >= 4.5 ? candidate : p.foreground
+  }
+  r.setProperty('--bs-fg-muted', readable(.78))
+  r.setProperty('--bs-fg-faint', readable(.62))
   r.setProperty('--bs-red',      p.red)
   r.setProperty('--bs-green',    p.green)
   r.setProperty('--bs-yellow',   p.yellow)
@@ -122,8 +143,10 @@ export function applyPaletteToCSS(p: ThemePalette): void {
   r.setProperty('--bs-magenta',  p.magenta)
   r.setProperty('--bs-purple',   p.magenta)
   // --bs-blue is the accent; clamp so it's never purple-dominant (plan rule).
-  r.setProperty('--bs-blue',     p.blue)
-  r.setProperty('--bs-accent',   p.blue)
+  const accent = contrastRatio(p.blue, p.background) >= 4.5 ? p.blue : mixColor(p.blue, p.foreground, .65)
+  r.setProperty('--bs-blue',     accent)
+  r.setProperty('--bs-accent',   accent)
+  r.setProperty('color-scheme', contrastRatio(p.background, '#000000') > contrastRatio(p.background, '#ffffff') ? 'light' : 'dark')
   r.setProperty('--bs-orange',   p.yellow) // ghostty themes often lack orange; fall back to yellow
 }
 
@@ -134,6 +157,7 @@ export function resetPaletteCSS(): void {
     '--bs-bg', '--bs-bg-dark', '--bs-fg', '--bs-fg-muted', '--bs-fg-faint',
     '--bs-red', '--bs-green', '--bs-yellow', '--bs-cyan',
     '--bs-magenta', '--bs-purple', '--bs-blue', '--bs-accent', '--bs-orange',
+    '--bs-bg-elev', '--bs-bg-float', '--bs-border', '--bs-border-faint', 'color-scheme',
   ]) {
     r.removeProperty(prop)
   }

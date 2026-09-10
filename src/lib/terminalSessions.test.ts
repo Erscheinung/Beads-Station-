@@ -6,6 +6,7 @@ vi.mock('../state/theme', () => ({ getActivePalette: () => null }))
 vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
   loadAddon() {} open() {} focus() {}
+  attachCustomKeyEventHandler() {}
   write = mock.write; dispose = mock.disposed
   onData() { return { dispose() {} } }
 } }))

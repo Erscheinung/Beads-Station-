@@ -1,10 +1,12 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Command } from 'cmdk'
-import { usePalette, closePalette } from '../state/palette'
+import { usePalette, closePalette, openPalette } from '../state/palette'
 import { useProjects } from '../state/projects'
 import { useBdSnapshot } from '../lib/bdCache'
 import { bdClaim, bdCreate } from '../types/issue'
-import { dailyAppend } from '../lib/dailyBridge'
+import { COMMANDS, useCommandBindings, shortcutLabel, type CommandId } from '../state/commands'
+import { openSettings } from '../state/settings'
+import { SettingsPanel } from './SettingsPanel'
 import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from '../state/theme'
 import { setSkin } from '../state/skin'
 import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
@@ -30,6 +32,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
   const { projects, activeId, setActive, refresh } = useProjects()
   const snap = useBdSnapshot(repoPath)
   const activePaletteId = useThemePaletteId()
+  const bindings = useCommandBindings()
 
   const [view, updateView] = useState<View>('root')
   const [search, setSearch] = useState('')
@@ -86,18 +89,6 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
     }
   }, [repoPath, title, refresh, dismiss])
 
-  const onOpenObsidian = useCallback(async () => {
-    setBusy(true)
-    try {
-      // Minimal v1: append a titled placeholder subsection (opens/creates
-      // today's daily file). A richer body editor is a later polish item.
-      await dailyAppend('Manual note', '')
-    } finally {
-      setBusy(false)
-      dismiss()
-    }
-  }, [dismiss])
-
   const onToggleTheme = useCallback(() => {
     toggleTheme()
     dismiss()
@@ -119,7 +110,38 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
     dismiss()
   }, [dismiss])
 
+  const execute = (id: CommandId) => {
+    const command = COMMANDS.find(c => c.id === id)
+    if (!command || ('repo' in command && command.repo && !repoPath)) return
+    if (['projects', 'newIssue', 'ready', 'grep', 'themes', 'layout'].includes(id)) {
+      setView(id as View); openPalette(); return
+    }
+    dismiss()
+    switch (id) {
+      case 'palette': openPalette(); break
+      case 'settings': openSettings(); break
+      case 'workspace': window.dispatchEvent(new Event('workspace:open')); break
+      case 'toggleTheme': onToggleTheme(); break
+      case 'designer': onSwitchToDesigner(); break
+      case 'terminal': setSkin('terminal'); break
+      case 'newTab': setSkin('terminal'); newTab(); setFocused('terminal'); break
+      case 'splitH': setSkin('terminal'); splitActive('h'); setFocused('terminal'); break
+      case 'splitV': setSkin('terminal'); splitActive('v'); setFocused('terminal'); break
+      case 'agent': onAction('agent:spawn'); break
+      case 'files': onAction('filenav:spawn'); break
+      case 'expand': case 'collapse': window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: id === 'expand' ? 'expandAll' : 'collapseAll' } })); break
+      case 'hideExplorer': setUiPreferences({ sidebarCollapsed: true }); break
+    }
+  }
+  useEffect(() => {
+    const handler = (e: Event) => execute((e as CustomEvent<CommandId>).detail)
+    window.addEventListener('bs:command', handler)
+    return () => window.removeEventListener('bs:command', handler)
+  })
+
   return (
+    <>
+    <SettingsPanel />
     <Command.Dialog
       open={open}
       onOpenChange={onOpenChange}
@@ -157,25 +179,11 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
 
             {view === 'root' && (
               <Command.Group heading="Commands">
-                <Command.Item onSelect={() => { dismiss(); window.dispatchEvent(new Event('workspace:open')) }}>Open workspace</Command.Item>
-                <Command.Item onSelect={() => setView('projects')}>Switch project</Command.Item>
-                <Command.Item disabled={!repoPath} onSelect={() => setView('newIssue')}>New issue</Command.Item>
-                <Command.Item disabled={!repoPath} onSelect={() => setView('ready')}>Claim ready</Command.Item>
-                <Command.Item disabled={!repoPath} keywords={['grep']} onSelect={() => setView('grep')}>Search beads / issue explorer</Command.Item>
-                <Command.Item onSelect={() => void onOpenObsidian()}>Open Obsidian update</Command.Item>
-                <Command.Item onSelect={onToggleTheme}>Toggle theme</Command.Item>
-                <Command.Item onSelect={() => setView('themes')}>Choose theme</Command.Item>
-                <Command.Item onSelect={() => setView('layout')}>View settings</Command.Item>
-                <Command.Item onSelect={onSwitchToDesigner}>Switch to designer skin</Command.Item>
-                <Command.Item onSelect={() => { setSkin('terminal'); dismiss() }}>Switch to terminal skin</Command.Item>
-                <Command.Item disabled={!repoPath} onSelect={() => { setSkin('terminal'); newTab(); setFocused('terminal'); dismiss() }}>New terminal tab</Command.Item>
-                <Command.Item disabled={!repoPath} onSelect={() => { setSkin('terminal'); splitActive('h'); setFocused('terminal'); dismiss() }}>Split terminal horizontally</Command.Item>
-                <Command.Item disabled={!repoPath} onSelect={() => { setSkin('terminal'); splitActive('v'); setFocused('terminal'); dismiss() }}>Split terminal vertically</Command.Item>
-                <Command.Item disabled={!repoPath} onSelect={() => onAction('agent:spawn')}>New Claude agent pane</Command.Item>
-                <Command.Item disabled={!repoPath} onSelect={() => onAction('filenav:spawn')}>Open files explorer</Command.Item>
-                <Command.Item onSelect={() => { window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: 'expandAll' } })); dismiss() }}>Expand all beads</Command.Item>
-                <Command.Item onSelect={() => { window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: 'collapseAll' } })); dismiss() }}>Collapse bead groups</Command.Item>
-                <Command.Item onSelect={() => { setUiPreferences({ sidebarCollapsed: true }); dismiss() }}>Collapse explorer</Command.Item>
+                {COMMANDS.filter(c => c.id !== 'palette').map(c => (
+                  <Command.Item key={c.id} value={c.label} disabled={'repo' in c && c.repo && !repoPath} onSelect={() => execute(c.id)}>
+                    <span>{c.label}</span><kbd>{bindings[c.id] ? shortcutLabel(bindings[c.id]) : '—'}</kbd>
+                  </Command.Item>
+                ))}
               </Command.Group>
             )}
 
@@ -251,5 +259,6 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
         </>
       )}
     </Command.Dialog>
+    </>
   )
 }

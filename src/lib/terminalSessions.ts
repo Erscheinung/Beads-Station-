@@ -6,6 +6,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen as listen } from './listenerRegistry'
 import { getActivePalette } from '../state/theme'
+import { getTerminalAppearance } from '../state/terminalAppearance'
+import { matchedCommand } from '../state/commands'
 
 type Phase = 'starting' | 'running' | 'exited' | 'error'
 export class TerminalSession {
@@ -27,7 +29,9 @@ export class TerminalSession {
     this.terminal.loadAddon(this.fit)
     this.terminal.loadAddon(new WebLinksAddon())
     this.terminal.open(this.element)
+    this.terminal.attachCustomKeyEventHandler(e => !matchedCommand(e))
     this.applyTheme()
+    this.applyAppearance()
     const onData = this.terminal.onData(data => {
       if (this.phase !== 'running' || this.closed) return
       this.input = this.input.then(() => {
@@ -83,6 +87,7 @@ export class TerminalSession {
   attach(host: HTMLElement) {
     host.appendChild(this.element)
     this.applyTheme()
+    this.applyAppearance()
     this.resize()
   }
   detach(host: HTMLElement) {
@@ -90,6 +95,13 @@ export class TerminalSession {
   }
   applyTheme() {
     this.terminal.options.theme = getActivePalette() ?? { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' }
+  }
+  applyAppearance() {
+    const appearance = getTerminalAppearance()
+    this.terminal.options.fontFamily = `${appearance.fontFamily}, monospace`
+    this.terminal.options.fontSize = appearance.fontSize
+    this.terminal.options.lineHeight = appearance.lineHeight
+    this.resize()
   }
   resize() {
     if (this.closed || !this.element.isConnected || !this.element.clientWidth || !this.element.clientHeight) return

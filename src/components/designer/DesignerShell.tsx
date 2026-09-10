@@ -67,7 +67,7 @@ export function DesignerShell() {
   }
 
   return (
-    <div className="du-theme" style={styles.root}>
+    <div className="bs-designer" style={styles.root}>
       {/* ── Top bar ── */}
       <header style={styles.topbar}>
         <div style={styles.wordmark}>

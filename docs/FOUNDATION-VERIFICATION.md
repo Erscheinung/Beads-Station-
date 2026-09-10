@@ -1,5 +1,63 @@
 # Workspace and terminal foundation — 2026-09-09
 
+## Settings and appearance handoff — 2026-09-10
+
+User requested screenshot-driven UI fixes and bounded plans for Sol, then asked
+to stop expansion near the five-hour usage limit. Session began with a clean
+checkout at `1699ac3` on `feat/daily-driver-foundation`. Current changes are
+uncommitted; no push/commit and no package-lock edit in this session.
+
+Delivered (`Code-4zm`, root): dedicated settings dialog with General, Appearance,
+Keyboard shortcuts and Sessions; matching toolbar button sizing; macOS app-menu
+Settings entry; shared palette command registry with editable persistent shortcuts,
+conflict checks, clear/reset, and right-aligned hints. Unassigned actions show a
+dash. Existing pane leader sequences remain separate and are not yet rebindable.
+Removed "Open Obsidian update": it previously appended an empty Manual note,
+rather than opening a note. It should return only with a useful configured flow.
+
+Theme application now derives elevated surfaces, borders and readable muted text
+from the selected palette instead of retaining Tokyo Night surfaces and taking
+low-contrast text from arbitrary ANSI slots. Terminal ANSI colors remain intact.
+Light/dark palettes apply to document-level portals and designer surfaces too.
+Settings includes theme preview cards and persisted font/size/line-height changes
+that update existing terminal sessions without recreating shells.
+
+Delivered (`Code-b57`, bounded Sol implementation reviewed/integrated by root):
+resume prompt requires explicit chat start and a saved provider-observed ID;
+project allocation UUIDs are no longer sent as conversation IDs. New session
+clears the saved ID; Cancel/Escape/backdrop abort start. Ask-before-resuming is
+configurable. Saved IDs do not prove the provider still has the transcript.
+
+Checks: production build passes; full frontend unit suite **132/132**; full
+Chromium/mock IPC suite **63/63**; Rust **88/88**. Cargo check passed before the
+final direct-open repair; cargo tests and bundled native compilation passed after
+it. Emoji audit and diff whitespace checks pass. Existing Vite chunk/static vs
+dynamic import warnings and Board test act warnings remain. This session's full
+unit suite completed; earlier macOS dependency-read stalls did not recur there.
+
+Native evidence: launched the bundled debug `.app` through the native app surface,
+verified macOS menu -> Settings, category navigation, and visually inspected Tokyo
+Night, Fahrenheit and One Light in WKWebView. Folder field accepted real typing.
+Discovery and opening initially stalled; process sample showed both commands in
+`scan_projects -> discover -> read_dir -> __open_nocancel`. They eventually
+recovered and showed the real repo, issues and terminal. This is not a measured
+startup benchmark or a completed signed release/Finder/soak gate.
+
+Follow-up repair (`Code-9ff`, still awaiting native recheck): direct folder opening
+now avoids unrelated-root scanning and runs its filesystem work on the blocking
+executor. Canonical/path session records remain; ambiguous basename records are
+preserved but not guessed. Rebuilt debug bundle successfully after the repair;
+**did not relaunch that final bundle before the usage-limit handoff**. Discovery
+itself can still stall on filesystem reads. Sample retained at
+`/tmp/beads-settings-native-sample.txt`.
+
+No credentials inspected, authentication exercised or paid provider calls made.
+No Herdr migration, durable designer reconciliation or artifact approval claimed.
+Ordered follow-up briefs are recorded and read back in bd: `Code-am5.1` (native
+reload), `Code-am5.2` (artifact/revision approval, depends on `.1`), `Code-yfb`
+(durable conductor), `Code-0cp` (remaining customization). See the current table
+at the top of AGENTS.md; older milestone/handoff statements below are historical.
+
 ## Native/designer and UX slice — 2026-09-10
 
 User requested implementation, then asked to finish quickly and slate remaining

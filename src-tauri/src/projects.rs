@@ -192,28 +192,23 @@ pub async fn projects_set_roots(app: AppHandle, roots: Vec<String>) -> Result<Di
 
 #[tauri::command]
 pub async fn projects_open(app: AppHandle, path: String) -> Result<Project, String> {
+    tauri::async_runtime::spawn_blocking(move || open_project(&app, &path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn open_project(app: &AppHandle, path: &str) -> Result<Project, String> {
     let mut project = project_at(&expand_path(&path)?)?;
     let sessions = app.store(PROJECTS_STORE).map_err(|e| e.to_string())?;
     let existing = sessions
         .get(&project.id)
         .or_else(|| sessions.get(&project.path))
         .and_then(|v| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned));
-    // Only migrate basename sessions when discovery proves that name unique.
-    let scan = scan_projects(&app)?;
-    let namesakes: Vec<_> = scan
-        .projects
-        .iter()
-        .filter(|p| p.name == project.name)
-        .collect();
-    let legacy = if existing.is_none() && namesakes.len() == 1 && namesakes[0].id == project.id {
-        sessions
-            .get(&project.name)
-            .and_then(|v| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned))
-    } else {
-        None
-    };
+    // Opening one known folder must not wait for an unrelated discovery root
+    // (network mounts and macOS filesystem reads can stall indefinitely).
+    // Basename-only IDs cannot prove workspace identity; preserve that record
+    // without applying it to an arbitrary same-name checkout.
     project.claude_session_id = existing
-        .or(legacy)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     sessions.set(&project.id, serde_json::json!(project.claude_session_id));
     sessions.save().map_err(|e| e.to_string())?;

@@ -11,18 +11,20 @@ import { Statusline } from './components/Statusline'
 import { WorkspacePicker } from './components/WorkspacePicker'
 import { WhichKey } from './components/WhichKey'
 import { DebugOverlay } from './components/DebugOverlay'
-import { MorningConfirm, shouldConfirm, recordConfirmation } from './components/MorningConfirm'
+import { MorningConfirm } from './components/MorningConfirm'
 import { CommandPalette } from './components/CommandPalette'
 import { useProjects } from './state/projects'
 import { useVim, setFocused } from './state/vim'
-import { useTheme } from './state/theme'
 import { useSkin, setSkin } from './state/skin'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
 import { DesignerShell } from './components/designer/DesignerShell'
 import { openPalette } from './state/palette'
+import { openSettings } from './state/settings'
+import { useCommandBindings, shortcutLabel } from './state/commands'
 import { setBeadsView, setUiPreferences, useUiPreferences, type BeadsView } from './state/uiPreferences'
+import { clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
 
 // Code-mkv — per-project terminal strip height. Falls back to the legacy global
 // key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
@@ -47,14 +49,14 @@ function loadTerminalHeight(projectId: string | undefined): number {
 export default function App() {
   useVimNav()
   const vim = useVim()
-  const theme = useTheme()
   const skin = useSkin()
-  const { projects, activeId, setActive, refresh, closeProject } = useProjects()
+  const { projects, activeId, setActive, closeProject } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? null
   const [pickerOpen, setPickerOpen] = useState(false)
   const closePicker = useCallback(() => setPickerOpen(false), [])
   const [requestedChats, setRequestedChats] = useState<Set<string>>(() => new Set())
   const uiPrefs = useUiPreferences()
+  const commandBindings = useCommandBindings()
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
   // Code-qqt (RV1-focus) — fullscreen terminal focus. When true, the terminal
   // region covers the whole content area (Board stays mounted underneath, so no
@@ -96,12 +98,10 @@ export default function App() {
   useEffect(() => {
     setSidebarCollapsed(uiPrefs.sidebarCollapsed)
   }, [uiPrefs.sidebarCollapsed])
-  // Phase 6 — track which projectId the user has already confirmed THIS day.
-  // Persisted state lives in localStorage (see MorningConfirm.tsx); the
-  // in-memory copy here is a per-render shortcut so React knows when to
-  // unmount the modal and mount ClaudeChat. We initialize lazily based on
-  // the persisted today's-YMD on mount.
-  const [confirmedFor, setConfirmedFor] = useState<Set<string>>(() => new Set())
+  // A resume choice applies to this explicit start request only. It is not a
+  // calendar acknowledgement shared across unrelated workspaces.
+  const [resumeApprovedFor, setResumeApprovedFor] = useState<Set<string>>(() => new Set())
+  const sessionPrefs = useSessionPreferences()
 
   // Phase 6 — pull permissionMode for the active project so we can thread
   // it into ClaudeChat. The hook is called unconditionally with a stable
@@ -320,24 +320,23 @@ export default function App() {
   // update depth.
   const handleResume = useCallback(() => {
     if (!active) return
-    recordConfirmation(active.id)
-    setConfirmedFor(() => new Set(projects.map(p => p.id)))
-  }, [active, projects])
+    setResumeApprovedFor(previous => new Set(previous).add(active.id))
+  }, [active])
 
-  const handleNew = useCallback(async () => {
+  const handleNew = useCallback(() => {
     if (!active) return
-    try {
-      await invoke('projects_set_claude_session', {
-        id: active.id,
-        sessionId: crypto.randomUUID(),
-      })
-      await refresh()
-    } catch (e) {
-      console.error('[App] projects_set_claude_session failed', e)
-    }
-    recordConfirmation(active.id)
-    setConfirmedFor(() => new Set(projects.map(p => p.id)))
-  }, [active, projects, refresh])
+    clearObservedClaudeSession(active.id)
+    setResumeApprovedFor(previous => new Set(previous).add(active.id))
+  }, [active])
+
+  const handleCancelStart = useCallback(() => {
+    if (!active) return
+    setRequestedChats(previous => {
+      const next = new Set(previous)
+      next.delete(active.id)
+      return next
+    })
+  }, [active])
 
   // DU1 / Code-6if — designer skin mounts DesignerShell instead of the terminal
   // shell. The skin now lives in a runtime store (seeded from the ?ui=designer
@@ -363,11 +362,12 @@ export default function App() {
 
   const activeTerminalHeight = terminalCollapsed ? 24 : terminalHeight
 
-  // Show MorningConfirm at most once per app launch: the first unconfirmed
-  // project prompts, and confirming it seeds confirmedFor with every project
-  // id (see handleResume/handleNew) so subsequent switches stay silent.
   const chatRequested = requestedChats.has(active.id)
-  const needsConfirm = chatRequested && !confirmedFor.has(active.id) && shouldConfirm(active.id)
+  const resumableSession = observedClaudeSession(active.id)
+  const needsConfirm = chatRequested
+    && sessionPrefs.askBeforeResume
+    && resumableSession !== null
+    && !resumeApprovedFor.has(active.id)
 
   const showExplorer = uiPrefs.view === 'explorer' || uiPrefs.view === 'both'
   const showBoard = uiPrefs.view === 'board' || uiPrefs.view === 'both'
@@ -375,7 +375,7 @@ export default function App() {
 
   return (
     <BdLiveProvider>
-    <div className={`bs-grid-1px${theme === 'light' ? ' du-theme' : ''}`} style={{ display: 'grid', gridTemplateColumns: `${showExplorer && !sidebarCollapsed ? sidebarWidth : 0}px 1fr`, gridTemplateRows: `1fr ${chatRequested ? activeTerminalHeight : 0}px 22px`, height: '100vh' }}>
+    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: `${showExplorer && !sidebarCollapsed ? sidebarWidth : 0}px 1fr`, gridTemplateRows: `1fr ${chatRequested ? activeTerminalHeight : 0}px 22px`, height: '100vh' }}>
       <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridColumn: 1, gridRow: '1 / span 2', overflow: 'hidden', display: showExplorer && !sidebarCollapsed ? 'flex' : 'none', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
@@ -390,7 +390,7 @@ export default function App() {
       <main style={{ background: 'var(--bs-bg)', gridColumn: 2, gridRow: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <header className="bs-toolbar">
           <span className="bs-toolbar__brand">BEADS STATION</span>
-          <button onClick={openPalette} title="Open command palette">Commands <kbd>Cmd+K</kbd></button>
+          <button onClick={openPalette} title="Open command palette">Commands <kbd>{shortcutLabel(commandBindings.palette)}</kbd></button>
           <button onClick={() => setSkin('designer')}>Designer</button>
           <label className="bs-toolbar__select">View
             <select aria-label="Beads view" value={uiPrefs.view} onChange={e => switchView(e.target.value as BeadsView)}>
@@ -398,7 +398,7 @@ export default function App() {
             </select>
           </label>
           <button onClick={() => setRequestedChats(prev => new Set([...prev, active.id]))}>Start Claude chat</button>
-          <button className="bs-toolbar__settings" onClick={openPalette} title="Open settings">Settings</button>
+          <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
         </header>
         <TabBar projects={projects} activeId={activeId} onSelect={setActive} onOpen={() => setPickerOpen(true)} onClose={id => {
           setRequestedChats(prev => { const next = new Set(prev); next.delete(id); return next })
@@ -498,10 +498,11 @@ export default function App() {
       {chatRequested && !needsConfirm && <PermissionModePicker projectId={active.id} />}
       {needsConfirm && (
         <MorningConfirm
-          projectId={active.id}
-          sessionId={active.claudeSessionId}
+          projectName={active.name}
+          sessionId={resumableSession!}
           onResume={handleResume}
           onNew={handleNew}
+          onCancel={handleCancelStart}
         />
         )}
     </div>

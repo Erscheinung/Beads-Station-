@@ -72,6 +72,17 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            {
+                use tauri::menu::{Menu, MenuItem, MenuItemKind};
+                let menu = Menu::default(app.handle())?;
+                if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {
+                    // Shortcut dispatch stays in the shared, rebindable frontend
+                    // registry. A fixed native accelerator would override it.
+                    app_menu.insert(&MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?, 1)?;
+                }
+                app.set_menu(menu)?;
+            }
             telemetry::start(app.handle().clone());
             // RV3.2 debug — open the Web Inspector on launch so bd invoke
             // returns can be watched live (release WKWebview is otherwise
@@ -90,6 +101,12 @@ pub fn run() {
                 }
             }
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "settings" {
+                use tauri::Emitter;
+                let _ = app.emit("settings:open", ());
+            }
         })
         // RV2-fix (Code-51e): reap every live `claude --print` child when the
         // window closes. Without this, each visited project / spawned agent

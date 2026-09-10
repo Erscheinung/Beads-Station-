@@ -33,6 +33,7 @@ import { PermissionModePicker } from '../state/claudeSettings'
 import { setInsert as setTermInsert } from '../state/termPanes'
 import { buildRenderItems } from '../lib/renderItems'
 import { RenderItemView } from './RenderItems'
+import { claudeResumeKey, claudeStartSession } from '../state/sessionPreferences'
 
 type Frame = any
 
@@ -140,7 +141,7 @@ function isEditableFocus(): boolean {
   return false
 }
 
-export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId, active }: ClaudeChatProps) {
+export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }: ClaudeChatProps) {
   // RV2 — every claude-session-scoped key (events, usage, status, approval
   // RPCs, header portal id) uses `bridge`. The REAL projectId is kept only for
   // project-scoped RPCs (projects_get) and the header label.
@@ -208,21 +209,10 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
   }
 
   useEffect(() => {
-    console.info('[ClaudeChat] starting', { projectId, cwd, sessionId, permissionMode })
+    console.info('[ClaudeChat] starting', { projectId, cwd, permissionMode })
     const ac = new AbortController()
     const { signal } = ac
     ;(async () => {
-      let sid = sessionId
-      if (!sid) {
-        try {
-          const proj = await invoke<{ claudeSessionId: string }>('projects_get', { id: projectId })
-          sid = proj.claudeSessionId
-        } catch (e) {
-          console.error('projects_get failed', e)
-        }
-      }
-      if (signal.aborted) return
-
       // Code-lbi: register ALL listeners BEFORE claude_start so no early frames
       // (startup diagnostic, initial stderr, session-id) are lost to the race.
       await safeListen<Frame>(`claude_event:${chanId(bridge)}`, e => {
@@ -251,7 +241,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       // Code-key: listen for child-exit status to trigger respawn.
       // Use the resumeKey from the outer scope so respawn goes through the
       // same persisted-id logic as the initial mount (not a stale closure).
-      const resumeKey = `bs.claude.session:${bridge}`
+      const resumeKey = claudeResumeKey(bridge)
       await safeListen<string>(`claude_status:${chanId(bridge)}`, e => {
         if (e.payload === 'exited') {
           respawnAttemptsRef.current += 1
@@ -295,21 +285,21 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       if (signal.aborted) return
       // Code-4je: check for a persisted CLI-assigned session_id to resume.
       // resumeKey declared above (shared with the exit-monitor listener).
-      const persistedSid = localStorage.getItem(resumeKey)
-      const useResume = !!persistedSid
-      const startSid = persistedSid ?? sid
+      const startSession = claudeStartSession(bridge)
+      // Project records contain an allocation id for legacy bookkeeping. It is
+      // not a Claude transcript id and must never be passed as --session-id.
       try {
         await invoke('claude_start', {
           projectId: bridge,
           cwd,
-          sessionId: startSid,
+          sessionId: startSession.sessionId,
           permissionMode: permissionMode ?? 'acceptEdits',
-          resume: useResume,
+          resume: startSession.resume,
         })
         if (!signal.aborted) setStatus('started')
         // After start, give the init frame a moment to arrive then capture
         // the CLI-assigned session_id and persist it for resume.
-        if (!signal.aborted && !useResume) {
+        if (!signal.aborted && !startSession.resume) {
           setTimeout(async () => {
             try {
               const cliSid = await invoke<string | null>('claude_get_session_id', { projectId: bridge })
@@ -347,7 +337,7 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
         invoke('claude_kill', { projectId: bridge }).catch(() => {})
       }
     }
-  }, [projectId, bridge, cwd, sessionId, permissionMode])
+  }, [projectId, bridge, cwd, permissionMode])
 
   // RV2 — agent panes autofocus their input once mounted. App.tsx's spawn
   // handler used to call setInsert(true) synchronously, before this input
@@ -498,11 +488,13 @@ export function ClaudeChat({ projectId, cwd, sessionId, permissionMode, bridgeId
       // "session not started" (reconcile evicted it) both mean we need to respawn.
       if (msg.includes('session dead') || msg.includes('session not started')) {
         try {
+          const startSession = claudeStartSession(bridge)
           await invoke('claude_start', {
             projectId: bridge,
             cwd,
-            sessionId: sessionId || undefined,
+            sessionId: startSession.sessionId,
             permissionMode: permissionMode ?? 'acceptEdits',
+            resume: startSession.resume,
           })
           await invoke('claude_send', { projectId: bridge, text })
           return

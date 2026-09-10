@@ -70,18 +70,18 @@ test('New issue fires bd_create with the typed title', async ({ page }) => {
     .toBe(true)
 })
 
-test('Toggle theme flips the .du-theme class on the shell root', async ({ page }) => {
+test('Toggle theme updates document colors, including portaled menus', async ({ page }) => {
   await boot(page)
-  const hadClass = await page.evaluate(() =>
-    document.querySelector('.bs-grid-1px')?.classList.contains('du-theme') ?? false,
-  )
+  const before = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bs-bg'))
   await openPalette(page)
   await page.getByText('Toggle theme').click()
   await expect
     .poll(() =>
       page.evaluate(
-        () => document.querySelector('.bs-grid-1px')?.classList.contains('du-theme') ?? false,
+        () => getComputedStyle(document.documentElement).getPropertyValue('--bs-bg'),
       ),
     )
-    .toBe(!hadClass)
+    .not.toBe(before)
+  await openPalette(page)
+  await expect(page.locator('.bs-palette')).toHaveCSS('background-color', 'rgb(239, 239, 240)')
 })

@@ -39,6 +39,7 @@ import { useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { setFocused, setLeaderActive } from '../state/vim'
 import { openPalette } from '../state/palette'
+import { matchedCommand, dispatchCommand } from '../state/commands'
 import {
   splitActive,
   closeActivePane,
@@ -144,11 +145,11 @@ export function useVimNav(): void {
       // command lands cleanly, same idiom as the Cmd-P leader hatch below). We
       // deliberately keep the palette OFF Cmd-P: that chord already arms the vim
       // leader (a tested, documented binding) — Cmd+K is the cmdk convention.
-      if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')
-          && !event.altKey && !event.shiftKey) {
+      const command = matchedCommand(event)
+      if (command) {
         const el = document.activeElement as HTMLElement | null
         el?.blur?.()
-        openPalette()
+        if (!event.repeat) dispatchCommand(command)
         event.preventDefault()
         return
       }

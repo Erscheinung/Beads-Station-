@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { disposeTerminalSession, getTerminalSession, type TerminalSession } from '../lib/terminalSessions'
 import { useThemePaletteId } from '../state/theme'
+import { useTerminalAppearance } from '../state/terminalAppearance'
 import 'xterm/css/xterm.css'
 
 /** A view of a session. Unmounting the view never replaces its shell or screen. */
@@ -17,6 +18,7 @@ export function Terminal({ paneId, cwd, onSpawn, focused, insert }: {
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const paletteId = useThemePaletteId()
+  const appearance = useTerminalAppearance()
 
   useEffect(() => {
     const element = host.current!
@@ -36,6 +38,7 @@ export function Terminal({ paneId, cwd, onSpawn, focused, insert }: {
     }
   }, [paneId, cwd, onSpawn, attempt])
   useEffect(() => { sessionRef.current?.applyTheme() }, [paletteId])
+  useEffect(() => { sessionRef.current?.applyAppearance() }, [appearance])
   useEffect(() => {
     if (focused && insert) sessionRef.current?.terminal.focus()
   }, [focused, insert, phase, attempt])

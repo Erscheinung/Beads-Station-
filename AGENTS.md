@@ -2,7 +2,50 @@
 
 ## Start here
 
-**Latest handoff — 2026-09-10:** User stopped expansion with 8% usage remaining.
+**Latest handoff — 2026-09-10, settings/UI session:** User stopped expansion as
+the five-hour usage limit approached. Finish from this table; do not restart
+planning. Root handled settings/commands/appearance/native investigation; one
+bounded Sol assignment handled Claude resume. Current branch is
+`feat/daily-driver-foundation`, HEAD `1699ac3`. The checkout was clean at this
+session's start; the changes listed below are now uncommitted. No commit/push.
+`package-lock.json` was not changed in this session. Older statements below about
+HEAD `7a027c6` and an outstanding lockfile edit are historical.
+
+Read `docs/FOUNDATION-VERIFICATION.md` section "Settings and appearance handoff"
+first. Current evidence: production build and bundled debug `.app` build pass;
+132/132 frontend unit tests, 63/63 Chromium/mock tests, 88/88 Rust tests pass;
+cargo check passed before the final `projects_open` change, which subsequently
+passed cargo test and native bundle compilation. No paid provider calls.
+
+| Order / state | Bead | Work and next acceptance gate | Owner / scope |
+| --- | --- | --- | --- |
+| Delivered | `Code-4zm` | Dedicated General/Appearance/Keyboard shortcuts/Sessions settings; uniform toolbar; macOS Settings menu; persisted command bindings and right-aligned palette hints; removed misleading Obsidian placeholder writer; theme surface/contrast repair; theme previews and terminal font/size/line-height. Native settings menu, Fahrenheit and One Light visually checked. | Root implemented. Shared registry covers current palette commands, **not all bd verbs or pane sequences**. |
+| Delivered | `Code-b57` | Resume only after explicit chat intent and a saved provider-observed ID; Cancel/Escape/backdrop do not launch; New session clears resume ID; persisted ask-before-resume toggle. | Sol implemented; root integrated and verified. Actual provider transcript existence/auth remains untested. |
+| **Next: verify** | `Code-9ff`, `Code-oan` | Packaged smoke found both discovery and explicit open blocked in `read_dir -> __open_nocancel`; eventually recovered. Fixed direct open to avoid rescanning unrelated roots and run filesystem work on blocking executor. **Latest rebuilt bundle has not been relaunched after this fix.** Verify direct open and shell typing; diagnose discovery delays separately. | Root. Sample: `/tmp/beads-settings-native-sample.txt`. Do not claim a completed Finder/release gate. |
+| Next lifecycle slice | `Code-am5.1` under `Code-am5` | Backend native-run snapshot/reconciliation; reload reconnects output and cancel to actual child, no duplicate launch, unknown stays unknown. | Bounded Sol brief already in bd; root owns contract/review. Files `designer/nativeRuns.ts`, Rust `claude.rs`. |
+| After `.1` | `Code-am5.2` under `Code-am5` | Artifact capture/preview and approval bound to exact run+revision; request changes invalidates stale approval. Dependency on `.1` is recorded. | One bounded Sol assignment after root reviews lifecycle; local fixture artifacts first. |
+| Native gates | `Code-33c`, `Code-t3j`, `Code-efg`, `Code-44k`, `Code-r7q` | Real terminal PID/Unicode/paste/Neovim, details, mode/resize navigation and soak; native provider auth only on explicit intent. Full frontend suites now pass. | Root verifies. Existing historical tickets remain open; mock tests are not native evidence. |
+| Conductor | `Code-yfb` | Durable workspace+ticket+attempt leases, attempt-owned merge slot, restart/unknown reconciliation, bounded budgets and effective provider/model/effort routing. | Root-led; Sol only one reviewed slice at a time. `Code-4bx` stays closed for its bounded fixes. |
+| Customization | `Code-0cp` | Remaining bd command forms/coverage, rebindable pane sequences, per-workspace preference overrides, designer resizers, optional integrations with useful explicit actions. | Root chooses concrete groups; Sol implements bounded groups. Cmd/Ctrl+P and Neovim Escape stay protected. |
+| Later, existing roadmap | M2 / M6 / M7 | Pin/evaluate Herdr before PTY migration; external issue/PR sync only after local artifact review; signed release and measured performance remain outstanding. | No new runtime owner, external posts, or broad migration without its own verified slice. |
+
+Settings source: `src/components/SettingsPanel.tsx`, `SettingsPanel.css`,
+`src/state/commands.ts`, `settings.ts`, `sessionPreferences.ts`,
+`terminalAppearance.ts`; native menu in `src-tauri/src/lib.rs`.
+The native menu currently has a clickable Settings item without a fixed native
+accelerator; Cmd/Ctrl+, is dispatched through the configurable frontend registry.
+The local cmux checkout is **`~/Desktop/Code/cmux`**, not `~/Code/cmux`.
+Inspected its settings sidebar/shortcut recorder and license; borrowed interaction
+patterns, copied no code/assets. Preserve real xterm/Neovim ownership.
+
+Latest debug bundle:
+`src-tauri/target/debug/bundle/macos/Beads Station.app`.
+The inspected smoke bundle was quit; a separate `target/debug/beads-station`
+development process was still running at handoff. Do not kill user dev sessions.
+
+### Previous handoff — historical context
+
+User previously stopped expansion with 8% usage remaining.
 Read `docs/FOUNDATION-VERIFICATION.md` section "Native/designer and UX slice"
 before continuing. Current work is uncommitted; preserve all existing changes.
 Native designer runs and conductor hardening are implemented as a bounded slice,

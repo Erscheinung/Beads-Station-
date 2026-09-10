@@ -14,7 +14,7 @@
 // mirror for tests) — no zustand/jotai.
 
 import { useSyncExternalStore } from 'react'
-import { type ThemePalette, applyPaletteToCSS, resetPaletteCSS } from '../lib/themeImport'
+import { type ThemePalette, applyPaletteToCSS } from '../lib/themeImport'
 import { BUNDLED_THEMES, DEFAULT_THEME_ID } from '../themes/index'
 
 export type Theme = 'dark' | 'light'
@@ -40,6 +40,9 @@ function loadPersistedPaletteId(): string {
 
 let state: Theme = loadPersisted()
 let paletteId: string = loadPersistedPaletteId()
+if (!BUNDLED_THEMES.some(t => t.name === paletteId)) paletteId = DEFAULT_THEME_ID
+if (state === 'light') paletteId = 'one-light'
+state = paletteId === 'one-light' ? 'light' : 'dark'
 
 const listeners = new Set<() => void>()
 
@@ -76,7 +79,7 @@ try {
 }
 
 // Apply persisted palette on load (non-default only — default matches stylesheet).
-if (paletteId !== DEFAULT_THEME_ID) {
+{
   const p = BUNDLED_THEMES.find(t => t.name === paletteId)
   if (p) {
     try { applyPaletteToCSS(p) } catch { /* non-browser */ }
@@ -104,14 +107,7 @@ export function getActivePalette(): ThemePalette | undefined {
 }
 
 export function setTheme(t: Theme): void {
-  if (state === t) return
-  state = t
-  try {
-    localStorage.setItem(STORAGE_KEY, t)
-  } catch {
-    /* noop */
-  }
-  emit()
+  setThemePalette(t === 'light' ? 'one-light' : DEFAULT_THEME_ID)
 }
 
 export function toggleTheme(): void {
@@ -122,16 +118,14 @@ export function setThemePalette(id: string): void {
   const palette = BUNDLED_THEMES.find(t => t.name === id)
   if (!palette) return
   paletteId = id
+  state = id === 'one-light' ? 'light' : 'dark'
   try {
     localStorage.setItem(PALETTE_KEY, id)
+    localStorage.setItem(STORAGE_KEY, state)
   } catch {
     /* noop */
   }
-  if (id === DEFAULT_THEME_ID) {
-    try { resetPaletteCSS() } catch { /* noop */ }
-  } else {
-    try { applyPaletteToCSS(palette) } catch { /* noop */ }
-  }
+  try { applyPaletteToCSS(palette) } catch { /* noop */ }
   emit()
 }
 

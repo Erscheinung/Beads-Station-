@@ -1,0 +1,62 @@
+import { test, expect, seedConfirmed } from './helpers'
+
+test.beforeEach(async ({ page }) => {
+  await seedConfirmed(page)
+  await page.goto('/')
+  await expect(page.getByRole('button', { name: 'Start Claude chat', exact: true })).toBeVisible()
+})
+
+test('settings records shortcuts, rejects collisions and updates palette hints', async ({ page }) => {
+  await page.getByTitle('Open settings', { exact: true }).click()
+  await page.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click()
+  await page.getByRole('button', { name: 'Shortcut for Open workspace', exact: true }).click()
+  await page.keyboard.press('Meta+k')
+  await expect(page.getByRole('alert')).toContainText('Already assigned')
+  await page.keyboard.press('Meta+Shift+o')
+  await page.getByRole('button', { name: 'Close settings' }).click()
+  await page.keyboard.press('Meta+k')
+  await expect(page.locator('[cmdk-item]').filter({ hasText: 'Open workspace' }).locator('kbd')).toContainText('Shift O')
+  await expect(page.getByText('Open Obsidian update')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await page.locator('.xterm-helper-textarea').first().focus()
+  await page.keyboard.press('Meta+Shift+o')
+  await expect(page.getByRole('dialog', { name: 'Open workspace' })).toBeVisible()
+})
+
+test('appearance updates all surfaces without replacing the terminal', async ({ page }) => {
+  const spawnCount = () => page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => e.cmd === 'pty_spawn').length)
+  await expect.poll(spawnCount).toBeGreaterThan(0)
+  const before = await spawnCount()
+  await page.keyboard.press('Meta+,')
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click()
+  await page.getByRole('button', { name: 'fahrenheit', exact: false }).click()
+  await expect(page.locator('.bs-settings')).toHaveCSS('background-color', 'rgb(0, 0, 0)')
+  await page.getByLabel('Font size', { exact: true }).fill('16')
+  await page.screenshot({ path: 'test-results/settings-fahrenheit.png' })
+  await page.getByRole('button', { name: 'one light', exact: false }).click()
+  await expect(page.locator('.bs-settings')).toHaveCSS('background-color', 'rgb(250, 250, 250)')
+  await page.screenshot({ path: 'test-results/settings-one-light.png' })
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click()
+  await page.getByRole('checkbox').uncheck()
+  expect(await spawnCount()).toBe(before)
+  await page.reload()
+  await page.getByTitle('Open settings', { exact: true }).click()
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click()
+  await expect(page.getByRole('checkbox')).not.toBeChecked()
+})
+
+test('a new project starts chat without a fabricated resume prompt', async ({ page }) => {
+  await expect(page.getByRole('dialog', { name: 'Resume Claude session?' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Start Claude chat', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'Resume Claude session?' })).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => (window as any).__bsInvokeLog.find((e: any) => e.cmd === 'claude_start')?.args)).toMatchObject({ resume: false, sessionId: '' })
+})
+
+test('cancelling an observed resume does not start a child', async ({ page }) => {
+  await page.evaluate(() => localStorage.setItem('bs.claude.session:proj-a', 'observed-test-session'))
+  await page.getByRole('button', { name: 'Start Claude chat', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'Resume Claude session?' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Resume Claude session?' })).toHaveCount(0)
+  expect(await page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => e.cmd === 'claude_start').length)).toBe(0)
+})
