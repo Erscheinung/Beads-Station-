@@ -7,6 +7,7 @@
 // wrapper is promoted to position:absolute/inset:0 over the region while
 // siblings are visually hidden. Nothing unmounts.
 
+import './TerminalPanes.css'
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
 import { ClaudeChat } from './ClaudeChat'
@@ -14,6 +15,7 @@ import { FileTree } from './FileTree'
 import { useClaudeStatus } from '../state/claudeStatus'
 import {
   useTermPanes,
+  closeActivePane, unsplitToTabs, splitActive, toggleZoom, leavesOf,
   useZoom,
   registerPty,
   focusPane,
@@ -294,14 +296,23 @@ export function TerminalPanes({ termFocused }: { termFocused: boolean }) {
   const { tabs, activeTabId, insert } = useTermPanes()
   const zoomed = useZoom()
   const tab = tabs.find(t => t.id === activeTabId) ?? tabs[0]
-  const ctx: RenderCtx = { activePaneId: tab.activePaneId, termFocused, insert, zoomed }
+  const visibleZoom = leavesOf(tab.root).some(l => l.paneId === zoomed) ? zoomed : null
+  const ctx: RenderCtx = { activePaneId: tab.activePaneId, termFocused, insert, zoomed: visibleZoom }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
+      <div className="bs-pane-actions" role="toolbar" aria-label="Terminal pane controls">
+        <button onClick={() => { splitActive('v'); setFocused('terminal'); setInsert(true) }} title="Split side by side">Split right</button>
+        <button onClick={() => { splitActive('h'); setFocused('terminal'); setInsert(true) }} title="Split top and bottom">Split down</button>
+        <button onClick={unsplitToTabs} disabled={tab.root.kind === 'leaf'} title="Remove splits and keep every session in its own tab">Unsplit to tabs</button>
+        <button onClick={toggleZoom} disabled={tab.root.kind === 'leaf'}>{visibleZoom ? 'Restore panes' : 'Zoom pane'}</button>
+        <button onClick={closeFocusedPane} title="Close the focused pane and stop its shell or agent">Close pane</button>
+      </div>
       {/* tab strip — only when >1 tab, to keep the single-shell case clean */}
       {tabs.length > 1 && (
         <div
           className="bs-tabstrip"
+          role="tablist" aria-label="Terminal tabs"
           style={{
             display: 'flex',
             gap: 1,
@@ -313,7 +324,7 @@ export function TerminalPanes({ termFocused }: { termFocused: boolean }) {
           {tabs.map((t, i) => (
             <button
               key={t.id}
-              onMouseDown={() => switchTab(i)}
+              onClick={() => switchTab(i)}
               style={{
                 padding: '2px 10px',
                 fontSize: 10,
@@ -326,7 +337,7 @@ export function TerminalPanes({ termFocused }: { termFocused: boolean }) {
                 boxShadow: t.id === activeTabId ? 'inset 0 -1px 0 var(--bs-blue)' : undefined,
               }}
             >
-              {i + 1}·zsh
+              {i + 1} · {leavesOf(t.root).find(l => l.paneId === t.activePaneId)?.agent ? 'agent' : leavesOf(t.root).find(l => l.paneId === t.activePaneId)?.fileNav ? 'files' : 'shell'}
             </button>
           ))}
         </div>
@@ -338,4 +349,10 @@ export function TerminalPanes({ termFocused }: { termFocused: boolean }) {
 
 export function killPty(id: number): void {
   invoke('pty_kill', { id }).catch(() => {})
+}
+
+export function closeFocusedPane(): void {
+  const { killPtyId, killBridgeId } = closeActivePane()
+  if (killPtyId !== null) killPty(killPtyId)
+  if (killBridgeId) void invoke('claude_kill', { projectId: killBridgeId }).catch(() => {})
 }

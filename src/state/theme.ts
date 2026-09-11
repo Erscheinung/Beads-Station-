@@ -1,26 +1,14 @@
-// Phase 9 (Code-ky4.9) — runtime theme toggle.
-//
-// The app ships two token layers: the default dark (Tokyonight Storm) on
-// `:root` (src/index.css) and a light layer scoped to the `.du-theme` class
-// (src/theme/designer-light.css). Before Phase 9 the light layer was reachable
-// only via the designer skin. This store exposes a real light/dark toggle: it
-// flips `.du-theme` on the primary shell root and persists the choice.
-//
-// Code-6wx — palette-driven surfaces. A ThemePalette can be set to recolor the
-// terminal + all --bs-* CSS tokens from one source. Bundled themes live in
-// src/themes/index.ts; the active palette id is persisted in localStorage.
-//
-// Same tiny external-store shape as vim.ts (useSyncExternalStore + a window
-// mirror for tests) — no zustand/jotai.
-
 import { useSyncExternalStore } from 'react'
 import { type ThemePalette, applyPaletteToCSS } from '../lib/themeImport'
 import { BUNDLED_THEMES, DEFAULT_THEME_ID } from '../themes/index'
+
+import { getSkin, subscribeSkin, type Skin } from './skin'
 
 export type Theme = 'dark' | 'light'
 
 const STORAGE_KEY = 'beads-station.theme'
 const PALETTE_KEY = 'beads-station.themePaletteId'
+const VIEW_KEY = 'beads-station.view-themes.v1'
 
 function loadPersisted(): Theme {
   try {
@@ -38,11 +26,16 @@ function loadPersistedPaletteId(): string {
   }
 }
 
-let state: Theme = loadPersisted()
-let paletteId: string = loadPersistedPaletteId()
-if (!BUNDLED_THEMES.some(t => t.name === paletteId)) paletteId = DEFAULT_THEME_ID
-if (state === 'light') paletteId = 'one-light'
-state = paletteId === 'one-light' ? 'light' : 'dark'
+const legacyId = loadPersisted() === 'light' ? 'one-light' : loadPersistedPaletteId()
+const valid = (id: unknown): id is string => typeof id === 'string' && BUNDLED_THEMES.some(t => t.name === id)
+const initialId = valid(legacyId) ? legacyId : DEFAULT_THEME_ID
+let viewThemes: Record<Skin, string> = { terminal: initialId, designer: initialId }
+try {
+  const saved = JSON.parse(localStorage.getItem(VIEW_KEY) || '{}')
+  for (const skin of ['terminal', 'designer'] as const) if (valid(saved[skin])) viewThemes[skin] = saved[skin]
+} catch { /* optional storage */ }
+let paletteId = viewThemes[getSkin()]
+let state: Theme = paletteId === 'one-light' ? 'light' : 'dark'
 
 const listeners = new Set<() => void>()
 
@@ -114,19 +107,30 @@ export function toggleTheme(): void {
   setTheme(state === 'dark' ? 'light' : 'dark')
 }
 
-export function setThemePalette(id: string): void {
-  const palette = BUNDLED_THEMES.find(t => t.name === id)
-  if (!palette) return
-  paletteId = id
-  state = id === 'one-light' ? 'light' : 'dark'
+/** A palette command changes only the currently displayed view. */
+export function setThemePalette(id: string, skin: Skin = getSkin()): void {
+  if (!valid(id)) return
+  viewThemes = { ...viewThemes, [skin]: id }
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify(viewThemes)) } catch { /* optional storage */ }
+  applyCurrentView()
+}
+
+export function useViewThemes(): Record<Skin, string> {
+  return useSyncExternalStore(subscribe, () => viewThemes, () => viewThemes)
+}
+
+function applyCurrentView(): void {
+  paletteId = viewThemes[getSkin()]
+  state = paletteId === 'one-light' ? 'light' : 'dark'
   try {
-    localStorage.setItem(PALETTE_KEY, id)
+    // Keep legacy readers compatible; view-themes is authoritative on reload.
+    localStorage.setItem(PALETTE_KEY, paletteId)
     localStorage.setItem(STORAGE_KEY, state)
-  } catch {
-    /* noop */
-  }
-  try { applyPaletteToCSS(palette) } catch { /* noop */ }
+  } catch { /* optional storage */ }
+  try { applyPaletteToCSS(BUNDLED_THEMES.find(t => t.name === paletteId)!) } catch { /* non-browser */ }
   emit()
 }
+const releaseSkin = subscribeSkin(applyCurrentView)
+if (import.meta.hot) import.meta.hot.dispose(releaseSkin)
 
 export { BUNDLED_THEMES }

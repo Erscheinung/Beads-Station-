@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   useTermPanes as _use, // referenced to keep the module import side-effect
   splitActive,
+  unsplitToTabs,
   closeActivePane,
   newTab,
   switchTab,
@@ -337,5 +338,35 @@ describe('termPanes persistence round-trip (Code-mkv)', () => {
     expect(() => restoreProjects('not json')).not.toThrow()
     expect(() => restoreProjects(JSON.stringify({ v: 999, projects: {} }))).not.toThrow()
     expect(() => restoreProjects(null)).not.toThrow()
+  })
+})
+
+describe('unsplit session ownership', () => {
+  it('moves nested panes to tabs without changing shell IDs and clears zoom', () => {
+    setActiveProject('unsplit-test', '/tmp/unsplit')
+    splitActive('v')
+    splitActive('h')
+    const original = leavesOf(activeTabRoot())
+    original.forEach((leaf, i) => registerPty(leaf.paneId, 700 + i))
+    focusPane(original[1].paneId)
+    toggleZoom()
+    unsplitToTabs()
+    expect(getZoom()).toBeNull()
+    expect(activeTabRoot()).toMatchObject({ kind: 'leaf', paneId: original[1].paneId, ptyId: 701 })
+    cycleTab(1)
+    expect(activeTabRoot()).toMatchObject({ paneId: original[0].paneId, ptyId: 700 })
+    cycleTab(1)
+    expect(activeTabRoot()).toMatchObject({ paneId: original[2].paneId, ptyId: 702 })
+    expect(closeActivePane().killPtyId).toBe(702)
+    expect(activeTabRoot()).toMatchObject({ paneId: original[1].paneId, ptyId: 701 })
+  })
+  it('closing a zoomed pane reveals the surviving split', () => {
+    setActiveProject('close-zoom-test', '/tmp/close')
+    splitActive('v')
+    splitActive('h')
+    toggleZoom()
+    closeActivePane()
+    expect(getZoom()).toBeNull()
+    expect(leavesOf(activeTabRoot())).toHaveLength(2)
   })
 })

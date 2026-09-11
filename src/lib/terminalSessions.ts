@@ -6,7 +6,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen as listen } from './listenerRegistry'
 import { getActivePalette } from '../state/theme'
-import { getTerminalAppearance } from '../state/terminalAppearance'
+import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/terminalAppearance'
 import { matchedCommand } from '../state/commands'
 
 type Phase = 'starting' | 'running' | 'exited' | 'error'
@@ -39,6 +39,8 @@ export class TerminalSession {
       }).catch(error => this.fail(error))
     })
     this.releases.push(() => onData.dispose())
+    // Detached tabs retain live terminals too; apply preferences without a React remount.
+    this.releases.push(subscribeTerminalAppearance(() => this.applyAppearance()))
     this.ready = this.start(cwd, onSpawn)
   }
 
@@ -101,6 +103,9 @@ export class TerminalSession {
     this.terminal.options.fontFamily = `${appearance.fontFamily}, monospace`
     this.terminal.options.fontSize = appearance.fontSize
     this.terminal.options.lineHeight = appearance.lineHeight
+    this.terminal.options.cursorStyle = appearance.cursorStyle
+    this.terminal.options.cursorBlink = appearance.cursorBlink
+    this.terminal.options.scrollback = appearance.scrollback
     this.resize()
   }
   resize() {
@@ -134,7 +139,12 @@ export function disposeTerminalSession(paneId: string) {
   sessions.delete(paneId)
 }
 
-function onDispose(event: Event) { disposeTerminalSession((event as CustomEvent<{ paneId: string }>).detail.paneId) }
+function onDispose(event: Event) {
+  const paneId = (event as CustomEvent<{ paneId: string }>).detail.paneId
+  // Claim process cleanup so callers do not send a second kill for this ID.
+  if (sessions.has(paneId)) event.preventDefault()
+  disposeTerminalSession(paneId)
+}
 window.addEventListener('terminal:dispose', onDispose)
 // A module replacement is a development restart, not ordinary React navigation.
 if (import.meta.hot) import.meta.hot.dispose(() => {

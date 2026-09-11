@@ -10,7 +10,8 @@ import { SettingsPanel } from './SettingsPanel'
 import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from '../state/theme'
 import { setSkin } from '../state/skin'
 import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
-import { newTab, splitActive } from '../state/termPanes'
+import { closeFocusedPane } from './TerminalPanes'
+import { newTab, splitActive, unsplitToTabs, toggleZoom } from '../state/termPanes'
 import { setFocused } from '../state/vim'
 import './CommandPalette.css'
 
@@ -127,6 +128,9 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'newTab': setSkin('terminal'); newTab(); setFocused('terminal'); break
       case 'splitH': setSkin('terminal'); splitActive('h'); setFocused('terminal'); break
       case 'splitV': setSkin('terminal'); splitActive('v'); setFocused('terminal'); break
+      case 'unsplit': setSkin('terminal'); unsplitToTabs(); break
+      case 'closePane': setSkin('terminal'); closeFocusedPane(); break
+      case 'zoomPane': setSkin('terminal'); toggleZoom(); break
       case 'agent': onAction('agent:spawn'); break
       case 'files': onAction('filenav:spawn'); break
       case 'expand': case 'collapse': window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: id === 'expand' ? 'expandAll' : 'collapseAll' } })); break

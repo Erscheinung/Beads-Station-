@@ -130,12 +130,117 @@ static MODES: Lazy<Mutex<HashMap<String, String>>> =
 /// deliberately use each installed CLI's supported non-interactive JSONL mode;
 /// authentication remains owned by the CLI and no credentials enter the app.
 struct NativeRun {
-    child: Child,
+    child: Option<Child>,
+    workspace_id: String,
+    ticket_id: String,
+    attempt_id: String,
+    provider: String,
+    events: VecDeque<Value>,
+    next_seq: u64,
+    drained: bool,
+    cancel_requested: bool,
+    unknown: bool,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 static NATIVE_RUNS: Lazy<Mutex<HashMap<String, NativeRun>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+static NATIVE_TERMINALS: Lazy<Mutex<VecDeque<NativeRunSnapshot>>> =
+    Lazy::new(|| Mutex::new(VecDeque::new()));
+
+fn native_ticket_is_reserved(runs: &HashMap<String, NativeRun>, workspace_id: &str, ticket_id: &str) -> bool {
+    runs.values().any(|run| run.workspace_id == workspace_id && run.ticket_id == ticket_id)
+}
+
+const NATIVE_RUN_SCROLLBACK_CAP: usize = 200;
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeRunSnapshot {
+    run_id: String,
+    workspace_id: String,
+    ticket_id: String,
+    attempt_id: String,
+    provider: String,
+    status: String,
+    events: Vec<Value>,
+}
+
+async fn record_native_event(run_id: &str, mut event: Value) -> Option<Value> {
+    let mut runs = NATIVE_RUNS.lock().await;
+    let run = runs.get_mut(run_id)?;
+    let seq = run.next_seq;
+    run.next_seq += 1;
+    if let Some(object) = event.as_object_mut() {
+        object.insert("seq".into(), json!(seq));
+    }
+    if run.events.len() >= NATIVE_RUN_SCROLLBACK_CAP {
+        run.events.pop_front();
+    }
+    run.events.push_back(event.clone());
+    Some(event)
+}
+
+async fn emit_native_event(window: &Window, run_id: &str, event: Value) {
+    if let Some(event) = record_native_event(run_id, event).await {
+        let channel = format!("native_run_event:{}", chan_id(run_id));
+        let _ = window.emit(&channel, event);
+    }
+}
+
+async fn retain_native_terminal(runs: &mut HashMap<String, NativeRun>, run_id: &str, status: &str) -> Result<Value, String> {
+    // Lock order matches native_run_snapshot. Moving active -> terminal while
+    // both are held prevents reload from observing a gap between registries.
+    let mut terminals = NATIVE_TERMINALS.lock().await;
+    let mut run = runs.remove(run_id).ok_or_else(|| format!("run {run_id} ownership was lost"))?;
+    let event = json!({ "kind": "status", "status": status, "seq": run.next_seq });
+    if run.events.len() >= NATIVE_RUN_SCROLLBACK_CAP { run.events.pop_front(); }
+    run.events.push_back(event.clone());
+    let snapshot = NativeRunSnapshot {
+        run_id: run_id.to_string(),
+        workspace_id: run.workspace_id,
+        ticket_id: run.ticket_id,
+        attempt_id: run.attempt_id,
+        provider: run.provider,
+        status: status.into(),
+        events: run.events.into_iter().collect(),
+    };
+    terminals.retain(|old| !(old.workspace_id == snapshot.workspace_id && old.ticket_id == snapshot.ticket_id));
+    if terminals.len() >= 50 { terminals.pop_front(); }
+    terminals.push_back(snapshot);
+    Ok(event)
+}
+
+#[tauri::command]
+pub async fn native_run_snapshot(workspace_id: String) -> Result<Vec<NativeRunSnapshot>, String> {
+    let mut runs = NATIVE_RUNS.lock().await;
+    let terminals = NATIVE_TERMINALS.lock().await;
+    let mut by_ticket: HashMap<String, NativeRunSnapshot> = terminals
+        .iter()
+        .filter(|run| run.workspace_id == workspace_id)
+        .cloned()
+        .map(|run| (run.ticket_id.clone(), run))
+        .collect();
+    let ids: Vec<String> = runs.keys().cloned().collect();
+    for run_id in ids {
+        let Some(run) = runs.get_mut(&run_id) else { continue };
+        let status = if run.unknown { "unknown" } else { "running" };
+        if run.workspace_id == workspace_id {
+            by_ticket.insert(run.ticket_id.clone(), NativeRunSnapshot {
+                run_id,
+                workspace_id: run.workspace_id.clone(),
+                ticket_id: run.ticket_id.clone(),
+                attempt_id: run.attempt_id.clone(),
+                provider: run.provider.clone(),
+                status: status.into(),
+                events: run.events.iter().cloned().collect(),
+            });
+        }
+    }
+    let mut snapshots: Vec<_> = by_ticket.into_values().collect();
+    snapshots.sort_by(|a, b| a.run_id.cmp(&b.run_id));
+    Ok(snapshots)
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,18 +276,26 @@ pub fn native_provider_status() -> Vec<NativeProviderAvailability> {
 pub async fn native_run_start(
     window: Window,
     run_id: String,
+    workspace_id: String,
+    ticket_id: String,
+    attempt_id: String,
     provider: String,
     cwd: String,
     prompt: String,
 ) -> Result<(), String> {
-    if run_id.trim().is_empty() || prompt.trim().is_empty() {
-        return Err("run_id and prompt are required".into());
+    if [run_id.as_str(), workspace_id.as_str(), ticket_id.as_str(), attempt_id.as_str()]
+        .iter().any(|value| value.trim().is_empty()) || prompt.trim().is_empty()
+    {
+        return Err("run_id, workspace_id, ticket_id, attempt_id and prompt are required".into());
     }
     // Hold the registry lock through spawn+insert so two concurrent calls with
     // the same identity cannot both pass an optimistic contains check.
     let mut runs = NATIVE_RUNS.lock().await;
     if runs.contains_key(&run_id) {
         return Err(format!("run {run_id} is already active"));
+    }
+    if native_ticket_is_reserved(&runs, &workspace_id, &ticket_id) {
+        return Err(format!("ticket {ticket_id} already has an active native run in workspace {workspace_id}"));
     }
 
     let binary = match provider.as_str() {
@@ -224,55 +337,134 @@ pub async fn native_run_start(
         .map_err(|e| format!("failed to start {provider}: {e}"))?;
     let stdout = child.stdout.take().ok_or("provider stdout not captured")?;
     let stderr = child.stderr.take().ok_or("provider stderr not captured")?;
-    runs.insert(run_id.clone(), NativeRun { child, _permit: permit });
+    runs.insert(run_id.clone(), NativeRun {
+        child: Some(child),
+        workspace_id,
+        ticket_id,
+        attempt_id,
+        provider: provider.clone(),
+        events: VecDeque::new(),
+        next_seq: 1,
+        drained: false,
+        cancel_requested: false,
+        unknown: false,
+        _permit: permit,
+    });
     drop(runs);
 
     let channel = format!("native_run_event:{}", chan_id(&run_id));
-    let _ = window.emit(&channel, json!({ "kind": "status", "status": "running", "provider": provider }));
+    emit_native_event(&window, &run_id, json!({ "kind": "status", "status": "running", "provider": provider })).await;
     let output_window = window.clone();
-    let output_channel = channel.clone();
+    let output_run_id = run_id.clone();
     let output_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let parsed = serde_json::from_str::<Value>(&line).ok();
-            let _ = output_window.emit(&output_channel, json!({ "kind": "output", "line": line, "parsed": parsed }));
-        }
+        drain_native_output(stdout, &output_run_id, Some(&output_window), false).await
     });
     let error_window = window.clone();
-    let error_channel = channel.clone();
+    let error_run_id = run_id.clone();
     let error_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let _ = error_window.emit(&error_channel, json!({ "kind": "stderr", "line": line }));
-        }
+        drain_native_output(stderr, &error_run_id, Some(&error_window), true).await
     });
     tokio::spawn(async move {
-        // Drain both pipes before the terminal status so the UI never marks a
-        // run reviewable while its final explanation is still in flight.
-        let _ = tokio::join!(output_task, error_task);
-        let run = NATIVE_RUNS.lock().await.remove(&run_id);
-        let Some(mut run) = run else { return }; // cancellation owns the status
-        let status = match run.child.wait().await {
-            Ok(exit) if exit.success() => "needs_review",
-            Ok(_) | Err(_) => "failed",
-        };
-        let _ = window.emit(&channel, json!({ "kind": "status", "status": status }));
+        let (output, error) = tokio::join!(output_task, error_task);
+        if let Some(run) = NATIVE_RUNS.lock().await.get_mut(&run_id) {
+            run.drained = matches!(output, Ok(Ok(()))) && matches!(error, Ok(Ok(())));
+            run.unknown |= !run.drained;
+        }
+        // Poll without taking the child: closing stdout/stderr does not mean
+        // the process exited, and cancellation must still reach that child.
+        loop {
+            match poll_native_completion(&run_id).await {
+                Ok(Some(event)) => { let _ = window.emit(&channel, event); break; }
+                Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+                Err(_) => break, // ownership remains available for check/cancel
+            }
+        }
     });
     Ok(())
 }
 
 #[tauri::command]
 pub async fn native_run_cancel(window: Window, run_id: String) -> Result<(), String> {
-    let run = NATIVE_RUNS.lock().await.remove(&run_id);
-    let Some(mut run) = run else { return Err(format!("run {run_id} is not active")); };
-    let kill_requested = run.child.start_kill().is_ok();
-    let exit = run.child.wait().await.map_err(|e| format!("wait for run {run_id}: {e}"))?;
+    let (status, seq) = cancel_native_run_process(&run_id).await?;
     let channel = format!("native_run_event:{}", chan_id(&run_id));
-    // If the child beat cancellation to exit, preserve its real outcome rather
-    // than labelling completed work cancelled.
-    let status = if kill_requested { "cancelled" } else if exit.success() { "needs_review" } else { "failed" };
-    let _ = window.emit(&channel, json!({ "kind": "status", "status": status }));
+    let _ = window.emit(&channel, json!({ "kind": "status", "status": status, "seq": seq }));
     Ok(())
+}
+
+async fn drain_native_output<R: tokio::io::AsyncRead + Unpin>(
+    reader: R, run_id: &str, window: Option<&Window>, stderr: bool,
+) -> Result<(), std::io::Error> {
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        let event = if stderr { json!({ "kind": "stderr", "line": line }) }
+            else { json!({ "kind": "output", "parsed": serde_json::from_str::<Value>(&line).ok(), "line": line }) };
+        if let Some(event) = record_native_event(run_id, event).await {
+            if let Some(window) = window {
+                let _ = window.emit(&format!("native_run_event:{}", chan_id(run_id)), event);
+            }
+        }
+    }
+    Ok(())
+}
+
+// All registry transitions use RUNS -> TERMINALS. Admission stays reserved
+// until the exact child has been reaped AND both output readers have finished.
+async fn poll_native_completion(run_id: &str) -> Result<Option<Value>, String> {
+    let mut runs = NATIVE_RUNS.lock().await;
+    let Some(run) = runs.get_mut(run_id) else {
+        return NATIVE_TERMINALS.lock().await.iter().find(|s| s.run_id == run_id)
+            .and_then(|s| s.events.last().cloned()).map(Some)
+            .ok_or_else(|| format!("run {run_id} ownership was lost"));
+    };
+    let exit = match run.child.as_mut().ok_or("child ownership unavailable")?.try_wait() {
+        Ok(exit) => exit,
+        Err(error) => { run.unknown = true; return Err(format!("reap run {run_id}: {error}")); }
+    };
+    let Some(exit) = exit else { return Ok(None) };
+    if !run.drained { return Ok(None); }
+    let status = if run.cancel_requested { "cancelled" }
+        else if exit.success() { "needs_review" } else { "failed" };
+    retain_native_terminal(&mut runs, run_id, status).await.map(Some)
+}
+
+async fn cancel_native_run_process(run_id: &str) -> Result<(&'static str, u64), String> {
+    cancel_native_run_with_timeout(run_id, std::time::Duration::from_secs(5)).await
+}
+
+async fn cancel_native_run_with_timeout(run_id: &str, timeout: std::time::Duration) -> Result<(&'static str, u64), String> {
+    {
+        let mut runs = NATIVE_RUNS.lock().await;
+        if let Some(run) = runs.get_mut(run_id) {
+            let child = run.child.as_mut().ok_or("child ownership unavailable")?;
+            match child.try_wait() {
+                Ok(Some(_)) => {} // preserve a process that already completed
+                Ok(None) => {
+                    if let Err(error) = child.start_kill() {
+                        run.unknown = true;
+                        return Err(format!("kill run {run_id}: {error}"));
+                    }
+                    run.cancel_requested = true;
+                }
+                Err(error) => { run.unknown = true; return Err(format!("reap run {run_id}: {error}")); }
+            }
+        }
+    }
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(event) = poll_native_completion(run_id).await? {
+            let status = match event["status"].as_str() {
+                Some("cancelled") => "cancelled",
+                Some("needs_review") => "needs_review",
+                _ => "failed",
+            };
+            return Ok((status, event["seq"].as_u64().unwrap()));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            if let Some(run) = NATIVE_RUNS.lock().await.get_mut(run_id) { run.unknown = true; }
+            return Err(format!("run {run_id} cancellation is unconfirmed: waiting for reap/output drain; check status"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 }
 
 /// Whitelist for the --permission-mode flag. Anything else is rejected at
@@ -673,8 +865,10 @@ pub async fn kill_all_sessions() -> usize {
     let native: Vec<NativeRun> = NATIVE_RUNS.lock().await.drain().map(|(_, run)| run).collect();
     let total = n + native.len();
     for mut run in native {
-        let _ = run.child.start_kill();
-        let _ = run.child.wait().await;
+        if let Some(mut child) = run.child.take() {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
     }
     total
 }
@@ -840,6 +1034,35 @@ pub async fn claude_deny(project_id: String, request_id: String) -> Result<(), S
 mod tests {
     use super::*;
 
+    async fn fake_native_run(workspace_id: &str, ticket_id: &str, attempt_id: &str) -> (NativeRun, u32) {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("exec sleep 30")
+            .kill_on_drop(true)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        // Isolate fixture permits from parallel tests; production capacity has
+        // its own spawngov tests. The lifecycle still owns a real permit.
+        let permit = Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap();
+        (NativeRun {
+            child: Some(child),
+            workspace_id: workspace_id.into(),
+            ticket_id: ticket_id.into(),
+            attempt_id: attempt_id.into(),
+            provider: "fake".into(),
+            events: VecDeque::new(),
+            next_seq: 1,
+            drained: true, // this helper has no captured pipes
+            cancel_requested: false,
+            unknown: false,
+            _permit: permit,
+        }, pid)
+    }
+
     #[test]
     fn chan_id_sanitizes_illegal_chars() {
         // Code-6w0: the concrete regression — a space in the repo basename.
@@ -909,4 +1132,148 @@ mod tests {
         let guard = SESSIONS.lock().await;
         assert!(guard.is_empty());
     }
+
+    #[tokio::test]
+    async fn native_snapshot_retains_identity_order_and_reconciles_repeatedly() {
+        let run_id = "native-snapshot-test".to_string();
+        let (run, _) = fake_native_run("workspace-a", "Code-test", "attempt-a").await;
+        NATIVE_RUNS.lock().await.insert(run_id.clone(), run);
+        record_native_event(&run_id, json!({ "kind": "output", "line": "one" })).await;
+        record_native_event(&run_id, json!({ "kind": "output", "line": "two" })).await;
+
+        let first = native_run_snapshot("workspace-a".into()).await.unwrap();
+        let second = native_run_snapshot("workspace-a".into()).await.unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].run_id, run_id);
+        assert_eq!(first[0].ticket_id, "Code-test");
+        assert_eq!(first[0].attempt_id, "attempt-a");
+        assert_eq!(first[0].events[0]["seq"], 1);
+        assert_eq!(first[0].events[1]["seq"], 2);
+
+        let mut removed = NATIVE_RUNS.lock().await.remove(&run_id).unwrap();
+        let mut child = removed.child.take().unwrap();
+        child.start_kill().unwrap();
+        child.wait().await.unwrap();
+        assert!(native_run_snapshot("workspace-a".into()).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_by_run_id_reaps_only_that_fake_child() {
+        let (first, first_pid) = fake_native_run("workspace-b", "Code-one", "attempt-one").await;
+        let (second, _) = fake_native_run("workspace-b", "Code-two", "attempt-two").await;
+        NATIVE_RUNS.lock().await.insert("cancel-first".into(), first);
+        NATIVE_RUNS.lock().await.insert("keep-second".into(), second);
+        {
+            let mut runs = NATIVE_RUNS.lock().await;
+            let child = runs.get_mut("cancel-first").unwrap().child.take().unwrap();
+            assert!(native_ticket_is_reserved(&runs, "workspace-b", "Code-one"));
+            runs.get_mut("cancel-first").unwrap().child = Some(child);
+        }
+
+        let (status, _) = cancel_native_run_process("cancel-first").await.unwrap();
+        assert_eq!(status, "cancelled");
+        let probe = std::process::Command::new("ps")
+            .args(["-p", &first_pid.to_string(), "-o", "pid="])
+            .output()
+            .unwrap();
+        assert!(probe.stdout.is_empty(), "cancel must reap the exact child pid {first_pid}");
+        assert!(!NATIVE_RUNS.lock().await.contains_key("cancel-first"));
+        assert!(NATIVE_RUNS.lock().await.contains_key("keep-second"));
+        let cancelled = native_run_snapshot("workspace-b".into()).await.unwrap();
+        assert_eq!(cancelled.iter().find(|run| run.run_id == "cancel-first").unwrap().status, "cancelled");
+
+        let mut survivor = NATIVE_RUNS.lock().await.remove("keep-second").unwrap();
+        let mut child = survivor.child.take().unwrap();
+        child.start_kill().unwrap();
+        child.wait().await.unwrap();
+    }
+    #[tokio::test]
+    async fn cancellation_kills_before_drain_and_snapshot_has_no_transition_gap() {
+        let id = "cancel-piped";
+        let (mut run, _) = fake_native_run("workspace-piped", "ticket", "attempt").await;
+        // Replace the helper's null-pipe child with a real pipe-holding child.
+        run.child.as_mut().unwrap().kill().await.unwrap();
+        let mut child = Command::new("sh").args(["-c", "echo ready; exec sleep 30"])
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        run.child = Some(child);
+        run.drained = false;
+        NATIVE_RUNS.lock().await.insert(id.into(), run);
+        let readers = tokio::spawn(async move {
+            let (a, b) = tokio::join!(drain_native_output(stdout, id, None, false), drain_native_output(stderr, id, None, true));
+            a.unwrap(); b.unwrap();
+            // Widen the reaped-but-not-yet-drained window deliberately.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            assert!(native_ticket_is_reserved(&*NATIVE_RUNS.lock().await, "workspace-piped", "ticket"));
+            NATIVE_RUNS.lock().await.get_mut(id).unwrap().drained = true;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if !NATIVE_RUNS.lock().await.get(id).unwrap().events.is_empty() { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        let cancel = tokio::spawn(cancel_native_run_process(id));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let snapshot = native_run_snapshot("workspace-piped".into()).await.unwrap();
+                assert_eq!(snapshot.len(), 1, "active-to-terminal must remain visible");
+                if cancel.is_finished() { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }).await.unwrap();
+        let (status, seq) = tokio::time::timeout(std::time::Duration::from_secs(2), cancel).await.unwrap().unwrap().unwrap();
+        readers.await.unwrap();
+        assert_eq!(status, "cancelled");
+        let snapshot = native_run_snapshot("workspace-piped".into()).await.unwrap();
+        assert!(snapshot[0].events.iter().any(|e| e["line"] == "ready"));
+        assert_eq!(snapshot[0].events.last().unwrap()["seq"], seq);
+        assert_eq!(cancel_native_run_process(id).await.unwrap(), (status, seq));
+    }
+
+    #[tokio::test]
+    async fn completion_poll_keeps_live_child_cancellable_after_pipes_close() {
+        let id = "closed-pipes";
+        let (run, _) = fake_native_run("workspace-closed", "ticket", "attempt").await;
+        NATIVE_RUNS.lock().await.insert(id.into(), run); // null pipes are already drained
+        assert!(poll_native_completion(id).await.unwrap().is_none());
+        assert!(NATIVE_RUNS.lock().await.get(id).unwrap().child.is_some());
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), cancel_native_run_process(id)).await.unwrap().unwrap();
+        assert_eq!(result.0, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn cancellation_preserves_already_exited_success() {
+        let id = "already-exited";
+        let (mut run, _) = fake_native_run("workspace-exit", "ticket", "attempt").await;
+        run.child.as_mut().unwrap().kill().await.unwrap();
+        let mut child = Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+        child.wait().await.unwrap();
+        run.child = Some(child);
+        NATIVE_RUNS.lock().await.insert(id.into(), run);
+        assert_eq!(cancel_native_run_process(id).await.unwrap().0, "needs_review");
+    }
+
+    #[tokio::test]
+    async fn drain_timeout_retains_unknown_ownership_until_reconciled() {
+        let id = "drain-timeout";
+        let (mut run, _) = fake_native_run("workspace-timeout", "ticket", "attempt").await;
+        run.drained = false;
+        NATIVE_RUNS.lock().await.insert(id.into(), run);
+        let error = cancel_native_run_with_timeout(id, std::time::Duration::from_millis(30)).await.unwrap_err();
+        assert!(error.contains("unconfirmed"));
+        let snapshot = native_run_snapshot("workspace-timeout".into()).await.unwrap();
+        assert_eq!(snapshot[0].status, "unknown");
+        assert!(snapshot[0].events.is_empty(), "no terminal sequence before drain");
+        {
+            let mut runs = NATIVE_RUNS.lock().await;
+            assert!(native_ticket_is_reserved(&runs, "workspace-timeout", "ticket"));
+            assert!(runs.get(id).unwrap().child.is_some());
+            runs.get_mut(id).unwrap().drained = true;
+        }
+        assert_eq!(poll_native_completion(id).await.unwrap().unwrap()["status"], "cancelled");
+    }
+
 }

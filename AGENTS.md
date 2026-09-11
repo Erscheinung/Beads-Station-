@@ -2,6 +2,112 @@
 
 ## Start here
 
+## Latest handoff — 2026-09-11, cancellation repair and model handoff
+
+User requested cancellation repair, practical prompts saved but not run, and then
+asked to close out verified tasks and leave Sol/Luna work for later comparison.
+**Do not expand into conductor or artifacts automatically on resume.** Preserve
+all uncommitted changes on `feat/daily-driver-foundation` (base HEAD `2a13f69`).
+No commit/push, lockfile edit, credentials inspection or native provider work call.
+
+Read `docs/FOUNDATION-VERIFICATION.md` section "Cancellation repair and practical
+handoff" and `docs/PRACTICAL-TEST-WORKFLOW.md`. Root repaired Rust; one bounded
+Sol High worker fixed frontend reconciliation and completed its assignment.
+
+- Code-am5.1 **closed**: repaired kill-before-drain; child remains reachable through
+  nonblocking completion polling; consistent RUNS -> TERMINALS locks retain
+  admission/permit through reap and terminal snapshot transfer. Five-second
+  cancellation timeout preserves unknown ownership; no final seq before drain.
+  Fake shell tests cover exact PID, pipe-open cancellation, early pipe closure,
+  already-exited success, snapshot visibility and timeout/reconcile. Frontend
+  fixes status watermark, new-attempt races, backend active-owner recovery,
+  missed cancel events, and stale error responses. App/backend quit remains a
+  restart boundary; no claim of durable external runtime or real provider auth.
+- Code-0cp.1 remains in_progress: mock pane/theme checks pass, but native split
+  and unsplit showed blank terminal rendering despite shells surviving. Next Sol
+  task: reproduce and repair repaint/reattachment, preserving session/PID and
+  input ownership. Inspect terminalSessions.ts, Terminal.tsx, TerminalPanes.tsx.
+  Do not infer cause from screenshot alone; distinguish CUA focus/paint delay.
+- Code-0cp.2 is the next **Luna Low** task: terminal tab accessible names, roles
+  and selected state only; no key handler/session/layout edits. Do sequentially
+  with Sol because both may touch TerminalPanes.tsx.
+- Code-am5.2 remains open for **Sol Medium/High after native pane repair**:
+  local artifact capture, preview, exact run+revision approval. No provider/game
+  calls required; use local fixtures. Root/Astra reviews approval semantics.
+- Native evidence: rebuilt bundle launched via CUA; explicit disposable folder
+  `/tmp/beads-station-native-smoke-20260911` opened; discovery found 38 projects
+  without auto-opening all. Unicode paste printed `native-smoke pid=80803 café
+  日本語`. Split/unsplit produced two tabs and shell PIDs 80803/81561 survived,
+  but screen subsequently blank. Finder attachment failed `cgWindowNotFound`;
+  intermittent CUA `noWindowsAvailable` recovered on reattach. No Finder release
+  gate, soak or Neovim gate claimed. Do not kill unrelated user dev sessions.
+- Latest verified counts and bundle timing are in FOUNDATION-VERIFICATION.md;
+  prior stop's unfinished-patch warnings below are historical, superseded here.
+
+Use **Sol directly** for the next bounded implementation rather than keeping
+Astra supervising routine work. Use Luna for the narrow accessibility task.
+Return to Astra for conflicting evidence, ownership/approval architecture or
+final risky review. No measured per-model quota ledger exists: record actual
+user-visible before/after quota and effective model/effort, otherwise unknown.
+See `docs/AGENT-MODEL-ROLES.md` for official sources and copy/paste prompts.
+The memory game/read-only/revision/cancel workflows are saved and **not run**.
+Smoke workspace was closed and only the app instance launched for this test was
+quit at cleanup; final rebuilt bundle is ready for the next manual run.
+
+### Previous handoff — 2026-09-11, usage-limit stop
+
+User explicitly stopped: "usage finished, close quickly and log agents.md to resume".
+**Stop expansion. Fix the unfinished Code-am5.1 patch first on resume.**
+Branch `feat/daily-driver-foundation`, HEAD `2a13f69`; checkout was clean at this
+session start. All this session's work is uncommitted. No commit/push, lockfile
+change, credentials inspection, or native provider CLI work calls.
+
+Read `docs/FOUNDATION-VERIFICATION.md` section "Pane/themes and interrupted native
+reload — 2026-09-11" first. Preserve current changes.
+
+- **Code-0cp.1 (root, implemented; final integrated gates pending):** visible
+  Split right/down, Close pane, Zoom/restore, and **Unsplit to tabs** (keeps all
+  sessions); palette commands for close/unsplit/zoom. Fixed stale zoom and duplicate
+  pane kill requests. Separate persisted Developer/Designer themes with legacy
+  migration and per-view reset. Settings search, Terminal category, cursor
+  shape/blink, bounded scrollback, terminal defaults. Appearance updates detached
+  terminal sessions through session-owned subscriptions. Designer topbar now has
+  Commands/Settings (Sol integration). Local cmux `803dc2657f` inspected for search,
+  reset and pane interaction patterns; no source/assets copied.
+- **Code-am5.1 (Sol WIP, NOT accepted; root takeover pending):** snapshots,
+  workspace/ticket/attempt identity, seq merge, bounded terminal snapshots,
+  reconnect/check-status and unknown-state cancel exist. **Latest Rust patch is
+  unfinished and untested. Do not launch provider work or claim cancellation is
+  correct.** `cancel_native_run_process` currently waits on `drained.notified()`
+  BEFORE killing the child: this can deadlock. Fake helper never notifies, so its
+  cancellation test can hang. Completion takes the child and awaits exit, making
+  cancellation unavailable if the process closes pipes before exiting. Snapshot
+  clones terminal history before locking active runs, so the claimed atomic
+  transition still has a gap. Root's planned correction was NOT applied.
+- Next correction: consistent registry locking (prefer RUNS -> TERMINALS), hold
+  admission reservation through reap and atomic terminal snapshot retention;
+  cancel must kill/reap before waiting for pipe drain with bounded error handling.
+  Keep child reachable for cancellation during ordinary completion wait (e.g.
+  nonblocking try_wait under registry lock with polling outside lock). Preserve
+  unknown ownership on failures. No synthetic terminal seq before output drains.
+  Review FE snapshot status vs historical running events, stale snapshot/new
+  attempt races, and reconcile after cancel when event delivery fails. Add focused
+  race tests against production helpers, then integrated gates. Sol stopped and
+  reported no running commands; do not assume its earlier pass covers final patch.
+- **Native gate Code-9ff/Code-oan still open:** CUA native service failed twice
+  (`Sky Computer Use native pipe startup failed`); no app launch/typing verified.
+  Do not kill the user's dev process. Last bundle is from the prior session.
+- Evidence timing: root full unit **137/137** and full Chromium/mock **65/65**
+  passed at intermediate state. Later theme migration/pane/session focused
+  **33/33**, then detached appearance **6/6** passed. Early production build
+  passed. Sol reported FE reconciliation **3/3**, Claude Rust **7/7**, earlier
+  full Rust **90/90**, and tsc before its final unfinished patch. **No final
+  integrated build/cargo/native bundle gate after last edits.**
+
+Keep Code-am5.1 and Code-0cp.1 in_progress until reviewed and final checks pass.
+Do not start Code-am5.2 artifacts, conductor, or broader customization yet.
+Root owns final corrections/review; no workers remain active.
+
 **Latest handoff — 2026-09-10, settings/UI session:** User stopped expansion as
 the five-hour usage limit approached. Finish from this table; do not restart
 planning. Root handled settings/commands/appearance/native investigation; one

@@ -2,15 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { closeSettings, useSettingsOpen } from '../state/settings'
 import { COMMANDS, eventBinding, resetBindings, setBinding, shortcutLabel, useCommandBindings } from '../state/commands'
-import { BUNDLED_THEMES, setThemePalette, useThemePaletteId } from '../state/theme'
+import { BUNDLED_THEMES, setThemePalette, useViewThemes } from '../state/theme'
 import { setBeadsView, useUiPreferences, type BeadsView } from '../state/uiPreferences'
 import { useSessionPreferences, setSessionPreferences } from '../state/sessionPreferences'
-import { TERMINAL_FONTS, setTerminalAppearance, useTerminalAppearance } from '../state/terminalAppearance'
+import { resetTerminalAppearance, TERMINAL_FONTS, setTerminalAppearance, useTerminalAppearance } from '../state/terminalAppearance'
+import { DEFAULT_THEME_ID } from '../themes'
+import { getSkin, type Skin } from '../state/skin'
 import './SettingsPanel.css'
 import { safeListen } from '../lib/listenerRegistry'
 import { openSettings } from '../state/settings'
 
-const sections = ['General', 'Appearance', 'Keyboard shortcuts', 'Sessions'] as const
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset', Sessions: 'claude resume agents' }
+const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions'] as const
 export function SettingsPanel() {
   const open = useSettingsOpen()
   const dialog = useRef<HTMLDialogElement>(null)
@@ -19,7 +22,10 @@ export function SettingsPanel() {
   const [recording, setRecording] = useState<string | null>(null)
   const [error, setError] = useState('')
   const bindings = useCommandBindings()
-  const palette = useThemePaletteId()
+  const viewThemes = useViewThemes()
+  const [themeView, setThemeView] = useState<Skin>(getSkin)
+  const palette = viewThemes[themeView]
+  const [settingsSearch, setSettingsSearch] = useState('')
   const ui = useUiPreferences()
   const session = useSessionPreferences()
   const appearance = useTerminalAppearance()
@@ -30,14 +36,16 @@ export function SettingsPanel() {
     return () => { disposed = true; release?.() }
   }, [])
   useEffect(() => {
-    if (open) { dialog.current?.showModal(); return () => { dialog.current?.close() } }
+    if (open) { setThemeView(getSkin()); dialog.current?.showModal(); return () => { dialog.current?.close() } }
   }, [open])
   if (!open) return null
   return createPortal(<dialog ref={dialog} className="bs-settings" aria-labelledby="settings-title" onCancel={() => { setRecording(null); closeSettings() }} onClick={e => { if (e.target === e.currentTarget) closeSettings() }}>
     <div className="bs-settings__shell">
       <nav aria-label="Settings categories">
         <h2 id="settings-title">Settings</h2>
-        {sections.map(s => <button key={s} aria-current={section === s ? 'page' : undefined} onClick={() => { setSection(s); setRecording(null); setError('') }}>{s}</button>)}
+        <input className="bs-settings__search" aria-label="Search settings" placeholder="Find settings…" value={settingsSearch} onChange={e => setSettingsSearch(e.target.value)} />
+        {sections.filter(s => `${s} ${sectionKeywords[s]}`.toLowerCase().includes(settingsSearch.toLowerCase())).map(s => <button key={s} aria-current={section === s ? 'page' : undefined} onClick={() => { setSection(s); setRecording(null); setError('') }}>{s}</button>)}
+        {settingsSearch && !sections.some(s => `${s} ${sectionKeywords[s]}`.toLowerCase().includes(settingsSearch.toLowerCase())) && <span role="status">No matching settings</span>}
         <p>Beads Station<br /><span>Preferences save automatically</span></p>
       </nav>
       <main>
@@ -48,14 +56,27 @@ export function SettingsPanel() {
           <p className="bs-settings__note">Open folders and manage discovery roots from the workspace picker. These preferences apply across workspaces.</p>
         </>}
         {section === 'Appearance' && <>
-          <p className="bs-settings__intro">Theme colors follow you through the terminal, menus, and dialogs.</p>
-          <div className="bs-settings__themes">{BUNDLED_THEMES.map(t => <button key={t.name} className="bs-theme-preview" aria-pressed={palette === t.name} onClick={() => setThemePalette(t.name)}>
+          <p className="bs-settings__intro">Choose independent themes for Developer and Designer. Menus and dialogs follow the view you are using.</p>
+          <label className="bs-settings__row"><span>Theme for view<small>Editing the other view leaves the current colors in place.</small></span><select aria-label="Theme for view" value={themeView} onChange={e => setThemeView(e.target.value as Skin)}><option value="terminal">Developer</option><option value="designer">Designer</option></select></label>
+          <p className="bs-settings__note">Developer: {viewThemes.terminal} · Designer: {viewThemes.designer}</p>
+          <div className="bs-settings__themes">{BUNDLED_THEMES.map(t => <button key={t.name} className="bs-theme-preview" aria-pressed={palette === t.name} onClick={() => setThemePalette(t.name, themeView)}>
             <span className="bs-theme-preview__sample" style={{ background: t.background, color: t.foreground }}><span style={{ color: t.green }}>&gt;</span> beads station<span className="bs-theme-preview__swatches">{[t.red, t.green, t.yellow, t.blue, t.magenta, t.cyan].map((color, i) => <i key={i} style={{ background: color }} />)}</span></span>
             <span>{t.name.replace(/-/g, ' ')}{palette === t.name ? ' · selected' : ''}</span>
           </button>)}</div>
+          <button onClick={() => setThemePalette(DEFAULT_THEME_ID, themeView)}>Reset this view’s theme</button>
+        </>}
+        {(section === 'Appearance' || section === 'Terminal') && <>
+          {section === 'Terminal' && <p className="bs-settings__intro">Changes apply to existing shells in both views. Applications such as Neovim can override the cursor.</p>}
           <label className="bs-settings__row"><span>Terminal font</span><select value={appearance.fontFamily} onChange={e => setTerminalAppearance({ fontFamily: e.target.value })}>{TERMINAL_FONTS.map(f => <option key={f}>{f}</option>)}</select></label>
           <label className="bs-settings__row"><span>Font size</span><input aria-label="Font size" type="number" min="10" max="24" value={appearance.fontSize} onChange={e => { const n = Number(e.target.value); if (n >= 10 && n <= 24) setTerminalAppearance({ fontSize: n }) }} /></label>
           <label className="bs-settings__row"><span>Line height</span><input aria-label="Line height" type="number" min="1" max="1.8" step="0.1" value={appearance.lineHeight} onChange={e => { const n = Number(e.target.value); if (n >= 1 && n <= 1.8) setTerminalAppearance({ lineHeight: n }) }} /></label>
+        </>}
+        {section === 'Terminal' && <>
+          <label className="bs-settings__row"><span>Cursor shape</span><select aria-label="Cursor shape" value={appearance.cursorStyle} onChange={e => setTerminalAppearance({ cursorStyle: e.target.value as 'block' | 'bar' | 'underline' })}><option value="block">Block</option><option value="bar">Bar</option><option value="underline">Underline</option></select></label>
+          <label className="bs-settings__row"><span>Blink cursor</span><input aria-label="Blink cursor" type="checkbox" checked={appearance.cursorBlink} onChange={e => setTerminalAppearance({ cursorBlink: e.target.checked })} /></label>
+          <label className="bs-settings__row"><span>Scrollback lines<small>More history uses more memory per terminal. Reducing this trims older output.</small></span><input aria-label="Scrollback lines" type="number" min="100" max="50000" step="100" value={appearance.scrollback} onChange={e => setTerminalAppearance({ scrollback: Number(e.target.value) })} /></label>
+          <p className="bs-settings__note">Unsplit to tabs keeps every session running. Close pane stops the selected shell or agent. Zoom temporarily fills the terminal area with one pane.</p>
+          <button onClick={resetTerminalAppearance}>Restore terminal defaults</button>
         </>}
         {section === 'Keyboard shortcuts' && <>
           <p className="bs-settings__intro">Click a shortcut and press a new combination. Unassigned commands remain available in Commands.</p>

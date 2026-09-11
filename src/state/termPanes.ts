@@ -216,6 +216,8 @@ export function removeProjectSurface(projectId: string): { ptyIds: number[]; bri
   }
 }
 
+let _zoomed: string | null = null
+const zoomListeners = new Set<() => void>()
 let state: TermPanesState = makeInitialState('')
 PROJECTS.set(BOOT_PROJECT, state)
 
@@ -367,6 +369,10 @@ function computeSig(): string {
 }
 
 function emit(): void {
+  if (_zoomed && _zoomed !== activeTab(state).activePaneId) {
+    _zoomed = null
+    zoomListeners.forEach(l => l())
+  }
   // Mirror the pane-op-relevant bits onto window for the non-reactive
   // keymap reader in useVimNav (avoids a stale closure / extra subscribe).
   try {
@@ -713,11 +719,13 @@ export function spawnFileNav(rootPath: string): void {
 export function closeActivePane(): { killPtyId: number | null; killBridgeId: string | null } {
   const tab = activeTab(state)
   const leaf = findLeaf(tab.root, tab.activePaneId)
-  if (leaf) window.dispatchEvent(new CustomEvent('terminal:dispose', { detail: { paneId: leaf.paneId } }))
-  const killPtyId = leaf?.ptyId ?? null
+  const disposal = new CustomEvent('terminal:dispose', { cancelable: true, detail: { paneId: leaf?.paneId } })
+  if (leaf) window.dispatchEvent(disposal)
+  const killPtyId = disposal.defaultPrevented ? null : leaf?.ptyId ?? null
   // RV2 — an agent leaf has ptyId:null; the caller kills its claude session
   // via killBridgeId (claude_kill) instead of killing a pty.
   const killBridgeId = leaf?.agent?.bridgeId ?? null
+  if (_zoomed === tab.activePaneId) toggleZoom()
   const newRoot = removeLeaf(tab.root, tab.activePaneId)
 
   if (newRoot === null) {
@@ -737,6 +745,19 @@ export function closeActivePane(): { killPtyId: number | null; killBridgeId: str
   }
   emit()
   return { killPtyId, killBridgeId }
+}
+
+/** Remove split geometry while retaining every pane and its live resource. */
+export function unsplitToTabs(): void {
+  const tab = activeTab(state)
+  const leaves = leavesOf(tab.root)
+  if (leaves.length < 2) return
+  const selected = leaves.find(l => l.paneId === tab.activePaneId)!
+  const kept = { ...tab, root: selected }
+  const others = leaves.filter(l => l !== selected).map(root => ({ id: uid('tab'), root, activePaneId: root.paneId }))
+  state = { ...state, tabs: state.tabs.flatMap(t => t.id === tab.id ? [kept, ...others] : [t]) }
+  if (_zoomed) toggleZoom()
+  emit()
 }
 
 export function newTab(): void {
@@ -830,8 +851,6 @@ export function cyclePane(): void {
 
 // ---- zoom --------------------------------------------------------------
 
-let _zoomed: string | null = null
-const zoomListeners = new Set<() => void>()
 export function subscribeZoom(l: () => void): () => void {
   zoomListeners.add(l)
   return () => zoomListeners.delete(l)

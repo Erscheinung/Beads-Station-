@@ -12,6 +12,7 @@ vi.mock('xterm', () => ({ Terminal: class {
 } }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
+import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
 import { disposeTerminalSession, getTerminalSession } from './terminalSessions'
 
 beforeEach(() => {
@@ -86,4 +87,15 @@ describe('terminal session ownership', () => {
     await session.ready
     expect(session.phase).toBe('exited')
   })
+})
+
+it('updates cursor and bounded scrollback in a detached terminal without respawning the shell', async () => {
+  const session = getTerminalSession('pane', '/repo', vi.fn())
+  await session.ready
+  setTerminalAppearance({ cursorStyle: 'bar', cursorBlink: false, scrollback: 5000 })
+  expect(session.terminal.options).toMatchObject({ cursorStyle: 'bar', cursorBlink: false, scrollback: 5000 })
+  setTerminalAppearance({ scrollback: Infinity, fontSize: -10 })
+  expect(session.terminal.options).toMatchObject({ scrollback: 5000, fontSize: 13 })
+  expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_spawn')).toHaveLength(1)
+  resetTerminalAppearance()
 })

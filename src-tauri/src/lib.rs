@@ -152,6 +152,7 @@ pub fn run() {
             claude::native_provider_status,
             claude::native_run_start,
             claude::native_run_cancel,
+            claude::native_run_snapshot,
             conductor::conductor_start,
             conductor::conductor_stop,
             conductor::conductor_pulse_now,

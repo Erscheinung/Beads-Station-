@@ -31,3 +31,5 @@
 .bs-theme-preview__swatches { display: flex; gap: 5px; margin-top: 12px; }
 .bs-theme-preview__swatches i { width: 14px; height: 7px; border-radius: 2px; }
 @media (max-width: 620px) { .bs-settings__shell { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .bs-settings nav { flex-direction: row; flex-wrap: wrap; padding: 10px; border-right: 0; } .bs-settings nav h2, .bs-settings nav p { display: none; } .bs-settings main { padding: 16px; } .bs-settings__row { flex-wrap: wrap; gap: 8px; } }
+
+.bs-settings nav input { min-width: 0; }

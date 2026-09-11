@@ -13,7 +13,9 @@ import { setSkin } from '../../state/skin'
 import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
 import { bdCreate, bdNote, type Issue } from '../../types/issue'
-import { cancelNativeRun, startNativeRun, useNativeRun, type NativeProvider } from './nativeRuns'
+import { cancelNativeRun, reconcileNativeRuns, startNativeRun, useNativeRun, type NativeProvider } from './nativeRuns'
+import { openPalette } from '../../state/palette'
+import { openSettings } from '../../state/settings'
 
 type Tier = 'everyday' | 'heavy'
 type NavItem = 'requests' | 'graph' | 'agents' | 'timeline'
@@ -76,6 +78,8 @@ export function DesignerShell() {
         </div>
         <div style={styles.topbarRight}>
           <button style={styles.skinBtn} onClick={() => window.dispatchEvent(new Event('workspace:open'))}>Open workspace</button>
+          <button style={styles.skinBtn} onClick={openPalette}>Commands</button>
+          <button style={styles.skinBtn} onClick={openSettings}>Settings</button>
           <button
             style={styles.skinBtn}
             onClick={() => setSkin('terminal')}
@@ -273,7 +277,7 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
   const [providers, setProviders] = useState<ProviderAvailability[]>([])
   const [feedback, setFeedback] = useState('')
   const runKey = `${project?.id ?? 'missing'}:${issue.id}`
-  const run = useNativeRun(runKey)
+  const run = useNativeRun(runKey, project?.id ?? 'missing', issue.id)
   const { status, output } = run
   const availability = providers.find(p => p.provider === provider)
   const prompt = useMemo(() => [
@@ -295,9 +299,13 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
 
   const start = async (revisionFeedback?: string) => {
     if (!project || availability?.available !== true || status === 'starting' || status === 'running' || status === 'unknown') return
-    const nextRunId = `${project.id}:${issue.id}:${crypto.randomUUID()}`
+    const attemptId = crypto.randomUUID()
+    const nextRunId = `${project.id}:${issue.id}:${attemptId}`
     await startNativeRun(runKey, {
         runId: nextRunId,
+        workspaceId: project.id,
+        ticketId: issue.id,
+        attemptId,
         provider,
         cwd: project.path,
         prompt: revisionFeedback ? `${prompt}\n\nRequested revision:\n${revisionFeedback}` : prompt,
@@ -329,9 +337,11 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
         <button style={styles.primaryBtn} disabled={!availability?.available || status === 'running' || status === 'starting' || status === 'unknown'} onClick={() => start()}>
           {status === 'idle' ? 'Start work' : status === 'failed' || status === 'cancelled' ? 'Try again' : 'Run started'}
         </button>
-        {(status === 'running' || status === 'starting') && <button style={styles.skinBtn} onClick={cancel}>Cancel</button>}
+        {(status === 'running' || status === 'unknown') && <button style={styles.skinBtn} onClick={() => void reconcileNativeRuns(project?.id ?? 'missing')}>Check run status</button>}
+        {(status === 'running' || status === 'starting' || status === 'unknown') && run.runId && <button style={styles.skinBtn} onClick={cancel}>Cancel</button>}
         <span style={styles.requestMeta}>Status: {status.replace('_', ' ')}</span>
       </div>
+      {status === 'unknown' && <span style={styles.requestMeta}>Backend state unavailable; no new run will start automatically.</span>}
       <div style={styles.runOutput} aria-live="polite">
         {output.length === 0 ? 'Provider output will appear here. No work starts until you choose Start work.' : output.map((line, i) => <p key={i}>{line}</p>)}
       </div>

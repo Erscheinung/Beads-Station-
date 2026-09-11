@@ -47,7 +47,7 @@ function emit(): void {
   listeners.forEach(l => l())
 }
 
-function subscribe(listener: () => void): () => void {
+export function subscribeSkin(listener: () => void): () => void {
   listeners.add(listener)
   return () => {
     listeners.delete(listener)
@@ -65,7 +65,7 @@ try {
 }
 
 export function useSkin(): Skin {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return useSyncExternalStore(subscribeSkin, getSnapshot, getSnapshot)
 }
 
 export function getSkin(): Skin {

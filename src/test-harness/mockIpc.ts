@@ -178,6 +178,8 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return []
     case 'claude_get_session_id':
       return null
+    case 'native_run_snapshot':
+      return []
 
     // --- everything else is fire-and-forget void (watcher_start,
     //     bd mutations, pty_write/resize/kill, set_status, etc.) ---

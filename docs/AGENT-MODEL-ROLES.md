@@ -62,3 +62,60 @@ Completion requires source or artifact review plus the relevant checks. A
 worker's claim, a zero process exit by itself, or a cancelled run is not proof
 of completion. Astra records the effective model, effort, checks, unresolved
 native gates, and next bounded task in the milestone handoff.
+
+## Usage-conscious defaults — 2026-09-11
+
+For the next session, start with **Sol Medium for a bounded implementation**;
+use Terra for an ordinary small feature/investigation and Luna for precise copy,
+CSS, or documentation maintenance. Use Astra for process ownership races,
+architecture, conflicting evidence, or the final review of a risky integration.
+A simple memory game with explicit requirements does not need Astra by default.
+Increase effort for a concrete unresolved problem rather than choosing maximum
+reasoning for every task. These are repository routing recommendations, not a
+claim that every task must use a worker or that savings are guaranteed.
+
+Official guidance describes Astra as strongest for difficult end-to-end work,
+Sol for complex work, Terra for everyday work and Luna for clear repeatable work;
+it recommends the lowest reasoning effort that achieves the result.
+[Model guidance](https://learn.chatgpt.com/docs/models).
+The five-hour allowance depends on work performed and model, not five hours of
+unlimited execution. Official estimates are not fixed message quotas; use the
+account's usage dashboard for actual remaining allowance and reset time.
+[Usage guidance](https://learn.chatgpt.com/docs/pricing).
+
+Evidence from this repository: earlier sessions exhausted the usage window;
+Astra performed substantial routine UI work while Sol's last lifecycle patch was
+interrupted and needed ownership repair. This supports tighter briefs and review
+boundaries, not a measured model-quality or cost comparison. We have no reliable
+per-model quota ledger for those sessions and must not invent a percent saved.
+On this resume Astra owns Rust cancellation; one Sol High worker owns only
+frontend reconciliation and its race tests. High is justified by async identity
+races. Do not extend that worker into unrelated architecture automatically.
+
+Before each new slice, state the recommended model/effort and why. Prefer one
+implementation owner; add a worker only for independent useful work. For a
+routine task with no independent root work, use Sol directly in the next thread
+rather than paying for an idle Astra supervisor. Pass a short brief containing
+owned files, one outcome, acceptance checks, and forbidden side effects. Review
+its diff and evidence; an agent's success claim is not acceptance.
+
+Suggested user prompts for future sessions:
+
+> Sol Medium: implement only the next bounded bead in AGENTS.md. Preserve current
+> changes. Run its focused checks, report changed behavior and evidence, and save
+> the next handoff. Escalate ownership/concurrency ambiguity before expanding.
+
+> Astra: review this specific lifecycle diff and failing reproduction. Resolve
+> the ownership contract, then give Sol a bounded implementation brief if useful.
+
+> Luna: update the test-workflow wording to match these exact new UI labels.
+> Change documentation only; do not rerun the full application suites.
+
+At session start and after each accepted slice, record the visible quota reading
+if the user provides one, plus model/effort, attempts, relevant checks and outcome.
+If quota is unavailable, write unknown. Do not infer quota from elapsed time or
+context size. As a voluntary planning policy, reserve the last roughly 20% of a
+known window for verification and handoff, and stop expanding around 10%; these
+are recommended thresholds, not automatic access to or enforcement of quota.
+Finish or safely checkpoint a patch before starting another. Never leave an
+untested cancellation change as though older passing tests covered it.

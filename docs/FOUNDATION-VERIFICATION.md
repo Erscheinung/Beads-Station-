@@ -1,5 +1,131 @@
 # Workspace and terminal foundation — 2026-09-09
 
+## Cancellation repair and practical handoff — 2026-09-11
+
+Resumed from the unfinished patch on `feat/daily-driver-foundation`, base HEAD
+`2a13f69`; retained all incoming edits. User then requested finishing this slice
+and leaving Sol/Luna assignments for later usage comparison. No commit/push,
+package-lock change, credentials inspection or native provider work request.
+
+Code-am5.1 is closed for its bounded renderer/backend reconciliation acceptance.
+Root owns Rust correction: cancellation requests kill before waiting for output;
+completion uses try_wait under the run registry lock and keeps the child reachable.
+RUNS -> TERMINALS is the shared lock order, with reservation/permit retained until
+reap, drain and atomic terminal transfer. Cancellation has a five-second bound;
+unconfirmed ownership stays registered as unknown, with no synthetic terminal seq.
+Already-exited success retains needs_review instead of being relabelled cancelled.
+Read errors no longer silently count as successful EOF. Snapshot history retains
+50 terminal records, with 200 events per run (event count, not a total byte bound).
+This still owns the direct child, not a durable external process-group runtime.
+
+One Sol High worker owned only nativeRuns.ts/test.ts. Root review required a second
+bounded correction. Final frontend changes: authoritative snapshot status over
+historical events, newer live seq precedence, generation guards for stale checks,
+recovery to actual backend active ownership after reload/rejected launch, and a
+fresh snapshot after cancel even when events are missed or another check was
+already pending. Nine focused frontend tests pass. No worker remains assigned to
+ongoing implementation.
+
+Final gates on the resulting code:
+
+| Check | Result |
+| --- | --- |
+| npm test | 26 files, 146/146 pass |
+| npm run test:live | 65/65 Chromium/mock pass |
+| cargo test --manifest-path src-tauri/Cargo.toml | 94/94 pass |
+| Claude-module focused race checks | 11/11 pass |
+| cargo check --manifest-path src-tauri/Cargo.toml --quiet | pass |
+| npm run build | pass; existing large chunk/import warnings remain |
+| npm run tauri -- build --debug --bundles app | pass after final frontend correction |
+| git diff --check | pass; package-lock unchanged |
+
+Full Rust initially failed because parallel fixtures consumed the process-global
+agent budget; fixture permits are now isolated while production spawngov tests
+still exercise capacity. The default parallel cargo suite then passed. This was
+test interference, not evidence to raise production capacity. Logs are under
+`/tmp/beads-resume-{unit-final,live-final,cargo-final,check-final,bundle-final}.log`;
+these temporary paths are convenience evidence, not durable repository artifacts.
+
+Native evidence is separate. CUA launched the bundled app (PID 79935); Finder
+attachment returned cgWindowNotFound, so this is not a Finder/release gate.
+Discovery showed 38 projects without opening all as tabs. Direct open of
+`/tmp/beads-station-native-smoke-20260911` succeeded with no beads DB or git repo.
+Paste + Enter visibly printed `native-smoke pid=80803 café 日本語`. Automated
+`typeText` lost non-ASCII in its earlier command; paste produced correct Unicode.
+Split right and Unsplit to tabs produced two tabs; process inspection confirmed
+shell PIDs 80803 and 81561 still parented to the app. **However terminal contents
+subsequently appeared blank. Native visual/input continuity is not accepted.**
+Intermittent CUA noWindowsAvailable recovered by getApp; the next reproduction
+must distinguish automation focus/paint timing from terminal repaint defects.
+No real provider auth, game prompt, Neovim check or native soak was performed.
+The final bundle includes the last FE correction but has not been relaunched;
+the observed native pane test used the preceding build with the same pane code.
+Cleanup closed the disposable workspace and quit only the smoke app we launched;
+no user dev session was killed.
+
+Code-0cp.1 stays in_progress, next owned by Sol for the native blank-render
+reproduction/repair. Code-0cp.2 is open for Luna to add tab names/roles/selected
+state; do sequentially because both can touch TerminalPanes.tsx. Code-am5.2
+artifact/revision approval stays open after the native pane repair; conductor
+and broader customization remain deferred. Code-9ff/Code-oan and native parent
+gates remain open rather than inferring complete readiness from direct opening.
+
+Saved user workflow: `docs/PRACTICAL-TEST-WORKFLOW.md` contains commands, no-provider
+terminal/settings checks, read-only and memory-game prompts, revision/cancel
+steps, and an evidence sheet. Prompts are **not run**. `docs/AGENT-MODEL-ROLES.md`
+records usage-aware defaults and official sources; no actual per-model quota
+ledger is available, so no percentage savings is claimed.
+
+
+## Pane/themes and interrupted native reload — 2026-09-11
+
+User requested continuation from handoff, CMUX-inspired improvements, visible
+unsplitting, separate Designer/Developer themes, and richer settings; then stopped
+for exhausted usage. Started clean at `2a13f69`, branch
+`feat/daily-driver-foundation`. Current work is uncommitted; package-lock unchanged.
+
+Root implemented Code-0cp.1: pane toolbar close/zoom/unsplit-to-tabs, preserving
+surviving session identity; configurable matching palette commands; duplicate
+pane-kill cleanup and zoom fixes; per-view persisted themes/legacy migration/reset;
+settings search and terminal cursor/blink/scrollback/default controls. Terminal
+appearance subscriptions now belong to live sessions, including detached tabs.
+Chromium screenshot `test-results/settings-terminal.png` was visually checked.
+Local cmux at `803dc2657f`: inspected LICENSE, SettingsNavigation.swift,
+PaneChromeSettings.swift and Workspace.swift; interaction patterns only, no copying.
+
+Sol worked on Code-am5.1 (nativeRuns.ts, DesignerShell.tsx, claude.rs, lib.rs,
+mockIpc.ts and tests). Backend snapshots/identities, ordered buffered events and
+retained terminal snapshots exist; frontend uses discovery/subscribe/second
+snapshot, explicit status check/cancel, and unknown start ambiguity. Designer
+Commands/Settings buttons added. **This slice is NOT accepted or verified final.**
+
+Critical interrupted WIP in `src-tauri/src/claude.rs`: final Sol patch added
+`drained: Arc<Notify>` and waits on its notification before requesting kill, which
+can deadlock; fake helper does not notify, so cancellation test can hang. Completion
+takes the child before wait, removing cancel access if pipes close early. Snapshot
+history/active reads are not atomic despite comments. Root stopped Sol and was
+about to correct consistent locking/admission ownership/kill-before-drain with
+bounded errors and cancellation-accessible completion polling; NO such root fix
+was applied before the user's stop. Also review FE status watermark ordering,
+stale snapshots across attempts, and cancellation reconciliation after missed
+events. Preserve unknown, never auto-relaunch. Run focused production-helper race
+tests after repair, then final gates before Code-am5.2.
+
+Checks are time-qualified: early root production build passed; intermediate full
+frontend 137/137 and Chromium/mock 65/65 passed. Later root focused theme migration,
+panes and sessions 33/33; final detached-session appearance test file 6/6. Sol
+reported nativeRuns 3/3, Claude-focused Rust 7/7, earlier Rust full 90/90 and tsc
+before the last unfinished patch. No final integrated build/cargo test/check or
+new debug bundle. Existing build chunk/import and Board act warnings persist.
+
+Native smoke attempted first per handoff: CUA service failed twice with
+`Sky Computer Use native pipe startup failed`. No native app interaction or shell
+typing proof, provider authentication or paid native provider calls. Code-9ff and
+Code-oan remain open; prior debug bundle is unchanged. No user dev process killed.
+Code-am5.1 and Code-0cp.1 stay in_progress. All workers stopped; no commands reported
+running at handoff. No commit or push.
+
+
 ## Settings and appearance handoff — 2026-09-10
 
 User requested screenshot-driven UI fixes and bounded plans for Sol, then asked
