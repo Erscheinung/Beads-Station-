@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-const mock = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), released: vi.fn(), write: vi.fn(), disposed: vi.fn() }))
+const mock = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), released: vi.fn(), write: vi.fn(), refresh: vi.fn(), disposed: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
 vi.mock('../state/theme', () => ({ getActivePalette: () => null }))
@@ -7,7 +7,7 @@ vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
   loadAddon() {} open() {} focus() {}
   attachCustomKeyEventHandler() {}
-  write = mock.write; dispose = mock.disposed
+  write = mock.write; refresh = mock.refresh; dispose = mock.disposed
   onData() { return { dispose() {} } }
 } }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
@@ -43,6 +43,27 @@ describe('terminal session ownership', () => {
     expect(mock.invoke).toHaveBeenCalledWith('pty_spawn', expect.objectContaining({ eventKey: channel.replace('pty_data:', ''), cols: 80, rows: 24 }))
     onData({ payload: { id: 7, data: 'kept output' } })
     expect(mock.write).toHaveBeenCalledWith('kept output')
+    expect(mock.refresh).toHaveBeenCalledWith(0, 23)
+  })
+  it('repaints the retained screen after the new host has a layout frame', async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback)
+      return frames.length
+    })
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const firstHost = document.body.appendChild(document.createElement('div'))
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(firstHost)
+    session.detach(firstHost)
+    const secondHost = document.body.appendChild(document.createElement('div'))
+    session.attach(secondHost)
+    await session.ready
+    const repaintBeforeFrames = mock.refresh.mock.calls.length
+    while (frames.length) frames.shift()!(0)
+    expect(mock.refresh).toHaveBeenCalledTimes(repaintBeforeFrames + 1)
+    expect(mock.refresh).toHaveBeenLastCalledWith(0, 23)
+    vi.unstubAllGlobals()
   })
   it('resizes the native shell when layout changes while spawn is pending', async () => {
     let complete!: (id: number) => void

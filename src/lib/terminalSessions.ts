@@ -23,6 +23,11 @@ export class TerminalSession {
   private releases: Array<() => void> = []
   private listeners = new Set<() => void>()
   private input: Promise<unknown> = Promise.resolve()
+  // WebKit can retain an xterm canvas' old backing store when React moves a
+  // session view between split-tree hosts. Repaint after the new host has had
+  // a layout frame; this is view work only and never replaces the PTY.
+  private attachment = 0
+  private repaintFrame: number | null = null
 
   constructor(readonly paneId: string, cwd: string, onSpawn: (paneId: string, id: number) => void) {
     this.element.style.cssText = 'width:100%;height:100%;'
@@ -87,13 +92,39 @@ export class TerminalSession {
   }
 
   attach(host: HTMLElement) {
+    const attachment = ++this.attachment
     host.appendChild(this.element)
     this.applyTheme()
     this.applyAppearance()
     this.resize()
+    this.repaint(attachment)
+    this.scheduleRepaint(attachment)
   }
   detach(host: HTMLElement) {
     if (this.element.parentElement === host) this.element.remove()
+    this.attachment++
+    if (this.repaintFrame !== null) {
+      cancelAnimationFrame(this.repaintFrame)
+      this.repaintFrame = null
+    }
+  }
+  /** Repaint a retained xterm screen after moving it to a new React host. */
+  repaint(attachment = this.attachment) {
+    if (this.closed || attachment !== this.attachment || !this.element.isConnected) return
+    try { this.terminal.refresh(0, Math.max(0, this.terminal.rows - 1)) } catch { /* disposed during a view transition */ }
+  }
+  private scheduleRepaint(attachment: number) {
+    // The immediate refresh covers browsers which paint synchronously. A
+    // second layout frame covers WKWebView after a split/tab host changes size.
+    this.repaintFrame = requestAnimationFrame(() => {
+      if (this.closed || attachment !== this.attachment) return
+      this.repaintFrame = requestAnimationFrame(() => {
+        if (this.closed || attachment !== this.attachment) return
+        this.repaintFrame = null
+        this.resize()
+        this.repaint(attachment)
+      })
+    })
   }
   applyTheme() {
     this.terminal.options.theme = getActivePalette() ?? { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' }
@@ -120,6 +151,8 @@ export class TerminalSession {
   dispose() {
     if (this.closed) return
     this.closed = true
+    this.attachment++
+    if (this.repaintFrame !== null) cancelAnimationFrame(this.repaintFrame)
     this.releases.splice(0).forEach(release => release())
     this.listeners.clear()
     this.terminal.dispose()
