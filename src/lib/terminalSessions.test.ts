@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-const mock = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), released: vi.fn(), write: vi.fn(), refresh: vi.fn(), disposed: vi.fn() }))
+const mock = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), released: vi.fn(), write: vi.fn(), refresh: vi.fn(), clearTextureAtlas: vi.fn(), disposed: vi.fn(), themeListeners: new Set<() => void>() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
-vi.mock('../state/theme', () => ({ getActivePalette: () => null }))
+vi.mock('../state/theme', () => ({ getActivePalette: () => null, subscribeTheme: (listener: () => void) => { mock.themeListeners.add(listener); return () => mock.themeListeners.delete(listener) } }))
 vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
   loadAddon() {} open() {} focus() {}
   attachCustomKeyEventHandler() {}
-  write = mock.write; refresh = mock.refresh; dispose = mock.disposed
+  write = mock.write; refresh = mock.refresh; clearTextureAtlas = mock.clearTextureAtlas; dispose = mock.disposed
   onData() { return { dispose() {} } }
 } }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
@@ -20,7 +20,7 @@ beforeEach(() => {
   mock.listen.mockResolvedValue(mock.released)
   mock.invoke.mockResolvedValue(7)
 })
-afterEach(() => { disposeTerminalSession('pane'); document.body.innerHTML = '' })
+afterEach(() => { disposeTerminalSession('pane'); mock.themeListeners.clear(); document.body.innerHTML = '' })
 
 describe('terminal session ownership', () => {
   it('reuses one shell and screen after detaching and reattaching the view', async () => {
@@ -64,6 +64,21 @@ describe('terminal session ownership', () => {
     expect(mock.refresh).toHaveBeenCalledTimes(repaintBeforeFrames + 1)
     expect(mock.refresh).toHaveBeenLastCalledWith(0, 23)
     vi.unstubAllGlobals()
+  })
+  it('reapplies and repaints a detached session when the palette changes', async () => {
+    const host = document.body.appendChild(document.createElement('div'))
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const refreshBefore = mock.refresh.mock.calls.length
+    const atlasBefore = mock.clearTextureAtlas.mock.calls.length
+
+    mock.themeListeners.forEach(listener => listener())
+
+    expect(mock.clearTextureAtlas.mock.calls.length).toBe(atlasBefore + 1)
+    expect(mock.refresh.mock.calls.length).toBeGreaterThan(refreshBefore)
+    expect(mock.invoke).toHaveBeenCalledWith('pty_resize', { id: 7, cols: 80, rows: 24 })
+    expect(session.terminal.options.theme).toEqual(expect.objectContaining({ background: '#1f2335' }))
   })
   it('resizes the native shell when layout changes while spawn is pending', async () => {
     let complete!: (id: number) => void

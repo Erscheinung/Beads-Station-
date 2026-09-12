@@ -25,6 +25,7 @@ import { openSettings } from './state/settings'
 import { useCommandBindings, shortcutLabel } from './state/commands'
 import { setBeadsView, setUiPreferences, useUiPreferences, type BeadsView } from './state/uiPreferences'
 import { clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
+import { providerAvailability, providerLabel, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from './state/chatProviders'
 
 // Code-mkv — per-project terminal strip height. Falls back to the legacy global
 // key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
@@ -54,7 +55,7 @@ export default function App() {
   const active = projects.find(p => p.id === activeId) ?? null
   const [pickerOpen, setPickerOpen] = useState(false)
   const closePicker = useCallback(() => setPickerOpen(false), [])
-  const [requestedChats, setRequestedChats] = useState<Set<string>>(() => new Set())
+  const [requestedChats, setRequestedChats] = useState<Map<string, InteractiveChatProvider>>(() => new Map())
   const uiPrefs = useUiPreferences()
   const commandBindings = useCommandBindings()
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
@@ -102,6 +103,8 @@ export default function App() {
   // calendar acknowledgement shared across unrelated workspaces.
   const [resumeApprovedFor, setResumeApprovedFor] = useState<Set<string>>(() => new Set())
   const sessionPrefs = useSessionPreferences()
+  const interactiveChatProvider = useInteractiveChatProvider()
+  const providerStatuses = useNativeProviderAvailability()
 
   // Phase 6 — pull permissionMode for the active project so we can thread
   // it into ClaudeChat. The hook is called unconditionally with a stable
@@ -332,7 +335,7 @@ export default function App() {
   const handleCancelStart = useCallback(() => {
     if (!active) return
     setRequestedChats(previous => {
-      const next = new Set(previous)
+      const next = new Map(previous)
       next.delete(active.id)
       return next
     })
@@ -363,8 +366,14 @@ export default function App() {
   const activeTerminalHeight = terminalCollapsed ? 24 : terminalHeight
 
   const chatRequested = requestedChats.has(active.id)
-  const resumableSession = observedClaudeSession(active.id)
+  // Store the provider chosen at the explicit start action. Changing the
+  // setting while a chat is alive must not remount it into another backend.
+  const activeChatProvider = requestedChats.get(active.id) ?? interactiveChatProvider
+  const selectedProviderStatus = providerAvailability(providerStatuses, interactiveChatProvider)
+  const chatProviderUnavailable = selectedProviderStatus?.available === false
+  const resumableSession = activeChatProvider === 'claude' ? observedClaudeSession(active.id) : null
   const needsConfirm = chatRequested
+    && activeChatProvider === 'claude'
     && sessionPrefs.askBeforeResume
     && resumableSession !== null
     && !resumeApprovedFor.has(active.id)
@@ -397,11 +406,20 @@ export default function App() {
               <option value="terminal-only">Terminal only</option><option value="explorer">Explorer</option><option value="board">Board</option><option value="both">Both</option>
             </select>
           </label>
-          <button onClick={() => setRequestedChats(prev => new Set([...prev, active.id]))}>Start Claude chat</button>
+          <button
+            disabled={chatRequested || chatProviderUnavailable}
+            title={chatProviderUnavailable ? `${providerLabel(interactiveChatProvider)} is unavailable` : undefined}
+            onClick={() => setRequestedChats(prev => {
+              if (prev.has(active.id)) return prev
+              const next = new Map(prev)
+              next.set(active.id, interactiveChatProvider)
+              return next
+            })}
+          >{chatRequested ? `${providerLabel(activeChatProvider)} chat running` : `Start ${providerLabel(interactiveChatProvider)} chat`}</button>
           <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
         </header>
         <TabBar projects={projects} activeId={activeId} onSelect={setActive} onOpen={() => setPickerOpen(true)} onClose={id => {
-          setRequestedChats(prev => { const next = new Set(prev); next.delete(id); return next })
+          setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
           void closeProject(id)
         }} />
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
@@ -484,6 +502,7 @@ export default function App() {
             cwd={active.path}
             sessionId={active.claudeSessionId}
             permissionMode={permissionApi.mode}
+            provider={activeChatProvider}
           />
         ))}
       </section>
@@ -495,7 +514,7 @@ export default function App() {
       <CommandPalette repoPath={active.path} />
       {pickerOpen && <WorkspacePicker onClose={closePicker} />}
       {import.meta.env.DEV && <DebugOverlay />}
-      {chatRequested && !needsConfirm && <PermissionModePicker projectId={active.id} />}
+      {chatRequested && !needsConfirm && activeChatProvider === 'claude' && <PermissionModePicker projectId={active.id} />}
       {needsConfirm && (
         <MorningConfirm
           projectName={active.name}

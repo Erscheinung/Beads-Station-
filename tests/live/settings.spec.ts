@@ -61,6 +61,26 @@ test('a new project starts chat without a fabricated resume prompt', async ({ pa
   await expect.poll(() => page.evaluate(() => (window as any).__bsInvokeLog.find((e: any) => e.cmd === 'claude_start')?.args)).toMatchObject({ resume: false, sessionId: '' })
 })
 
+test('interactive chat provider selection is explicit and reaches the Codex adapter', async ({ page }) => {
+  await page.getByTitle('Open settings', { exact: true }).click()
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click()
+  const provider = page.getByLabel('Interactive chat provider', { exact: true })
+  await expect(provider).toHaveValue('claude')
+  await expect(page.getByRole('option', { name: 'Codex (available)', exact: true })).toBeEnabled()
+  await provider.selectOption('codex')
+  await expect(provider).toHaveValue('codex')
+  await page.getByRole('button', { name: 'Close settings' }).click()
+
+  // Capability discovery is a status read only; selecting a provider does not
+  // start it. The explicit toolbar action is what crosses the chat boundary.
+  expect((await page.evaluate(() => (window as any).__bsInvokeLog)).filter((e: any) => e.cmd === 'codex_chat_start')).toHaveLength(0)
+  await expect(page.getByRole('button', { name: 'Start Codex chat', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Start Codex chat', exact: true }).click()
+  await expect.poll(async () => (await page.evaluate(() => (window as any).__bsInvokeLog)).filter((e: any) => e.cmd === 'codex_chat_start')).toHaveLength(1)
+  expect((await page.evaluate(() => (window as any).__bsInvokeLog)).filter((e: any) => e.cmd === 'claude_start')).toHaveLength(0)
+  await expect(page.getByText('Codex · proj-a', { exact: true })).toBeVisible()
+})
+
 test('cancelling an observed resume does not start a child', async ({ page }) => {
   await page.evaluate(() => localStorage.setItem('bs.claude.session:proj-a', 'observed-test-session'))
   await page.getByRole('button', { name: 'Start Claude chat', exact: true }).click()

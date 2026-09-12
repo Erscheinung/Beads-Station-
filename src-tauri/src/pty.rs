@@ -77,6 +77,15 @@ fn handle(id: u32) -> Result<Arc<PtyHandle>, String> {
         .ok_or_else(|| format!("No terminal with id {id}"))
 }
 
+fn configure_terminal_command(cmd: &mut CommandBuilder) {
+    cmd.env("LANG", "en_US.UTF-8");
+    cmd.env("TERM", "xterm-256color");
+    // Advertise the capability that the retained Neovim session actually
+    // needs when it redraws after an app palette transition. This is a PTY
+    // contract only; it does not read or modify the user's editor config.
+    cmd.env("COLORTERM", "truecolor");
+}
+
 #[tauri::command]
 pub async fn pty_spawn(
     window: tauri::Window,
@@ -109,8 +118,7 @@ pub async fn pty_spawn(
         let mut cmd = CommandBuilder::new("zsh");
         cmd.arg("-il");
         cmd.cwd(&cwd);
-        cmd.env("LANG", "en_US.UTF-8");
-        cmd.env("TERM", "xterm-256color");
+        configure_terminal_command(&mut cmd);
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -231,6 +239,15 @@ pub fn kill_all_ptys() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_command_advertises_utf8_and_truecolor() {
+        let mut cmd = CommandBuilder::new("zsh");
+        configure_terminal_command(&mut cmd);
+        assert_eq!(cmd.get_env("LANG").and_then(|v| v.to_str()), Some("en_US.UTF-8"));
+        assert_eq!(cmd.get_env("TERM").and_then(|v| v.to_str()), Some("xterm-256color"));
+        assert_eq!(cmd.get_env("COLORTERM").and_then(|v| v.to_str()), Some("truecolor"));
+    }
+
     #[test]
     fn unicode_and_escape_sequences_survive_every_split_boundary() {
         let text = "hello café 日本語 🦀\u{1b}[31mred\u{1b}[0m";

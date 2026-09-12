@@ -1,5 +1,29 @@
 # Workspace and terminal foundation — 2026-09-09
 
+## Provider-neutral interactive chat — 2026-09-12
+
+Implemented `Code-am5.3` as a bounded Claude/Codex selection slice. Settings
+persists the selected interactive-chat provider and renders availability from
+binary capability discovery only. The toolbar label follows that choice, and
+the provider is captured when the user explicitly starts chat; active chats do
+not change backend when the preference changes. Claude keeps its observed-ID
+resume prompt and approval behavior. Codex uses a separate app-server-backed
+adapter with its own event/status/scrollback channels, a read-only thread
+policy, and no fabricated resume ID.
+
+The mock IPC harness covers status discovery and Codex start/send/kill routing;
+the Tauri command registry includes the Codex adapter. No native provider was
+launched, no login or credential state was inspected, and no paid call was
+made. The adapter follows the official app-server JSONL lifecycle: initialize,
+thread/start, then turn/start when the user submits text.
+
+Checks: Vitest **156/156**, Playwright browser-mock **70/70**, Rust
+**97/97**, cargo check, production build, new-module rustfmt check, and
+`git diff --check` passed. A repository-wide `cargo fmt --check` still reports
+unformatted historical files; it was intentionally not run as a broad rewrite.
+This does not close the native `Code-0cp.4` palette regression, which still
+needs packaged LazyVim before/after evidence.
+
 ## Cancellation repair and practical handoff — 2026-09-11
 
 Resumed from the unfinished patch on `feat/daily-driver-foundation`, base HEAD

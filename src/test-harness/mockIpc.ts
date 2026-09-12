@@ -178,6 +178,20 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return []
     case 'claude_get_session_id':
       return null
+    case 'native_provider_status':
+      return [
+        { provider: 'claude', available: true, executable: '/mock/claude', detail: 'Installed; login is managed by the native CLI' },
+        { provider: 'codex', available: true, executable: '/mock/codex', detail: 'Installed; login is managed by the native CLI' },
+      ]
+    case 'codex_chat_start':
+    case 'codex_chat_send':
+    case 'codex_chat_kill':
+    case 'codex_chat_reconcile':
+      return null
+    case 'codex_chat_get_scrollback':
+      return []
+    case 'codex_chat_get_session_id':
+      return null
     case 'native_run_snapshot':
       return []
 

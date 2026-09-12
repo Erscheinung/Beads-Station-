@@ -34,6 +34,7 @@ import { setInsert as setTermInsert } from '../state/termPanes'
 import { buildRenderItems } from '../lib/renderItems'
 import { RenderItemView } from './RenderItems'
 import { claudeResumeKey, claudeStartSession } from '../state/sessionPreferences'
+import { type InteractiveChatProvider, providerLabel } from '../state/chatProviders'
 
 type Frame = any
 
@@ -54,6 +55,8 @@ interface ClaudeChatProps {
    * focused state so only the active pane resolves an approval (G1).
    */
   active?: boolean
+  /** Defaults to Claude for existing agent panes and legacy callers. */
+  provider?: InteractiveChatProvider
 }
 
 type StartStatus = 'pending' | 'started' | 'frame' | 'failed'
@@ -86,9 +89,9 @@ interface PendingApproval {
 // asking, so surfacing an ApprovalCard for every tool_use was wrong (it dangled
 // a pending card the user had to dismiss for a tool that already ran). Callers
 // pass `treatToolUseAsApproval = permissionMode === 'default'`.
-function extractApproval(frame: any, treatToolUseAsApproval = true): PendingApproval | null {
+function extractApproval(frame: any, treatToolUseAsApproval = true, allowPermissionFrame = true): PendingApproval | null {
   if (!frame || typeof frame !== 'object') return null
-  if (frame.type === 'permission_request' || frame.subtype === 'permission_request') {
+  if (allowPermissionFrame && (frame.type === 'permission_request' || frame.subtype === 'permission_request')) {
     const requestId =
       typeof frame.request_id === 'string'
         ? frame.request_id
@@ -141,16 +144,24 @@ function isEditableFocus(): boolean {
   return false
 }
 
-export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }: ClaudeChatProps) {
+export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, provider = 'claude' }: ClaudeChatProps) {
   // RV2 — every claude-session-scoped key (events, usage, status, approval
   // RPCs, header portal id) uses `bridge`. The REAL projectId is kept only for
   // project-scoped RPCs (projects_get) and the header label.
   const bridge = bridgeId ?? projectId
+  const chatProvider: InteractiveChatProvider = provider
+  const isClaude = chatProvider === 'claude'
+  const command = (action: 'start' | 'send' | 'kill' | 'scrollback'): string => {
+    if (isClaude) {
+      return ({ start: 'claude_start', send: 'claude_send', kill: 'claude_kill', scrollback: 'claude_get_scrollback' } as const)[action]
+    }
+    return ({ start: 'codex_chat_start', send: 'codex_chat_send', kill: 'codex_chat_kill', scrollback: 'codex_chat_get_scrollback' } as const)[action]
+  }
   // Code-nfs: a plain assistant tool_use is only a real approval gate when the
   // CLI will actually pause for it — permissionMode === 'default'. In other
   // modes tools auto-run, so tool_use frames must not spawn ApprovalCards.
   // Real permission_request frames are always honored regardless of mode.
-  const gateToolUse = (permissionMode ?? 'acceptEdits') === 'default'
+  const gateToolUse = isClaude && (permissionMode ?? 'acceptEdits') === 'default'
   const [frames, setFrames] = useState<Frame[]>([])
   const [hookEvents, setHookEvents] = useState<HookEvent[]>([])
   const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalStatus>>({})
@@ -191,7 +202,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
       // GC approvalStates: keep only keys whose requestId still appears.
       const live = new Set<string>()
       for (const f of trimmed) {
-        const a = extractApproval(f, gateToolUse)
+        const a = extractApproval(f, gateToolUse, isClaude)
         if (a) live.add(a.requestId)
       }
       framesRef.current = trimmed
@@ -209,13 +220,13 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
   }
 
   useEffect(() => {
-    console.info('[ClaudeChat] starting', { projectId, cwd, permissionMode })
+    console.info('[InteractiveChat] starting', { provider: chatProvider, projectId, cwd, permissionMode })
     const ac = new AbortController()
     const { signal } = ac
     ;(async () => {
       // Code-lbi: register ALL listeners BEFORE claude_start so no early frames
       // (startup diagnostic, initial stderr, session-id) are lost to the race.
-      await safeListen<Frame>(`claude_event:${chanId(bridge)}`, e => {
+      await safeListen<Frame>(`${chatProvider}_event:${chanId(bridge)}`, e => {
         const frame = e.payload
         // Session is alive — reset the respawn counter.
         respawnAttemptsRef.current = 0
@@ -231,19 +242,25 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
         appendFrame(frame)
         setStatus(s => (s === 'failed' ? s : 'frame'))
       }, signal)
-      await safeListen<string>(`claude_event_raw:${chanId(bridge)}`, e => {
+      await safeListen<string>(`${chatProvider}_event_raw:${chanId(bridge)}`, e => {
         appendFrame({ _kind: 'raw', line: String(e.payload) })
       }, signal)
-      await safeListen<string>(`claude_stderr:${chanId(bridge)}`, e => {
+      await safeListen<string>(`${chatProvider}_stderr:${chanId(bridge)}`, e => {
         appendFrame({ _kind: 'stderr', line: String(e.payload) })
         setStderrCount(c => c + 1)
       }, signal)
       // Code-key: listen for child-exit status to trigger respawn.
       // Use the resumeKey from the outer scope so respawn goes through the
       // same persisted-id logic as the initial mount (not a stale closure).
-      const resumeKey = claudeResumeKey(bridge)
-      await safeListen<string>(`claude_status:${chanId(bridge)}`, e => {
+      const resumeKey = isClaude ? claudeResumeKey(bridge) : null
+      await safeListen<string>(`${chatProvider}_status:${chanId(bridge)}`, e => {
         if (e.payload === 'exited') {
+          if (!isClaude) {
+            appendFrame({ _kind: 'stderr', line: `[${providerLabel(chatProvider)} session exited — start a new chat]` })
+            setStderrCount(c => c + 1)
+            setStatus('failed')
+            return
+          }
           respawnAttemptsRef.current += 1
           if (respawnAttemptsRef.current > 3) {
             appendFrame({ _kind: 'stderr', line: '[session exited — too many respawn attempts, giving up]' })
@@ -257,10 +274,10 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
           // Clear any persisted session id before respawn: if the exit was
           // caused by "Session ID already in use" (another terminal owns it),
           // re-passing the same id would loop forever.
-          localStorage.removeItem(resumeKey)
+          localStorage.removeItem(resumeKey!)
           const delay = Math.min(500 * respawnAttemptsRef.current, 2000)
           setTimeout(() => {
-            invoke('claude_start', {
+            invoke(command('start'), {
               projectId: bridge, cwd,
               sessionId: '',
               permissionMode: permissionMode ?? 'acceptEdits',
@@ -272,7 +289,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
       // Code-lbi: replay scrollback ring so frames emitted before listener
       // registration (startup diagnostic, session preamble) are not lost.
       try {
-        const buffered = await invoke<Frame[]>('claude_get_scrollback', { projectId: bridge })
+        const buffered = await invoke<Frame[]>(command('scrollback'), { projectId: bridge })
         if (!signal.aborted && buffered.length > 0) {
           for (const frame of buffered) {
             accumulateUsage(bridge, frame)
@@ -285,33 +302,39 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
       if (signal.aborted) return
       // Code-4je: check for a persisted CLI-assigned session_id to resume.
       // resumeKey declared above (shared with the exit-monitor listener).
-      const startSession = claudeStartSession(bridge)
       // Project records contain an allocation id for legacy bookkeeping. It is
       // not a Claude transcript id and must never be passed as --session-id.
       try {
-        await invoke('claude_start', {
-          projectId: bridge,
-          cwd,
-          sessionId: startSession.sessionId,
-          permissionMode: permissionMode ?? 'acceptEdits',
-          resume: startSession.resume,
-        })
-        if (!signal.aborted) setStatus('started')
-        // After start, give the init frame a moment to arrive then capture
-        // the CLI-assigned session_id and persist it for resume.
-        if (!signal.aborted && !startSession.resume) {
-          setTimeout(async () => {
-            try {
-              const cliSid = await invoke<string | null>('claude_get_session_id', { projectId: bridge })
-              if (cliSid) localStorage.setItem(resumeKey, cliSid)
-            } catch (_) { /* non-fatal */ }
-          }, 2000)
+        if (isClaude) {
+          const startSession = claudeStartSession(bridge)
+          await invoke(command('start'), {
+            projectId: bridge,
+            cwd,
+            sessionId: startSession.sessionId,
+            permissionMode: permissionMode ?? 'acceptEdits',
+            resume: startSession.resume,
+          })
+          // After start, give the init frame a moment to arrive then capture
+          // the CLI-assigned session_id and persist it for resume.
+          if (!signal.aborted && !startSession.resume) {
+            setTimeout(async () => {
+              try {
+                const cliSid = await invoke<string | null>('claude_get_session_id', { projectId: bridge })
+                if (cliSid) localStorage.setItem(resumeKey!, cliSid)
+              } catch (_) { /* non-fatal */ }
+            }, 2000)
+          }
+        } else {
+          // Codex uses an app-server thread. Creating the thread does not
+          // request a model turn; that happens only when the user sends text.
+          await invoke(command('start'), { projectId: bridge, cwd })
         }
+        if (!signal.aborted) setStatus('started')
       } catch (e) {
-        console.error('claude_start failed', e)
+        console.error(`${chatProvider}_chat_start failed`, e)
         if (!signal.aborted) {
           setStatus('failed')
-          appendFrame({ _kind: 'stderr', line: 'claude_start failed: ' + String(e) })
+          appendFrame({ _kind: 'stderr', line: `${providerLabel(chatProvider)} chat start failed: ${String(e)}` })
           setStderrCount(c => c + 1)
         }
       }
@@ -334,10 +357,10 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
       // killed here: they persist across project switches by design and are
       // reaped by explicit <leader>x or the app-exit CloseRequested handler.
       if (bridgeId == null) {
-        invoke('claude_kill', { projectId: bridge }).catch(() => {})
+        invoke(command('kill'), { projectId: bridge }).catch(() => {})
       }
     }
-  }, [projectId, bridge, cwd, permissionMode])
+  }, [projectId, bridge, cwd, permissionMode, chatProvider])
 
   // RV2 — agent panes autofocus their input once mounted. App.tsx's spawn
   // handler used to call setInsert(true) synchronously, before this input
@@ -357,13 +380,13 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
   // whose state is 'pending' wins.
   const topmostPending = useMemo<PendingApproval | null>(() => {
     for (const f of frames) {
-      const a = extractApproval(f, gateToolUse)
+      const a = extractApproval(f, gateToolUse, isClaude)
       if (!a) continue
       const state = approvalStates[a.requestId] ?? 'pending'
       if (state === 'pending') return a
     }
     return null
-  }, [frames, approvalStates, gateToolUse])
+  }, [frames, approvalStates, gateToolUse, isClaude])
 
   // RV3-A — the set of tool_use ids that have already COMPLETED (a matching
   // tool_result frame arrived). A completed tool is never a pending approval:
@@ -410,12 +433,12 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
     () => {
       const out: { approval: PendingApproval; index: number }[] = []
       frames.forEach((f, i) => {
-        const a = extractApproval(f, gateToolUse)
+        const a = extractApproval(f, gateToolUse, isClaude)
         if (a) out.push({ approval: a, index: i })
       })
       return out
     },
-    [frames, gateToolUse],
+    [frames, gateToolUse, isClaude],
   )
 
   // Resolve the topmost pending approval. Shared by the window-level a/d
@@ -427,7 +450,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
     (decision: 'approved' | 'denied'): boolean => {
       let pending: PendingApproval | null = null
       for (const f of framesRef.current) {
-        const a = extractApproval(f, gateToolUse)
+        const a = extractApproval(f, gateToolUse, isClaude)
         if (!a) continue
         const state = approvalsRef.current[a.requestId] ?? 'pending'
         if (state === 'pending') { pending = a; break }
@@ -442,7 +465,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
       })
       return true
     },
-    [bridge, gateToolUse],
+    [bridge, gateToolUse, isClaude],
   )
 
   // Keyboard shortcut: a / d when chat is focused and a pending approval
@@ -481,22 +504,22 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
     appendFrame({ _local: true, role: 'user', text })
     setInput('')
     try {
-      await invoke('claude_send', { projectId: bridge, text })
+      await invoke(command('send'), { projectId: bridge, text })
     } catch (e) {
       const msg = String(e)
       // Code-key: broaden respawn trigger — "session dead" (broken pipe) OR
       // "session not started" (reconcile evicted it) both mean we need to respawn.
-      if (msg.includes('session dead') || msg.includes('session not started')) {
+      if (isClaude && (msg.includes('session dead') || msg.includes('session not started'))) {
         try {
           const startSession = claudeStartSession(bridge)
-          await invoke('claude_start', {
+          await invoke(command('start'), {
             projectId: bridge,
             cwd,
             sessionId: startSession.sessionId,
             permissionMode: permissionMode ?? 'acceptEdits',
             resume: startSession.resume,
           })
-          await invoke('claude_send', { projectId: bridge, text })
+          await invoke(command('send'), { projectId: bridge, text })
           return
         } catch (e2) {
           console.error('claude respawn+resend failed', e2)
@@ -505,7 +528,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
           return
         }
       }
-      console.error('claude_send failed', e)
+      console.error(`${chatProvider} chat send failed`, e)
       appendFrame({ _kind: 'stderr', line: 'send failed: ' + msg })
       setStderrCount(c => c + 1)
     } finally {
@@ -534,14 +557,14 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
           display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
           background: dotColor, flexShrink: 0,
         }} />
-        <span style={{ opacity: 0.7 }}>claude · {projectId}</span>
+        <span style={{ opacity: 0.7 }}>{providerLabel(chatProvider)} · {projectId}</span>
         {/* Stable slot for PermissionModePicker — bridge-scoped id so two
             ClaudeChat instances never portal into one node (getElementById
             returns only the first match). */}
         <span id={`bs-claude-header-right-${bridge}`} style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }} />
         {/* Agent panes own their picker in-header (App.tsx mounts it only for
             the legacy grid chat). bridgeId set => agent-pane mode. */}
-        {bridgeId != null && <PermissionModePicker projectId={projectId} bridgeId={bridge} />}
+        {bridgeId != null && isClaude && <PermissionModePicker projectId={projectId} bridgeId={bridge} />}
       </div>
 
       <ToolDrawer projectId={bridge} events={hookEvents} />
@@ -621,7 +644,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active }:
               }
             }
           } : undefined}
-          placeholder={topmostPending ? `pending: approve(a)/deny(d) ${topmostPending.toolName}` : 'ask claude'}
+          placeholder={topmostPending ? `pending: approve(a)/deny(d) ${topmostPending.toolName}` : `ask ${providerLabel(chatProvider).toLowerCase()}`}
           disabled={busy}
           style={{ flex: 1, background: 'var(--bs-bg-elev)', color: 'var(--bs-fg)', border: '1px solid var(--bs-border)', padding: '6px 8px', fontFamily: 'inherit' }}
         />

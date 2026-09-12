@@ -863,7 +863,8 @@ pub async fn kill_all_sessions() -> usize {
         let _ = session.child.wait().await;
     }
     let native: Vec<NativeRun> = NATIVE_RUNS.lock().await.drain().map(|(_, run)| run).collect();
-    let total = n + native.len();
+    let codex = crate::codex::kill_all_codex_sessions().await;
+    let total = n + native.len() + codex;
     for mut run in native {
         if let Some(mut child) = run.child.take() {
             let _ = child.start_kill();

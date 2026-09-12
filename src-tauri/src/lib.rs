@@ -7,6 +7,7 @@
 mod bd;
 mod binresolve;
 mod claude;
+mod codex;
 mod conductor;
 mod daily;
 mod envloader;
@@ -149,6 +150,12 @@ pub fn run() {
             claude::claude_send,
             claude::claude_set_permission_mode,
             claude::claude_start,
+            codex::codex_chat_start,
+            codex::codex_chat_send,
+            codex::codex_chat_kill,
+            codex::codex_chat_get_scrollback,
+            codex::codex_chat_get_session_id,
+            codex::codex_chat_reconcile,
             claude::native_provider_status,
             claude::native_run_start,
             claude::native_run_cancel,

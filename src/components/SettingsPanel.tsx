@@ -11,8 +11,9 @@ import { getSkin, type Skin } from '../state/skin'
 import './SettingsPanel.css'
 import { safeListen } from '../lib/listenerRegistry'
 import { openSettings } from '../state/settings'
+import { providerAvailability, providerLabel, setInteractiveChatProvider, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from '../state/chatProviders'
 
-const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset', Sessions: 'claude resume agents' }
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset', Sessions: 'claude codex provider chat resume agents' }
 const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions'] as const
 export function SettingsPanel() {
   const open = useSettingsOpen()
@@ -28,6 +29,8 @@ export function SettingsPanel() {
   const [settingsSearch, setSettingsSearch] = useState('')
   const ui = useUiPreferences()
   const session = useSessionPreferences()
+  const interactiveProvider = useInteractiveChatProvider()
+  const providerStatuses = useNativeProviderAvailability()
   const appearance = useTerminalAppearance()
   useEffect(() => {
     let disposed = false
@@ -105,7 +108,17 @@ export function SettingsPanel() {
           <button onClick={() => { resetBindings(); setError('') }}>Restore default shortcuts</button>
         </>}
         {section === 'Sessions' && <>
-          <p className="bs-settings__intro">Agents start when you ask them to.</p>
+          <p className="bs-settings__intro">Agents start when you ask them to. Interactive chat uses the selected local adapter.</p>
+          <label className="bs-settings__row"><span>Interactive chat provider<small>Choose a supported provider for the developer chat pane. Availability checks only whether its CLI is installed; login stays owned by that CLI.</small></span><select aria-label="Interactive chat provider" value={interactiveProvider} onChange={e => setInteractiveChatProvider(e.target.value as InteractiveChatProvider)}>
+            {(['claude', 'codex'] as const).map(name => {
+              const status = providerAvailability(providerStatuses, name)
+              const suffix = providerStatuses === null ? 'checking…' : status?.available ? 'available' : 'unavailable'
+              return <option key={name} value={name} disabled={providerStatuses !== null && status?.available !== true}>{providerLabel(name)} ({suffix})</option>
+            })}
+          </select></label>
+          {providerStatuses === null
+            ? <p className="bs-settings__note" role="status">Checking supported local chat providers…</p>
+            : <p className="bs-settings__note">Unavailable providers stay visible so a missing CLI is clear; they cannot be selected until installed.</p>}
           <label className="bs-settings__row"><span>Ask before resuming Claude<small>When starting chat, offer a choice for a previously observed Claude session. Turn off to resume it directly.</small></span><input type="checkbox" checked={session.askBeforeResume} onChange={e => setSessionPreferences({ askBeforeResume: e.target.checked })} /></label>
           <p className="bs-settings__note">Opening a folder does not start an agent. A saved conversation is not proof of a running process; a session removed by Claude may no longer be resumable.</p>
         </>}

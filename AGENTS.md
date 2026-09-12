@@ -2,6 +2,29 @@
 
 ## Start here
 
+## Latest handoff — 2026-09-12, provider-neutral interactive chat slice
+
+Implemented `Code-am5.3` on the existing uncommitted foundation work. The
+developer chat now has a persisted Claude/Codex choice in Settings, shows
+binary availability without reading credentials, labels the toolbar and chat
+surface with the actual provider, and captures the provider at explicit chat
+start so changing the setting cannot remount a live chat into another backend.
+Claude resume/approval behavior remains Claude-only; Codex uses its own local
+app-server adapter, read-only thread policy, and no resume fabrication.
+
+The mock harness covers provider discovery and Codex start/send/kill/status
+command routing. The Codex adapter is registered in Tauri and follows the
+documented initialize → thread/start → turn/start JSONL boundary. No provider
+was launched, no authentication or credentials were inspected, and no paid
+call was made. `Code-0cp.4` remains open: its retained-terminal palette work
+still needs the required packaged LazyVim native before/after check.
+
+Evidence for this slice: Vitest `156/156`, Playwright browser-mock `70/70`,
+Rust `97/97`, cargo check, production build, `rustfmt --check` for the new
+Codex module, and `git diff --check` passed. Repository-wide `cargo fmt
+--check` remains red on pre-existing files and was not applied broadly. No
+commit, push, lockfile edit, or native provider work call was made.
+
 ## Latest handoff — 2026-09-12, three UI regressions resolved
 
 User asked to pick and resolve at least three easy regressions. Implemented and

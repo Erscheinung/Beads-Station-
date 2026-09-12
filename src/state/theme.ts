@@ -49,7 +49,7 @@ function emit(): void {
   listeners.forEach(l => l())
 }
 
-function subscribe(listener: () => void): () => void {
+export function subscribeTheme(listener: () => void): () => void {
   listeners.add(listener)
   return () => {
     listeners.delete(listener)
@@ -80,11 +80,11 @@ try {
 }
 
 export function useTheme(): Theme {
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return useSyncExternalStore(subscribeTheme, getSnapshot, getSnapshot)
 }
 
 export function useThemePaletteId(): string {
-  return useSyncExternalStore(subscribe, getPaletteIdSnapshot, getPaletteIdSnapshot)
+  return useSyncExternalStore(subscribeTheme, getPaletteIdSnapshot, getPaletteIdSnapshot)
 }
 
 export function getTheme(): Theme {
@@ -116,7 +116,7 @@ export function setThemePalette(id: string, skin: Skin = getSkin()): void {
 }
 
 export function useViewThemes(): Record<Skin, string> {
-  return useSyncExternalStore(subscribe, () => viewThemes, () => viewThemes)
+  return useSyncExternalStore(subscribeTheme, () => viewThemes, () => viewThemes)
 }
 
 function applyCurrentView(): void {

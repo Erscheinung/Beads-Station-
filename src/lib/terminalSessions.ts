@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen as listen } from './listenerRegistry'
-import { getActivePalette } from '../state/theme'
+import { getActivePalette, subscribeTheme } from '../state/theme'
 import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/terminalAppearance'
 import { matchedCommand } from '../state/commands'
 
@@ -46,6 +46,16 @@ export class TerminalSession {
     this.releases.push(() => onData.dispose())
     // Detached tabs retain live terminals too; apply preferences without a React remount.
     this.releases.push(subscribeTerminalAppearance(() => this.applyAppearance()))
+    // A retained session can have no mounted <Terminal> component while its
+    // view is hidden in another tab. Subscribe at the session boundary so a
+    // palette switch updates every live xterm, including those detached DOM
+    // nodes, and repaints after WebKit moves the canvas.
+    this.releases.push(subscribeTheme(() => {
+      this.applyTheme()
+      this.repaint()
+      this.scheduleRepaint(this.attachment)
+      this.requestNativeRedraw()
+    }))
     this.ready = this.start(cwd, onSpawn)
   }
 
@@ -127,7 +137,25 @@ export class TerminalSession {
     })
   }
   applyTheme() {
-    this.terminal.options.theme = getActivePalette() ?? { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' }
+    const palette = getActivePalette()
+    // Pass a fresh complete object. xterm compares option objects by identity;
+    // cloning also prevents a renderer or an OSC color mutation from changing
+    // the shared bundled palette used by the next session.
+    this.terminal.options.theme = palette
+      ? { ...palette }
+      : { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' }
+    // Canvas/WebKit can retain an atlas painted with the previous foreground
+    // and ANSI colors after a theme transition. Clearing the atlas is a
+    // renderer-local operation; the buffer, PTY, PID and input handlers stay
+    // untouched. Refresh both immediately and on the following layout frames.
+    try { this.terminal.clearTextureAtlas?.() } catch { /* disposed during a transition */ }
+    this.repaint()
+  }
+  /** Ask the running TUI to repaint without injecting a user keystroke. */
+  private requestNativeRedraw() {
+    if (this.closed || this.id === null || this.phase !== 'running') return
+    void invoke('pty_resize', { id: this.id, cols: this.terminal.cols, rows: this.terminal.rows })
+      .catch(error => this.fail(error))
   }
   applyAppearance() {
     const appearance = getTerminalAppearance()
