@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { closeSettings, useSettingsOpen } from '../state/settings'
-import { COMMANDS, eventBinding, resetBindings, setBinding, shortcutLabel, useCommandBindings } from '../state/commands'
+import { COMMANDS, eventBinding, LEADER_SHORTCUTS, resetBindings, setBinding, shortcutLabel, useCommandBindings } from '../state/commands'
 import { BUNDLED_THEMES, setThemePalette, useViewThemes } from '../state/theme'
 import { setBeadsView, useUiPreferences, type BeadsView } from '../state/uiPreferences'
 import { useSessionPreferences, setSessionPreferences } from '../state/sessionPreferences'
@@ -79,7 +79,7 @@ export function SettingsPanel() {
           <button onClick={resetTerminalAppearance}>Restore terminal defaults</button>
         </>}
         {section === 'Keyboard shortcuts' && <>
-          <p className="bs-settings__intro">Click a shortcut and press a new combination. Unassigned commands remain available in Commands.</p>
+          <p className="bs-settings__intro">Click a shortcut and press a new combination. Leader chords are fixed and listed by context below.</p>
           <input className="bs-settings__search" aria-label="Search shortcuts" placeholder="Search commands…" value={search} onChange={e => setSearch(e.target.value)} />
           {error && <p role="alert">{error}</p>}
           {COMMANDS.filter(c => c.label.toLowerCase().includes(search.toLowerCase())).map(c => <div className="bs-settings__row" key={c.id}><span>{c.label}</span><div className="bs-settings__binding"><button aria-label={`Shortcut for ${c.label}`} onBlur={() => setRecording(null)} onClick={() => { setRecording(c.id); setError('') }} onKeyDown={e => {
@@ -93,7 +93,15 @@ export function SettingsPanel() {
             setError(failure || '')
             if (!failure) setRecording(null)
           }}><kbd>{recording === c.id ? 'Press shortcut…' : shortcutLabel(bindings[c.id]) || 'Record shortcut'}</kbd></button><button aria-label={`Clear shortcut for ${c.label}`} disabled={!bindings[c.id]} onClick={() => { setBinding(c.id, ''); setError('') }}>Clear</button></div></div>)}
-          <p className="bs-settings__note">Cmd/Ctrl+P remains the pane leader. Escape belongs to your editor. Existing pane leader sequences are unchanged.</p>
+          {(!search || 'leader'.includes(search.toLowerCase())) && <div className="bs-settings__leaders">
+            <h4>Leader chords</h4>
+            <p className="bs-settings__note">Space arms the leader in normal mode. Cmd/Ctrl+P arms it from any input. The second key depends on the focused surface.</p>
+            {(['global', 'terminal'] as const).map(context => <section key={context} aria-label={`${context} leader chords`}>
+              <strong>{context === 'global' ? 'Board, sidebar or chat' : 'Terminal pane'}</strong>
+              {LEADER_SHORTCUTS[context].map(h => <div className="bs-settings__leader-row" key={`${context}-${h.key}`}><kbd>&lt;leader&gt; {h.key}</kbd><span>{h.label}</span></div>)}
+            </section>)}
+          </div>}
+          <p className="bs-settings__note">Escape belongs to your editor. Fullscreen terminal focus defaults to Cmd/Ctrl+Enter and can be rebound above. Existing leader sequences are unchanged.</p>
           <button onClick={() => { resetBindings(); setError('') }}>Restore default shortcuts</button>
         </>}
         {section === 'Sessions' && <>

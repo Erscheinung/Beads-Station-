@@ -1,9 +1,11 @@
-import type { CSSProperties } from 'react'
+import { useRef } from 'react'
+import type { CSSProperties, KeyboardEventHandler, PointerEventHandler } from 'react'
 import { useDraggable } from '@dnd-kit/core'
 import type { Issue } from '../types/issue'
 
 interface CardProps {
   issue: Issue
+  onOpen: (issue: Issue) => void
 }
 
 /* tokyonight: --bs-red / --bs-yellow / --bs-blue.
@@ -22,11 +24,38 @@ const PRIORITY_COLORS: Record<number, string> = {
  * dragging we lift opacity / rotation / shadow; the dnd-kit DragOverlay (in
  * Board.tsx) renders the floating ghost so this element keeps its slot.
  */
-export function Card({ issue }: CardProps) {
+export function Card({ issue, onOpen }: CardProps) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: issue.id,
     data: { issue },
   })
+  const pointerStart = useRef<{ x: number; y: number } | null>(null)
+  const pointerDragged = useRef(false)
+
+  const handlePointerDown: PointerEventHandler<HTMLDivElement> = event => {
+    pointerStart.current = { x: event.clientX, y: event.clientY }
+    pointerDragged.current = false
+    listeners?.onPointerDown?.(event)
+  }
+  const handlePointerMove: PointerEventHandler<HTMLDivElement> = event => {
+    const start = pointerStart.current
+    if (start && (event.buttons !== 0 || Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4)) {
+      pointerDragged.current = true
+    }
+    listeners?.onPointerMove?.(event)
+  }
+  const handlePointerUp: PointerEventHandler<HTMLDivElement> = event => {
+    listeners?.onPointerUp?.(event)
+    pointerStart.current = null
+  }
+  const activate = () => {
+    if (!isDragging) onOpen(issue)
+  }
+  const handleKeyDown: KeyboardEventHandler<HTMLDivElement> = event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    activate()
+  }
 
   const labels = issue.labels ?? []
   const visibleLabels = labels.slice(0, 2)
@@ -66,8 +95,19 @@ export function Card({ issue }: CardProps) {
       ref={setNodeRef}
       style={style}
       className="bs-card"
-      {...listeners}
       {...attributes}
+      {...listeners}
+      role="button"
+      tabIndex={0}
+      aria-label={`${issue.id}: ${issue.title}`}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onDoubleClick={event => {
+        event.preventDefault()
+        if (!pointerDragged.current) activate()
+      }}
+      onKeyDown={handleKeyDown}
     >
       <div
         style={{

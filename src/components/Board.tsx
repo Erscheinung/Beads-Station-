@@ -141,6 +141,10 @@ export function Board({ repoPath, projectId, projectName }: BoardProps) {
     [findIssue],
   )
 
+  const handleOpenIssue = useCallback((issue: Issue) => {
+    window.dispatchEvent(new CustomEvent('issue:open', { detail: { id: issue.id, repoPath } }))
+  }, [repoPath])
+
   const moveIssueLocally = useCallback(
     (prev: BoardState, id: string, from: ColumnId, to: ColumnId): BoardState => {
       const issue = prev[from].find(i => i.id === id)
@@ -273,13 +277,13 @@ export function Board({ repoPath, projectId, projectName }: BoardProps) {
           {COLUMNS.map(col => (
             <Column key={col.id} id={col.id} title={col.title} count={state[col.id].length}>
               {state[col.id].map(issue => (
-                <Card key={issue.id} issue={issue} />
+                <Card key={issue.id} issue={issue} onOpen={handleOpenIssue} />
               ))}
             </Column>
           ))}
         </div>
         <DragOverlay>
-          {activeIssue ? <Card issue={activeIssue} /> : null}
+          {activeIssue ? <Card issue={activeIssue} onOpen={handleOpenIssue} /> : null}
         </DragOverlay>
       </DndContext>
       {toasts.length > 0 && (

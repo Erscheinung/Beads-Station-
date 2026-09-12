@@ -23,6 +23,12 @@
 .bs-settings__search { width: 100%; margin-bottom: 10px; }
 .bs-settings__binding { display: flex; gap: 5px; flex-shrink: 0; }
 .bs-settings__binding kbd { font-size: 11px; }
+.bs-settings__leaders { margin-top: 26px; }
+.bs-settings__leaders h4 { margin: 0 0 8px; font-size: 14px; }
+.bs-settings__leaders section { margin-top: 18px; }
+.bs-settings__leaders section > strong { display: block; margin-bottom: 6px; color: var(--bs-fg-muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+.bs-settings__leader-row { display: flex; align-items: center; gap: 14px; padding: 7px 0; border-bottom: 1px solid var(--bs-border-faint); font-size: 12px; }
+.bs-settings__leader-row kbd { min-width: 92px; color: var(--bs-cyan); font: 11px 'JetBrains Mono', monospace; }
 .bs-settings__themes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .bs-settings .bs-theme-preview { padding: 5px; text-align: left; text-transform: capitalize; font-size: 11px; }
 .bs-settings .bs-theme-preview[aria-pressed=true] { outline: 2px solid var(--bs-blue); outline-offset: 1px; }

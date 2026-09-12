@@ -153,19 +153,6 @@ export function useVimNav(): void {
         event.preventDefault()
         return
       }
-      // ----- RV1-focus (Code-qqt): fullscreen terminal focus toggle -----
-      // Cmd/Ctrl+Enter maximizes the terminal region over the whole content
-      // area (app view hidden but MOUNTED, so no shell respawn) and toggles
-      // back. Works from ANY focus, including xterm insert mode — the terminal
-      // is exactly where you want this chord to fire, so it runs before the
-      // editable bypass. Enter alone stays untouched (newline in shell/input).
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter'
-          && !event.altKey && !event.shiftKey) {
-        window.dispatchEvent(new CustomEvent('terminal:focus-toggle'))
-        event.preventDefault()
-        return
-      }
-
       // While the palette is open, cmdk owns the keyboard (arrows/Enter/Esc +
       // its own input). Stand down so no nav key leaks to the shell behind the
       // modal. cmdk closes via onOpenChange, which flips this back.

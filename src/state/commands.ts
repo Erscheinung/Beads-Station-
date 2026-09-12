@@ -21,6 +21,7 @@ export const COMMANDS = [
   { id: 'unsplit', label: 'Unsplit terminal to tabs (keep sessions)', repo: true },
   { id: 'closePane', label: 'Close focused terminal pane', repo: true },
   { id: 'zoomPane', label: 'Zoom / restore terminal pane', repo: true },
+  { id: 'fullscreen', label: 'Fullscreen terminal focus', binding: 'Mod+Enter', repo: true },
   { id: 'agent', label: 'New Claude agent pane', repo: true },
   { id: 'files', label: 'Open files explorer', repo: true },
   { id: 'expand', label: 'Expand all beads', repo: true },
@@ -28,6 +29,41 @@ export const COMMANDS = [
   { id: 'hideExplorer', label: 'Collapse explorer' },
 ] satisfies { id: string; label: string; binding?: string; repo?: boolean }[]
 export type CommandId = typeof COMMANDS[number]['id']
+
+export interface LeaderShortcut {
+  key: string
+  label: string
+}
+
+// Leader chords are intentionally not configurable: they are the small,
+// context-sensitive navigation layer used to keep editor and shell input
+// untouched. These tables are the single source for WhichKey and Settings.
+export const LEADER_SHORTCUTS: Record<'global' | 'terminal', readonly LeaderShortcut[]> = {
+  global: [
+    { key: 'p', label: 'Cycle project' },
+    { key: 'k', label: 'Command palette' },
+    { key: '\\', label: 'Toggle explorer' },
+    { key: 'b', label: 'Focus board' },
+    { key: 'c', label: 'Focus chat' },
+    { key: 's', label: 'Focus sidebar' },
+    { key: 'a', label: 'New agent pane' },
+    { key: 'e', label: 'Open files explorer' },
+    { key: 'q', label: 'Quit' },
+  ],
+  terminal: [
+    { key: 's', label: 'Split terminal horizontally' },
+    { key: 'v', label: 'Split terminal vertically' },
+    { key: 't', label: 'New terminal tab' },
+    { key: 'z', label: 'Zoom / restore terminal pane' },
+    { key: 'a', label: 'New agent pane' },
+    { key: 'e', label: 'Open files explorer' },
+    { key: 'x', label: 'Close focused terminal pane' },
+    { key: 'b', label: 'Focus board' },
+    { key: 'c', label: 'Focus chat' },
+    { key: 'p', label: 'Cycle project' },
+    { key: '1–9', label: 'Switch terminal tab' },
+  ],
+}
 const KEY = 'beads-station.command-bindings.v1'
 const defaults: Record<string, string> = Object.fromEntries(COMMANDS.map(c => [c.id, ('binding' in c ? c.binding : '') || '']))
 let bindings = { ...defaults }
@@ -51,7 +87,7 @@ export function eventBinding(e: KeyboardEvent): string {
 export function bindingError(id: string, binding: string): string | null {
   if (!binding) return null
   if (!/^Mod\+(Alt\+)?(Shift\+)?([^+]|Enter|ArrowUp|ArrowDown|ArrowLeft|ArrowRight)$/.test(binding)) return 'Use Command or Control with a letter, number, or punctuation key.'
-  if (['Mod+P', 'Mod+Enter', 'Mod+W', 'Mod+Q', 'Mod+C', 'Mod+V', 'Mod+X', 'Mod+A', 'Mod+Z', 'Mod+Shift+Z', 'Mod+R'].includes(binding)) return 'Reserved for pane controls, editing, or the application.'
+  if (['Mod+P', 'Mod+W', 'Mod+Q', 'Mod+C', 'Mod+V', 'Mod+X', 'Mod+A', 'Mod+Z', 'Mod+Shift+Z', 'Mod+R'].includes(binding)) return 'Reserved for pane controls, editing, or the application.'
   const conflict = COMMANDS.find(c => c.id !== id && bindings[c.id] === binding)
   return conflict ? `Already assigned to ${conflict.label}.` : null
 }
@@ -77,5 +113,6 @@ export function matchedCommand(e: KeyboardEvent): CommandId | undefined {
 export function dispatchCommand(id: CommandId) {
   if (id === 'palette') { openPalette(); return }
   if (id === 'settings') { openSettings(); return }
+  if (id === 'fullscreen') { window.dispatchEvent(new CustomEvent('terminal:focus-toggle')); return }
   window.dispatchEvent(new CustomEvent('bs:command', { detail: id }))
 }

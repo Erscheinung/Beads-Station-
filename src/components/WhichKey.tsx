@@ -1,20 +1,5 @@
 import { useVim } from '../state/vim'
-
-interface KeyHint {
-  key: string
-  label: string
-}
-
-// Static leader-key cheatsheet. Kept inside the module so the array is stable
-// across renders without a useMemo dance.
-const HINTS: KeyHint[] = [
-  { key: 'p', label: 'pick project' },
-  { key: 'b', label: 'focus board' },
-  { key: 'c', label: 'focus chat' },
-  { key: 's', label: 'focus sidebar' },
-  { key: 'a', label: 'new agent pane' },
-  { key: 'q', label: 'quit' },
-]
+import { LEADER_SHORTCUTS } from '../state/commands'
 
 /**
  * Centered modal cheatsheet shown while the leader key is held. Subscribes
@@ -22,8 +7,10 @@ const HINTS: KeyHint[] = [
  * presentational — no key handling lives here; useVimNav owns the keymap.
  */
 export function WhichKey() {
-  const { leaderActive } = useVim()
+  const { leaderActive, focused } = useVim()
   if (!leaderActive) return null
+  const context = focused === 'terminal' ? 'terminal' : 'global'
+  const hints = LEADER_SHORTCUTS[context]
 
   return (
     <div
@@ -34,7 +21,7 @@ export function WhichKey() {
         top: '50%',
         left: '50%',
         transform: 'translate(-50%, -50%)',
-        width: 360,
+        width: 420,
         background: 'var(--bs-bg-elev)',
         border: '1px solid var(--bs-border)',
         borderRadius: 4,
@@ -64,7 +51,7 @@ export function WhichKey() {
           fontSize: 12,
         }}
       >
-        {HINTS.map(h => (
+        {hints.map(h => (
           <Row key={h.key} k={h.key} label={h.label} />
         ))}
       </div>
@@ -77,7 +64,7 @@ export function WhichKey() {
           color: 'var(--bs-fg-muted)',
         }}
       >
-        Space arms leader &middot; Cmd-P arms from any input (chat / terminal)
+        Space arms leader &middot; Cmd/Ctrl-P arms from any input · {context} context
       </div>
     </div>
   )

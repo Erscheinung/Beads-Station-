@@ -41,6 +41,23 @@ test('missing discovery roots leave folder opening and settings usable', async (
   await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveText('new-folder')
 })
 
+test('primary workspace entry filters discovered projects and Enter opens only the best match', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: 'Your work starts here.' })).toBeVisible()
+
+  const folder = page.getByLabel('Folder path', { exact: true })
+  await folder.fill('Nex')
+  await expect(page.locator('.workspace-picker__project')).toHaveCount(1)
+  await expect(page.locator('.workspace-picker__project')).toContainText('Nexus')
+  await expect(page.locator('.workspace-picker__project')).not.toContainText('Beads-Station')
+  await folder.press('Enter')
+
+  await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveText('Nexus')
+  const opens = await page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => e.cmd === 'projects_open'))
+  expect(opens).toHaveLength(1)
+  expect(opens[0].args.path).toBe('/tmp/nexus')
+})
+
 test('workspace modal accepts real key presses after terminal focus', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: /Beads-Station.*\/tmp\/beads-station/ }).click()

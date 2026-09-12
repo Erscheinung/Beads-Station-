@@ -2,6 +2,81 @@
 
 ## Start here
 
+## Latest handoff — 2026-09-12, three UI regressions resolved
+
+User asked to pick and resolve at least three easy regressions. Implemented and
+verified `Code-0cp.3`, `Code-0cp.5`, and `Code-0cp.6`; no work was started on
+native LazyVim colors (`Code-0cp.4`) or provider-neutral chat (`Code-am5.3`).
+
+- `Code-0cp.3`: the primary workspace entry now typeaheads against already
+  discovered projects, mirrors its query in the lower search field, opens the
+  best match on Enter, and keeps slash/tilde/dot paths on explicit
+  `projects_open` semantics. Typing never rescans or opens a workspace.
+- `Code-0cp.5`: fullscreen is now an authoritative command with the existing
+  Cmd/Ctrl+Enter default and command-palette execution. Settings exposes its
+  binding, while WhichKey and Settings share context-aware global/terminal
+  leader tables. Cmd/Ctrl+P remains the leader hatch; terminal leader `p`
+  remains project cycling and `e` is the files explorer mapping.
+- `Code-0cp.6`: board cards dispatch the existing repo-qualified `issue:open`
+  event on double-click and Enter/Space, with pointer movement beyond the DnD
+  threshold excluded from activation. Issue detail ignores events for another
+  active repo.
+
+Evidence from this handoff: focused Vitest `15/15`, full Vitest `153/153`,
+production `npm run build` passed, and Playwright browser-mock `69/69` passed.
+A freshly rebuilt debug `.app` native smoke opened the picker, discovered 39
+projects without opening them, typed `Nex` in the prominent field, showed only
+Nexus plus an `Open Nexus` action, and dismissed without opening it. No commit,
+push, lockfile edit, provider call, credential inspection, or Neovim config
+change was made. The three beads are closed with this evidence; `Code-0cp.4`
+and `Code-am5.3` remain open.
+
+## Latest handoff — 2026-09-12, user-reported daily-driver regressions
+
+User supplied native screenshots and asked to split the regressions into tracked
+work, update this handoff and Beads, and bring back the missing behavior. Five
+new child beads were created after confirming this checkout is the maintainer
+database (`bd where` points to this repository). No implementation, commit,
+push, lockfile change, credentials inspection, or provider work call was made
+in this handoff.
+
+Source/commit evidence first, rather than screenshot-only diagnosis:
+
+- `Code-0cp.3` (P1 bug): the primary `WorkspacePicker` folder input is separate
+  from the lower discovery `query`, so typing in the prominent field does not
+  filter results. Restore typeahead without reintroducing eager opening or the
+  `Code-9ff` root-rescan regression.
+- `Code-0cp.4` (P1 bug): reproduce the reported all-green LazyVim native pane
+  before changing code. `TerminalSession` already applies its palette on
+  attach/theme changes and `pty.rs` sets `TERM=xterm-256color`; determine the
+  actual palette, renderer/refresh, PTY capability, or escape-sequence cause.
+  Preserve PID/input/Unicode and never alter the user’s Neovim configuration.
+- `Code-0cp.5` (P1 feature): fullscreen already exists at Cmd/Ctrl+Enter
+  (`94cc926`), but is poorly discoverable. Cmd/Ctrl+P intentionally arms the
+  leader and its `p` mapping can open the file explorer. Settings only renders
+  configurable `COMMANDS`, whereas leader chords are hard-coded in
+  `useVimNav`, causing the misleading blank-key display. Unify truthful help
+  and presentation without stealing editor input or silently changing leader.
+- `Code-0cp.6` (P1 bug): restore board-card double-click detail/actions.
+  `IssueTree` still emits `issue:open` and `IssueDetail` still listens, but
+  `Board` renders draggable `Card`s with no activation handler. Keep drag
+  distinct from activation and retain accessible equivalent behavior.
+- `Code-am5.3` (P1 feature): replace toolbar-only “Start Claude chat” with a
+  settings-backed, provider-neutral interactive-chat choice limited to
+  supported Claude/Codex adapters. Designer ticket runs already select either;
+  the interactive `ClaudeChat` route is Claude-specific. No arbitrary-provider
+  claim, automatic launch, credential access or paid smoke is authorized.
+
+Current HEAD is `70294da` on `feat/daily-driver-foundation`; the checkout was
+clean before this documentation edit. `Code-0cp.1` is closed in Beads with the
+post-repaint native visual check recorded in its notes, despite the older
+historical paragraph below. `Code-0cp.2` remains the sequential narrow
+accessibility task. Start any implementation with the smallest non-overlapping
+bead and record focused plus native evidence as applicable. Recommended
+ownership: Luna for `.3` or `.6`, Sol Medium for `.4`, `.5`, or `.3`; use
+Astra only if the color diagnosis or provider contract conflicts with current
+runtime ownership.
+
 ## Latest handoff — 2026-09-11, cancellation repair and model handoff
 
 User requested cancellation repair, practical prompts saved but not run, and then

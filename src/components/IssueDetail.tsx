@@ -42,7 +42,8 @@ export function IssueDetail({ repoPath }: Props) {
 
   useEffect(() => {
     const onOpen = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { id?: string } | undefined
+      const detail = (e as CustomEvent).detail as { id?: string; repoPath?: string } | undefined
+      if (detail?.repoPath && detail.repoPath !== repoPath) return
       const id = detail?.id
       if (!id) return // vim `o` with no tree cursor id — nothing to show.
       setOpen({ id, issue: null, error: null, loading: true })

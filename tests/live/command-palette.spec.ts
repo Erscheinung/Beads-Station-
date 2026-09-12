@@ -85,3 +85,15 @@ test('Toggle theme updates document colors, including portaled menus', async ({ 
   await openPalette(page)
   await expect(page.locator('.bs-palette')).toHaveCSS('background-color', 'rgb(239, 239, 240)')
 })
+
+test('fullscreen terminal focus is discoverable and executable from Commands', async ({ page }) => {
+  await boot(page)
+  await openPalette(page)
+  await expect(page.getByText('Fullscreen terminal focus', { exact: true })).toBeVisible()
+  await page.getByText('Fullscreen terminal focus', { exact: true }).click()
+  await expect(page.locator('[data-terminal-focus]')).toHaveAttribute('data-terminal-focus', 'true')
+
+  await openPalette(page)
+  await page.getByText('Fullscreen terminal focus', { exact: true }).click()
+  await expect(page.locator('[data-terminal-focus]')).toHaveAttribute('data-terminal-focus', 'false')
+})

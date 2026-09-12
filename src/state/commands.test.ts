@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { eventBinding, getBinding, matchedCommand, resetBindings, setBinding } from './commands'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { dispatchCommand, eventBinding, getBinding, LEADER_SHORTCUTS, matchedCommand, resetBindings, setBinding } from './commands'
 
 describe('command bindings', () => {
   beforeEach(resetBindings)
@@ -16,6 +16,20 @@ describe('command bindings', () => {
     expect(setBinding('workspace', 'Mod+Escape')).toBeTruthy()
     expect(eventBinding(new KeyboardEvent('keydown', { key: 'Escape' }))).toBe('')
     expect(getBinding('workspace')).toBe('')
+  })
+  it('exposes fullscreen as a safe configurable command and keeps leader help truthful', () => {
+    expect(getBinding('fullscreen')).toBe('Mod+Enter')
+    expect(setBinding('workspace', 'Mod+Enter')).toContain('Fullscreen terminal focus')
+    expect(setBinding('fullscreen', 'Mod+Shift+F')).toBeNull()
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'F', metaKey: true, shiftKey: true }))).toBe('fullscreen')
+    expect(LEADER_SHORTCUTS.global.find(h => h.key === 'p')?.label).toBe('Cycle project')
+    expect(LEADER_SHORTCUTS.terminal.find(h => h.key === 'e')?.label).toBe('Open files explorer')
+
+    const listener = vi.fn()
+    window.addEventListener('terminal:focus-toggle', listener)
+    dispatchCommand('fullscreen')
+    window.removeEventListener('terminal:focus-toggle', listener)
+    expect(listener).toHaveBeenCalledTimes(1)
   })
   it('leaves composition and unbound keys alone', () => {
     expect(matchedCommand(new KeyboardEvent('keydown', { key: 'k', metaKey: true, isComposing: true }))).toBeUndefined()

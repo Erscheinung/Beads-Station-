@@ -131,6 +131,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'unsplit': setSkin('terminal'); unsplitToTabs(); break
       case 'closePane': setSkin('terminal'); closeFocusedPane(); break
       case 'zoomPane': setSkin('terminal'); toggleZoom(); break
+      case 'fullscreen': setSkin('terminal'); window.dispatchEvent(new CustomEvent('terminal:focus-toggle')); break
       case 'agent': onAction('agent:spawn'); break
       case 'files': onAction('filenav:spawn'); break
       case 'expand': case 'collapse': window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: id === 'expand' ? 'expandAll' : 'collapseAll' } })); break

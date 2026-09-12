@@ -23,6 +23,15 @@ test('settings records shortcuts, rejects collisions and updates palette hints',
   await expect(page.getByRole('dialog', { name: 'Open workspace' })).toBeVisible()
 })
 
+test('settings shows the fullscreen binding and context-specific leader chords', async ({ page }) => {
+  await page.getByTitle('Open settings', { exact: true }).click()
+  await page.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click()
+  await expect(page.getByText('Fullscreen terminal focus', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Shortcut for Fullscreen terminal focus', exact: true })).toContainText('Enter')
+  await expect(page.getByRole('region', { name: 'global leader chords' })).toContainText('Cycle project')
+  await expect(page.getByRole('region', { name: 'terminal leader chords' })).toContainText('Open files explorer')
+})
+
 test('appearance updates all surfaces without replacing the terminal', async ({ page }) => {
   const spawnCount = () => page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => e.cmd === 'pty_spawn').length)
   await expect.poll(spawnCount).toBeGreaterThan(0)
