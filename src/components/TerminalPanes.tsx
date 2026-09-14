@@ -322,25 +322,34 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
             overflowX: 'auto',
           }}
         >
-          {tabs.map((t, i) => (
-            <button
-              key={t.id}
-              onClick={() => switchTab(i)}
-              style={{
-                padding: '2px 10px',
-                fontSize: 10,
-                fontFamily: 'inherit',
-                border: 'none',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-                color: t.id === activeTabId ? 'var(--bs-fg)' : 'var(--bs-fg-muted)',
-                background: t.id === activeTabId ? 'var(--bs-bg-elev)' : 'var(--bs-bg)',
-                boxShadow: t.id === activeTabId ? 'inset 0 -1px 0 var(--bs-blue)' : undefined,
-              }}
-            >
-              {i + 1} · {leavesOf(t.root).find(l => l.paneId === t.activePaneId)?.agent ? 'agent' : leavesOf(t.root).find(l => l.paneId === t.activePaneId)?.fileNav ? 'files' : 'shell'}
-            </button>
-          ))}
+          {tabs.map((t, i) => {
+            const activeLeaf = leavesOf(t.root).find(l => l.paneId === t.activePaneId)
+            const kind = activeLeaf?.agent ? 'agent' : activeLeaf?.fileNav ? 'files' : 'shell'
+            const name = `Terminal tab ${i + 1}: ${kind}`
+            const selected = t.id === activeTabId
+            return (
+              <button
+                key={t.id}
+                role="tab"
+                aria-label={name}
+                aria-selected={selected}
+                onClick={() => switchTab(i)}
+                style={{
+                  padding: '2px 10px',
+                  fontSize: 10,
+                  fontFamily: 'inherit',
+                  border: 'none',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  color: selected ? 'var(--bs-fg)' : 'var(--bs-fg-muted)',
+                  background: selected ? 'var(--bs-bg-elev)' : 'var(--bs-bg)',
+                  boxShadow: selected ? 'inset 0 -1px 0 var(--bs-blue)' : undefined,
+                }}
+              >
+                {i + 1} · {kind}
+              </button>
+            )
+          })}
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>{renderNode(tab.root, ctx)}</div>

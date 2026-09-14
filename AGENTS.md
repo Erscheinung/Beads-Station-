@@ -10,6 +10,13 @@
 - The primary Sol agent and any orchestrator must not inspect, reread, diff-review, or independently review worker-authored code, and must not spawn a reviewer. Accept the worker's completion report and test evidence.
 - Review worker-authored code only after the user personally reports a bug in that code and asks for diagnosis or repair. Keep verification proportional to risk without automatically creating a separate tester stage.
 
+## Human-readable subagent prompts
+
+- Write every subagent prompt as if you were briefing a capable human teammate who cannot see the parent conversation.
+- Use plain, complete sentences. State the desired outcome, why it matters, the exact scope or files owned, relevant context and constraints, acceptance criteria, and the focused checks to run.
+- Include concrete bead IDs, errors, commands, paths, and definitions the teammate needs. Do not rely on unexplained shorthand, internal labels, or implied context.
+- Keep the prompt concise but self-contained, and ask the subagent to report files changed, validation run, and any remaining uncertainty.
+
 ## Start here
 
 ## Latest handoff — 2026-09-12, provider-neutral interactive chat slice
@@ -350,3 +357,11 @@ Do the smallest complete milestone, then record concrete evidence and next steps
 For implementation, run relevant regression tests and existing gates: `npm run build`, `npm test`, `npm run test:live`, `cargo check --manifest-path src-tauri/Cargo.toml --quiet`; run `cargo test --manifest-path src-tauri/Cargo.toml` for Rust behavior changes. See `docs/FOUNDATION-VERIFICATION.md` for current results; earlier planning-only claims below are historical.
 
 `test:live` uses Chromium + mock IPC. It does **not** verify Tauri/WKWebView, actual PTYs, native auth, process memory, or herdr persistence. Require a packaged Finder-launched smoke and real lifecycle/performance evidence before claiming daily-driver readiness. Record observed results separately from target budgets and upstream marketing claims.
+
+## Viewing Live Subagents
+
+- After spawning the first subagent, tell the user once that live inspection is available inside the current Codex chat with `/agent` (alias `/agents`). Do not require status prompts to the orchestrator.
+- In the ongoing parent chat, enter `/agent`, highlight a child, and press Enter to open that child's live transcript and tool activity. Use the picker again and select `Main` to return to the parent. Follow the picker's displayed key hints for navigation; supported Codex versions also show shortcuts for cycling between threads.
+- The in-chat picker is scoped to the current root conversation. It shows only descendants spawned by that parent, not agents belonging to another task or an older chat.
+- If an expected child is absent, first confirm that the correct parent conversation is open. Use `codex agents` in another terminal for the cross-session overview, then resume the relevant parent with `codex resume <parent-thread-id>` and open `/agent` again.
+- A selected Multi-Agent V2 child may be read-only. Inspect it directly, but send corrections or follow-up work through the parent orchestrator.
