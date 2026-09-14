@@ -20,6 +20,9 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
 const SCROLLBACK_CAP: usize = 64;
+// This is the app-server wire value. It is intentionally not Rust-style
+// `readOnly`: the server deserializes this field as a kebab-case enum.
+const CODEX_DEFAULT_SANDBOX: &str = "read-only";
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 struct CodexSession {
@@ -42,6 +45,19 @@ fn rpc_request(id: u64, method: &str, params: Value) -> Value {
     // Codex app-server speaks JSON-RPC-shaped JSONL, but intentionally omits
     // the jsonrpc version field on the wire.
     json!({ "id": id, "method": method, "params": params })
+}
+
+fn thread_start_request(id: u64, cwd: &str) -> Value {
+    rpc_request(
+        id,
+        "thread/start",
+        json!({
+            "cwd": cwd,
+            "approvalPolicy": "never",
+            "sandbox": CODEX_DEFAULT_SANDBOX,
+            "serviceName": "beads_station_interactive_chat",
+        }),
+    )
 }
 
 async fn write_json(stdin: &mut ChildStdin, value: &Value) -> Result<(), String> {
@@ -334,20 +350,7 @@ pub async fn codex_chat_start(
     // thread/start creates only the local app-server thread. No model turn is
     // requested until the user submits text through codex_chat_send.
     let start_id = request_id();
-    write_json(
-        &mut stdin,
-        &rpc_request(
-            start_id,
-            "thread/start",
-            json!({
-                "cwd": cwd,
-                "approvalPolicy": "never",
-                "sandbox": "readOnly",
-                "serviceName": "beads_station_interactive_chat",
-            }),
-        ),
-    )
-    .await?;
+    write_json(&mut stdin, &thread_start_request(start_id, &cwd)).await?;
     let thread_id = thread_id_from(&read_response(&mut reader, start_id).await?)?;
     let stdin = Arc::new(Mutex::new(stdin));
 
@@ -505,6 +508,32 @@ mod tests {
         assert!(request.get("jsonrpc").is_none());
         assert_eq!(request["params"]["threadId"], "thread-1");
         assert_eq!(request["params"]["input"][0]["type"], "text");
+    }
+
+    #[test]
+    fn thread_start_serializes_the_read_only_wire_policy() {
+        let request = thread_start_request(8, "/tmp/project");
+        let encoded = serde_json::to_string(&request).unwrap();
+
+        assert_eq!(request["method"], "thread/start");
+        assert_eq!(request["params"]["sandbox"], "read-only");
+        assert!(encoded.contains("\"sandbox\":\"read-only\""));
+        assert!(!encoded.contains("readOnly"));
+    }
+
+    #[test]
+    fn rejected_start_response_is_returned_without_fabricating_a_thread() {
+        let response = json!({
+            "id": 8,
+            "error": {
+                "code": -32602,
+                "message": "Invalid params: unknown variant `readOnly`"
+            }
+        });
+
+        let error = rpc_response_result(response, 8).unwrap_err();
+        assert_eq!(error, "Invalid params: unknown variant `readOnly`");
+        assert!(thread_id_from(&json!({})).is_err());
     }
 
     #[test]

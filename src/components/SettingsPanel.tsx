@@ -32,6 +32,61 @@ export function SettingsPanel() {
   const interactiveProvider = useInteractiveChatProvider()
   const providerStatuses = useNativeProviderAvailability()
   const appearance = useTerminalAppearance()
+
+  // Shortcut capture must not depend on the recorder button retaining focus.
+  // macOS can move focus while a Command chord is being delivered (and the
+  // dialog's focus handling can do the same when it is opened from a menu).
+  // Listen in the capture phase for the duration of a recording so the chord
+  // is consumed before xterm, the global vim keymap, or another focused input
+  // can claim it. This also makes pointer and keyboard activation equivalent.
+  useEffect(() => {
+    if (!recording) return
+    const onRecordingKeyDown = (event: KeyboardEvent) => {
+      // Tab cancels capture but keeps normal dialog focus traversal usable.
+      if (event.key === 'Tab') {
+        setRecording(null)
+        setError('')
+        event.stopPropagation()
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+
+      if (event.key === 'Escape') {
+        setRecording(null)
+        setError('')
+        return
+      }
+
+      // A modifier by itself is not a shortcut. Keep the visible recording
+      // state while waiting for the non-modifier key, without showing a
+      // misleading validation error or leaking the modifier to the app.
+      if (['Control', 'Meta', 'Alt', 'Shift'].includes(event.key)) return
+
+      const binding = eventBinding(event)
+      if (!binding) {
+        setError('Include Command or Control in the shortcut.')
+        return
+      }
+
+      const failure = setBinding(recording, binding)
+      setError(failure || '')
+      if (!failure) setRecording(null)
+    }
+    window.addEventListener('keydown', onRecordingKeyDown, true)
+    return () => window.removeEventListener('keydown', onRecordingKeyDown, true)
+  }, [recording])
+
+  // Closing the dialog must always end an in-progress capture. Otherwise a
+  // later reopen can show a stale "Press shortcut…" state with no visible
+  // recorder button to own the key events.
+  useEffect(() => {
+    if (!open) {
+      setRecording(null)
+      setError('')
+    }
+  }, [open])
   useEffect(() => {
     let disposed = false
     let release: (() => void) | undefined
@@ -85,17 +140,16 @@ export function SettingsPanel() {
           <p className="bs-settings__intro">Click a shortcut and press a new combination. Leader chords are fixed and listed by context below.</p>
           <input className="bs-settings__search" aria-label="Search shortcuts" placeholder="Search commands…" value={search} onChange={e => setSearch(e.target.value)} />
           {error && <p role="alert">{error}</p>}
-          {COMMANDS.filter(c => c.label.toLowerCase().includes(search.toLowerCase())).map(c => <div className="bs-settings__row" key={c.id}><span>{c.label}</span><div className="bs-settings__binding"><button aria-label={`Shortcut for ${c.label}`} onBlur={() => setRecording(null)} onClick={() => { setRecording(c.id); setError('') }} onKeyDown={e => {
-            if (recording !== c.id) return
-            if (e.key === 'Tab') { setRecording(null); return }
-            e.preventDefault(); e.stopPropagation()
-            if (e.key === 'Escape') { setRecording(null); return }
-            const b = eventBinding(e.nativeEvent)
-            if (!b) { setError('Include Command or Control in the shortcut.'); return }
-            const failure = setBinding(c.id, b)
-            setError(failure || '')
-            if (!failure) setRecording(null)
-          }}><kbd>{recording === c.id ? 'Press shortcut…' : shortcutLabel(bindings[c.id]) || 'Record shortcut'}</kbd></button><button aria-label={`Clear shortcut for ${c.label}`} disabled={!bindings[c.id]} onClick={() => { setBinding(c.id, ''); setError('') }}>Clear</button></div></div>)}
+          {COMMANDS.filter(c => c.label.toLowerCase().includes(search.toLowerCase())).map(c => <div className="bs-settings__row" key={c.id}><span>{c.label}</span><div className="bs-settings__binding"><button aria-label={`Shortcut for ${c.label}`} onClick={() => { setRecording(c.id); setError('') }} onKeyDown={e => {
+            // Handle keyboard activation on keydown so the capture state is
+            // visible immediately, including in WebViews that do not synthesize
+            // a button click until after their focus transition.
+            if (recording !== c.id && (e.key === 'Enter' || e.key === ' ')) {
+              e.preventDefault()
+              setRecording(c.id)
+              setError('')
+            }
+          }}><kbd>{recording === c.id ? 'Press shortcut…' : shortcutLabel(bindings[c.id]) || 'Record shortcut'}</kbd></button><button aria-label={`Clear shortcut for ${c.label}`} disabled={!bindings[c.id]} onClick={() => { setBinding(c.id, ''); setRecording(current => current === c.id ? null : current); setError('') }}>Clear</button></div></div>)}
           {(!search || 'leader'.includes(search.toLowerCase())) && <div className="bs-settings__leaders">
             <h4>Leader chords</h4>
             <p className="bs-settings__note">Space arms the leader in normal mode. Cmd/Ctrl+P arms it from any input. The second key depends on the focused surface.</p>

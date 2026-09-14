@@ -1,5 +1,15 @@
 # Beads Station — agent handoff
 
+## Adaptive Orchestration Contract
+
+- Model and reasoning assignments live in `~/.codex/config.toml` and `~/.codex/agents/*.toml`; do not duplicate or override them here.
+- The primary agent owns scope, decisions, delegation, and synthesis, not routine implementation. Treat orchestration as adaptive routing, not a fixed explorer -> worker -> tester -> reviewer pipeline.
+- Delegate only when separation materially helps. For small coding work, use one bounded implementation worker with complete ownership. Add specialists only when the actual risk or independent work warrants them.
+- The worker owns implementation and focused validation and should finish its assignment rather than repeatedly hand routine work back. Prefer non-overlapping ownership for parallel workers.
+- Use the configured Luna worker by default. Use the Sol worker only when the user asks for Sol or Luna is impractical because of usage, credits, or availability.
+- The primary Sol agent and any orchestrator must not inspect, reread, diff-review, or independently review worker-authored code, and must not spawn a reviewer. Accept the worker's completion report and test evidence.
+- Review worker-authored code only after the user personally reports a bug in that code and asks for diagnosis or repair. Keep verification proportional to risk without automatically creating a separate tester stage.
+
 ## Start here
 
 ## Latest handoff — 2026-09-12, provider-neutral interactive chat slice

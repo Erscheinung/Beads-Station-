@@ -34,6 +34,7 @@ vi.mock('../components/TerminalPanes', () => ({
 import { useVimNav } from './useVimNav'
 import { setFocused, setLeaderActive } from '../state/vim'
 import { closePalette } from '../state/palette'
+import { resetBindings, setBinding } from '../state/commands'
 
 function Harness() {
   useVimNav()
@@ -136,6 +137,7 @@ describe('useVimNav — Phase 9 palette open', () => {
     setLeaderActive(false)
     setFocused('board')
     closePalette()
+    resetBindings()
   })
   afterEach(() => {
     closePalette()
@@ -166,5 +168,18 @@ describe('useVimNav — Phase 9 palette open', () => {
     press('p', { metaKey: true })
     expect(vimMirror().leaderActive).toBe(true)
     expect(paletteMirror().open).toBe(false)
+  })
+
+  it('dispatches a recorded command from the focused surface', () => {
+    render(<Harness />)
+    expect(setBinding('workspace', 'Mod+Shift+O')).toBeNull()
+    const received: string[] = []
+    const onCommand = (event: Event) => received.push((event as CustomEvent<string>).detail)
+    window.addEventListener('bs:command', onCommand)
+
+    press('o', { metaKey: true, shiftKey: true })
+
+    window.removeEventListener('bs:command', onCommand)
+    expect(received).toEqual(['workspace'])
   })
 })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
@@ -66,6 +66,11 @@ export default function App() {
   // Fullscreen terminal focus is never a launch state. Older builds persisted
   // this flag and could reopen with Neovim covering the entire application.
   const [terminalFocus, setTerminalFocus] = useState(false)
+  // Fullscreen is a transient presentation mode. Keep the pre-focus layout
+  // locally so the exit chord returns to the exact collapsed/focus state the
+  // user left, instead of assuming the board was focused and the strip was
+  // expanded.
+  const terminalFocusRestore = useRef<{ collapsed: boolean; focused: typeof vim.focused } | null>(null)
   useEffect(() => {
     // Remove the legacy persisted value as part of the migration.
     try {
@@ -154,24 +159,28 @@ export default function App() {
 
   // Code-qqt (RV1-focus) — Cmd/Ctrl+Enter toggles fullscreen terminal focus.
   // Entering focus also un-collapses the strip and moves vim focus to the
-  // terminal so it's usable immediately; leaving restores board focus.
+  // terminal so it's usable immediately; leaving restores the prior layout.
   useEffect(() => {
     const onToggle = () => {
-        setTerminalFocus(f => {
-          const next = !f
-          // Focus mode is intentionally transient; never persist it.
+      setTerminalFocus(f => {
+        const next = !f
+        // Focus mode is intentionally transient; never persist it.
         if (next) {
+          terminalFocusRestore.current = { collapsed: terminalCollapsed, focused: vim.focused }
           setTerminalCollapsed(false)
           setFocused('terminal')
         } else {
-          setFocused('board')
+          const restore = terminalFocusRestore.current
+          setTerminalCollapsed(restore?.collapsed ?? false)
+          setFocused(restore?.focused ?? 'board')
+          terminalFocusRestore.current = null
         }
         return next
       })
     }
     window.addEventListener('terminal:focus-toggle', onToggle)
     return () => window.removeEventListener('terminal:focus-toggle', onToggle)
-  }, [])
+  }, [terminalCollapsed, vim.focused])
 
   // C-w +/-/=/_  hotkeys dispatch terminal:resize {delta} from useVimNav.
   useEffect(() => {
@@ -384,7 +393,11 @@ export default function App() {
 
   return (
     <BdLiveProvider>
-    <div className="bs-grid-1px" style={{ display: 'grid', gridTemplateColumns: `${showExplorer && !sidebarCollapsed ? sidebarWidth : 0}px 1fr`, gridTemplateRows: `1fr ${chatRequested ? activeTerminalHeight : 0}px 22px`, height: '100vh' }}>
+    <div
+      className={`bs-grid-1px${terminalFocus ? ' bs-app--terminal-focus' : ''}`}
+      data-terminal-app-focus={terminalFocus ? 'true' : 'false'}
+      style={{ display: 'grid', gridTemplateColumns: `${showExplorer && !sidebarCollapsed ? sidebarWidth : 0}px 1fr`, gridTemplateRows: `1fr ${chatRequested ? activeTerminalHeight : 0}px 22px`, height: '100vh' }}
+    >
       <aside style={{ position: 'relative', background: 'var(--bs-bg)', gridColumn: 1, gridRow: '1 / span 2', overflow: 'hidden', display: showExplorer && !sidebarCollapsed ? 'flex' : 'none', flexDirection: 'column', boxShadow: vim.focused === 'sidebar' ? 'inset 1px 0 0 var(--bs-blue)' : undefined }}>
         <div style={{ flex: 1, minHeight: 0 }}>
           <IssueList key={active.id} repoPath={active.path} />
@@ -397,7 +410,7 @@ export default function App() {
         />
       </aside>
       <main style={{ background: 'var(--bs-bg)', gridColumn: 2, gridRow: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <header className="bs-toolbar">
+        <header className="bs-toolbar bs-app-chrome">
           <span className="bs-toolbar__brand">BEADS STATION</span>
           <button onClick={openPalette} title="Open command palette">Commands <kbd>{shortcutLabel(commandBindings.palette)}</kbd></button>
           <button onClick={() => setSkin('designer')}>Designer</button>
@@ -406,6 +419,11 @@ export default function App() {
               <option value="terminal-only">Terminal only</option><option value="explorer">Explorer</option><option value="board">Board</option><option value="both">Both</option>
             </select>
           </label>
+          {(!showExplorer || sidebarCollapsed) && (
+            <button onClick={() => setUiPreferences({ view: 'explorer', sidebarCollapsed: false })} title="Show the Explorer sidebar">
+              Show Explorer
+            </button>
+          )}
           <button
             disabled={chatRequested || chatProviderUnavailable}
             title={chatProviderUnavailable ? `${providerLabel(interactiveChatProvider)} is unavailable` : undefined}
@@ -418,17 +436,20 @@ export default function App() {
           >{chatRequested ? `${providerLabel(activeChatProvider)} chat running` : `Start ${providerLabel(interactiveChatProvider)} chat`}</button>
           <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
         </header>
-        <TabBar projects={projects} activeId={activeId} onSelect={setActive} onOpen={() => setPickerOpen(true)} onClose={id => {
-          setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
-          void closeProject(id)
-        }} />
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+        <div className="bs-app-chrome">
+          <TabBar projects={projects} activeId={activeId} onSelect={setActive} onOpen={() => setPickerOpen(true)} onClose={id => {
+            setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
+            void closeProject(id)
+          }} />
+        </div>
+        <div className="bs-terminal-content" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
           {/* Board stays MOUNTED under the fullscreen terminal (no remount /
               no shell respawn); we only hide it visually while focused. */}
           <div style={{ flex: 1, minHeight: 0, display: showBoard ? 'block' : 'none', ...(terminalFocus ? { visibility: 'hidden' as const } : null) }}>
             <Board key={active.id} repoPath={active.path} projectId={active.id} projectName={active.name} />
           </div>
           <div
+            className="bs-terminal-region"
             data-terminal-focus={terminalFocus ? 'true' : 'false'}
             style={{
               height: terminalFocus || !showBoard ? undefined : activeTerminalHeight,
@@ -484,7 +505,7 @@ export default function App() {
             </button>
             {!terminalCollapsed && (
               <div style={{ flex: 1, minHeight: 0 }}>
-                <TerminalPanes termFocused={vim.focused === 'terminal'} />
+                <TerminalPanes termFocused={vim.focused === 'terminal'} fullscreen={terminalFocus} />
               </div>
             )}
           </div>
@@ -506,7 +527,7 @@ export default function App() {
           />
         ))}
       </section>
-      <div style={{ gridColumn: '1 / span 2', gridRow: 3 }}>
+      <div className="bs-app-statusline" style={{ gridColumn: '1 / span 2', gridRow: 3 }}>
         <Statusline repoPath={active.path} projectPath={active.path} />
       </div>
       <WhichKey />

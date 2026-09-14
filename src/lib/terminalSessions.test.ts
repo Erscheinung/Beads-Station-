@@ -13,7 +13,7 @@ vi.mock('xterm', () => ({ Terminal: class {
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
-import { disposeTerminalSession, getTerminalSession } from './terminalSessions'
+import { disposeTerminalSession, getTerminalSession, SgrColorNormalizer } from './terminalSessions'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -30,6 +30,8 @@ describe('terminal session ownership', () => {
     session.attach(firstHost)
     await session.ready
     session.detach(firstHost)
+    expect(session.element.isConnected).toBe(true)
+    expect(session.element.parentElement?.dataset.bsTerminalParking).toBe('true')
     const secondHost = document.body.appendChild(document.createElement('div'))
     const reattached = getTerminalSession('pane', '/repo', spawned)
     reattached.attach(secondHost)
@@ -71,13 +73,12 @@ describe('terminal session ownership', () => {
     session.attach(host)
     await session.ready
     const refreshBefore = mock.refresh.mock.calls.length
-    const atlasBefore = mock.clearTextureAtlas.mock.calls.length
+    const resizeBefore = mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_resize').length
 
     mock.themeListeners.forEach(listener => listener())
 
-    expect(mock.clearTextureAtlas.mock.calls.length).toBe(atlasBefore + 1)
     expect(mock.refresh.mock.calls.length).toBeGreaterThan(refreshBefore)
-    expect(mock.invoke).toHaveBeenCalledWith('pty_resize', { id: 7, cols: 80, rows: 24 })
+    expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_resize')).toHaveLength(resizeBefore + 1)
     expect(session.terminal.options.theme).toEqual(expect.objectContaining({ background: '#1f2335' }))
   })
   it('resizes the native shell when layout changes while spawn is pending', async () => {
@@ -122,6 +123,28 @@ describe('terminal session ownership', () => {
     const session = getTerminalSession('pane', '/repo', vi.fn())
     await session.ready
     expect(session.phase).toBe('exited')
+  })
+})
+
+describe('Neovim truecolor output', () => {
+  it('normalizes colon-form RGB and indexed SGR for xterm 5.3', () => {
+    const normalizer = new SgrColorNormalizer()
+    expect(normalizer.push('\u001b[38:2:200:211:245mforeground\u001b[48:2:34:36:54mbackground\u001b[0m'))
+      .toBe('\u001b[38;2;200;211;245mforeground\u001b[48;2;34;36;54mbackground\u001b[0m')
+    expect(normalizer.push('\u001b[38:5:196mred')).toBe('\u001b[38;5;196mred')
+  })
+
+  it('keeps an RGB sequence intact when PTY reads split it between bytes', () => {
+    const normalizer = new SgrColorNormalizer()
+    const chunks = ['\u001b[38:2:200', ':211:245mblue', '\u001b[48:2:34:36', ':54mcanvas']
+    expect(chunks.map(chunk => normalizer.push(chunk)).join('') + normalizer.finish())
+      .toBe('\u001b[38;2;200;211;245mblue\u001b[48;2;34;36;54mcanvas')
+  })
+
+  it('flushes a non-colour incomplete escape sequence verbatim on exit', () => {
+    const normalizer = new SgrColorNormalizer()
+    expect(normalizer.push('output\u001b[38:2:1')).toBe('output')
+    expect(normalizer.finish()).toBe('\u001b[38:2:1')
   })
 })
 

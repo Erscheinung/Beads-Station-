@@ -69,6 +69,50 @@ body {
   background: var(--bs-border-faint);
 }
 
+/* Code-0cp.8 — terminal focus is an application-canvas presentation mode, not
+ * merely a taller terminal strip. Keep every React child mounted (the board,
+ * chat, workspace tabs, and statusline retain their state) while promoting the
+ * existing terminal host to the whole WebView. The fixed host is deliberately
+ * below modal layers, so an explicitly opened palette/detail dialog still has
+ * a usable escape path. */
+.bs-app--terminal-focus {
+  position: fixed;
+  inset: 0;
+  display: block !important;
+  overflow: hidden;
+  z-index: 10;
+}
+.bs-app--terminal-focus > aside,
+.bs-app--terminal-focus > section,
+.bs-app--terminal-focus > .bs-app-statusline,
+.bs-app--terminal-focus > main > .bs-app-chrome {
+  display: none !important;
+}
+.bs-app--terminal-focus > main {
+  position: fixed !important;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 20;
+}
+.bs-app--terminal-focus > main > .bs-terminal-content {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.bs-app--terminal-focus .bs-terminal-region {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 10;
+  border-top: 0 !important;
+}
+.bs-app--terminal-focus .bs-terminal-region > button {
+  height: 24px !important;
+}
+.bs-app--terminal-focus .bs-terminal-panes--fullscreen .bs-pane-actions,
+.bs-app--terminal-focus .bs-terminal-panes--fullscreen > .bs-tabstrip {
+  display: none !important;
+}
+
 /* Bufferline-style tab strip — thin scrollbar, hover affordance for inactive tabs. */
 .bs-tabstrip { scrollbar-width: thin; scrollbar-color: var(--bs-border) transparent; }
 .bs-tabstrip::-webkit-scrollbar { height: 4px; }

@@ -10,6 +10,101 @@ import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/ter
 import { matchedCommand } from '../state/commands'
 
 type Phase = 'starting' | 'running' | 'exited' | 'error'
+
+const ESC = '\u001b'
+
+// Keep a detached xterm screen connected while React re-parents its view.
+// xterm.js pauses its renderer when the observed screen element leaves the
+// document. A split/tab transition can remove and reinsert that element in a
+// single render pass, which WebKit may not report as a fresh IntersectionObserver
+// transition; the retained canvas then stays blank even though its PTY lives.
+// The parking host remains in the viewport geometrically (but transparent and
+// inaccessible), so xterm keeps its renderer live until the next attach.
+let parkingHost: HTMLDivElement | null = null
+function getParkingHost(): HTMLDivElement | null {
+  if (typeof document === 'undefined' || !document.body) return null
+  if (!parkingHost) {
+    parkingHost = document.createElement('div')
+    parkingHost.dataset.bsTerminalParking = 'true'
+    parkingHost.setAttribute('aria-hidden', 'true')
+    parkingHost.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;'
+  }
+  if (!parkingHost.isConnected) document.body.appendChild(parkingHost)
+  return parkingHost
+}
+
+function normalizeSgrParams(params: string): string {
+  // Neovim emits ISO-8613-6 colon-form extended colours (for example,
+  // `38:2:200:211:245`). xterm.js 5.3's parser expects the semicolon form
+  // for this sequence and otherwise shifts the RGB components left, which
+  // turns a normal LazyVim screen into a uniformly green/yellow canvas.
+  return params.split(';').map(part => {
+    const values = part.split(':')
+    const code = Number(values[0])
+    const mode = values[1]
+    const isExtended = code === 38 || code === 48 || code === 58
+    const channels = values.slice(2)
+    const validChannel = (value: string) => /^\d{1,3}$/.test(value) && Number(value) <= 255
+    if (isExtended && mode === '2' && channels.length === 3 && channels.every(validChannel)) {
+      return `${values[0]};2;${channels.join(';')}`
+    }
+    if (isExtended && mode === '5' && channels.length === 1 && validChannel(channels[0])) {
+      return `${values[0]};5;${channels[0]}`
+    }
+    return part
+  }).join(';')
+}
+
+/**
+ * Normalize Neovim's colon-form SGR extended colours without buffering
+ * ordinary PTY output. The PTY can split an escape sequence between reads, so
+ * retain only an incomplete CSI sequence and flush it verbatim on exit.
+ */
+export class SgrColorNormalizer {
+  private pending = ''
+
+  push(data: string): string {
+    const input = this.pending + data
+    this.pending = ''
+    let output = ''
+    let cursor = 0
+
+    while (cursor < input.length) {
+      const start = input.indexOf(`${ESC}[`, cursor)
+      if (start === -1) {
+        output += input.slice(cursor)
+        break
+      }
+      output += input.slice(cursor, start)
+      let final = start + 2
+      while (final < input.length) {
+        const code = input.charCodeAt(final)
+        if (code >= 0x40 && code <= 0x7e) break
+        final++
+      }
+      if (final >= input.length) {
+        this.pending = input.slice(start)
+        break
+      }
+      const sequence = input.slice(start, final + 1)
+      if (input[final] === 'm') {
+        const params = input.slice(start + 2, final)
+        output += /^[0-9:;]*$/.test(params) ? `${ESC}[${normalizeSgrParams(params)}m` : sequence
+      } else {
+        output += sequence
+      }
+      cursor = final + 1
+    }
+    return output
+  }
+
+  finish(): string {
+    const tail = this.pending
+    this.pending = ''
+    return tail
+  }
+}
+
 export class TerminalSession {
   readonly element = document.createElement('div')
   readonly terminal = new XTerm({ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, cursorBlink: true, scrollback: 3000 })
@@ -23,6 +118,7 @@ export class TerminalSession {
   private releases: Array<() => void> = []
   private listeners = new Set<() => void>()
   private input: Promise<unknown> = Promise.resolve()
+  private readonly outputNormalizer = new SgrColorNormalizer()
   // WebKit can retain an xterm canvas' old backing store when React moves a
   // session view between split-tree hosts. Repaint after the new host has had
   // a layout frame; this is view work only and never replaces the PTY.
@@ -74,12 +170,17 @@ export class TerminalSession {
     const eventKey = crypto.randomUUID()
     try {
       const output = await listen<{ id: number; data: string }>(`pty_data:${eventKey}`, event => {
-        if (!this.closed) this.terminal.write(event.payload.data)
+        if (!this.closed) {
+          const data = this.outputNormalizer.push(event.payload.data)
+          if (data) this.terminal.write(data)
+        }
       })
       if (this.closed) { output(); return }
       this.releases.push(output)
       const exit = await listen<{ id: number }>(`pty_exit:${eventKey}`, () => {
         if (this.closed) return
+        const pending = this.outputNormalizer.finish()
+        if (pending) this.terminal.write(pending)
         this.phase = 'exited'
         this.terminal.write('\r\n[process exited]\r\n')
         this.notify()
@@ -103,6 +204,7 @@ export class TerminalSession {
 
   attach(host: HTMLElement) {
     const attachment = ++this.attachment
+    this.element.removeAttribute('aria-hidden')
     host.appendChild(this.element)
     this.applyTheme()
     this.applyAppearance()
@@ -111,7 +213,13 @@ export class TerminalSession {
     this.scheduleRepaint(attachment)
   }
   detach(host: HTMLElement) {
-    if (this.element.parentElement === host) this.element.remove()
+    if (this.element.parentElement === host) {
+      // Do not let the xterm screen leave the document between React hosts.
+      // Keeping it in a transparent, aria-hidden parking host avoids the
+      // WebKit IntersectionObserver pause race while retaining the same
+      // buffer, PTY, PID and input handlers.
+      getParkingHost()?.appendChild(this.element)
+    }
     this.attachment++
     if (this.repaintFrame !== null) {
       cancelAnimationFrame(this.repaintFrame)
@@ -144,11 +252,9 @@ export class TerminalSession {
     this.terminal.options.theme = palette
       ? { ...palette }
       : { background: '#1f2335', foreground: '#c0caf5', cursor: '#c0caf5' }
-    // Canvas/WebKit can retain an atlas painted with the previous foreground
-    // and ANSI colors after a theme transition. Clearing the atlas is a
-    // renderer-local operation; the buffer, PTY, PID and input handlers stay
-    // untouched. Refresh both immediately and on the following layout frames.
-    try { this.terminal.clearTextureAtlas?.() } catch { /* disposed during a transition */ }
+    // Request a full screen refresh after replacing the theme. Keep the
+    // retained buffer, PTY, PID and input handlers untouched; WebKit's canvas
+    // renderer has its own atlas lifecycle and owns invalidation here.
     this.repaint()
   }
   /** Ask the running TUI to repaint without injecting a user keystroke. */

@@ -80,9 +80,9 @@ fn handle(id: u32) -> Result<Arc<PtyHandle>, String> {
 fn configure_terminal_command(cmd: &mut CommandBuilder) {
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("TERM", "xterm-256color");
-    // Advertise the capability that the retained Neovim session actually
-    // needs when it redraws after an app palette transition. This is a PTY
-    // contract only; it does not read or modify the user's editor config.
+    // Advertise truecolour support consistently, even when the app was
+    // launched from Finder (where the inherited environment is sparse). The
+    // frontend normalizes Neovim's colon-form SGR before xterm parses it.
     cmd.env("COLORTERM", "truecolor");
 }
 

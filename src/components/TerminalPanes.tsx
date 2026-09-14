@@ -292,7 +292,7 @@ function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
   )
 }
 
-export function TerminalPanes({ termFocused }: { termFocused: boolean }) {
+export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused: boolean; fullscreen?: boolean }) {
   const { tabs, activeTabId, insert } = useTermPanes()
   const zoomed = useZoom()
   const tab = tabs.find(t => t.id === activeTabId) ?? tabs[0]
@@ -300,8 +300,8 @@ export function TerminalPanes({ termFocused }: { termFocused: boolean }) {
   const ctx: RenderCtx = { activePaneId: tab.activePaneId, termFocused, insert, zoomed: visibleZoom }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
-      <div className="bs-pane-actions" role="toolbar" aria-label="Terminal pane controls">
+    <div className={`bs-terminal-panes${fullscreen ? ' bs-terminal-panes--fullscreen' : ''}`} style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
+      <div className="bs-pane-actions" role="toolbar" aria-label="Terminal pane controls" aria-hidden={fullscreen}>
         <button onClick={() => { splitActive('v'); setFocused('terminal'); setInsert(true) }} title="Split side by side">Split right</button>
         <button onClick={() => { splitActive('h'); setFocused('terminal'); setInsert(true) }} title="Split top and bottom">Split down</button>
         <button onClick={unsplitToTabs} disabled={tab.root.kind === 'leaf'} title="Remove splits and keep every session in its own tab">Unsplit to tabs</button>
@@ -312,6 +312,7 @@ export function TerminalPanes({ termFocused }: { termFocused: boolean }) {
       {tabs.length > 1 && (
         <div
           className="bs-tabstrip"
+          aria-hidden={fullscreen}
           role="tablist" aria-label="Terminal tabs"
           style={{
             display: 'flex',

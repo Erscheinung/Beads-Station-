@@ -28,5 +28,15 @@ function load(): UiPreferences {
 function emit() { try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* non-browser */ }; listeners.forEach(l => l()) }
 export function useUiPreferences() { return useSyncExternalStore(l => { listeners.add(l); return () => listeners.delete(l) }, () => state, () => state) }
 export function setUiPreferences(next: Partial<UiPreferences>) { state = { ...state, ...next }; emit() }
-export function setBeadsView(view: BeadsView) { setUiPreferences({ view }) }
+// Selecting a view that includes the Explorer is also an explicit request to
+// see it. This matters when a dev/package profile retained the independent
+// collapsed flag: without clearing it, Settings can visibly change from Board
+// to Explorer while the sidebar remains hidden and offers no recovery path.
+export function setBeadsView(view: BeadsView) {
+  if (view === 'explorer' || view === 'both') {
+    setUiPreferences({ view, sidebarCollapsed: false })
+  } else {
+    setUiPreferences({ view })
+  }
+}
 export function toggleSidebarPreference() { setUiPreferences({ sidebarCollapsed: !state.sidebarCollapsed }) }
