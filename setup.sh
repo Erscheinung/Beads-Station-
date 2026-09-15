@@ -102,6 +102,11 @@ if [[ -n "$missing_runtime_tools" ]]; then
   warn "Missing runtime CLI(s):$missing_runtime_tools. Install them separately for issue tracking/Claude features."
 fi
 
+if command -v bd >/dev/null 2>&1; then
+  info "Bootstrapping the repository-local Beads database"
+  "$REPO_ROOT/scripts/setup-beads.sh"
+fi
+
 if [[ ! -f .env ]]; then
   warn ".env is missing. Copy .env.example to .env and configure the Claude credentials before using Claude features."
 fi

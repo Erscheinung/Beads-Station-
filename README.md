@@ -23,6 +23,20 @@ npm install
 npm run tauri dev
 ```
 
+Initialize the repository-local Beads database after a fresh clone (or after
+moving the checkout to another machine):
+
+```sh
+npm run beads:setup
+```
+
+This runs `bd bootstrap --yes`, which imports the tracked
+`.beads/issues.jsonl` export into an ignored embedded Dolt database under this
+clone's `.beads/` directory. The database is local to the checkout, so clone
+paths and machines do not need to match. Re-running the command is safe and
+does not edit the tracked JSONL export or commit runtime database files. It
+requires a current `bd` installation with the `bootstrap` command.
+
 The native app uses port 1420. Open a project from the picker, then use the terminal or start an agent explicitly. The `+` beside workspace tabs and **Open workspace** in the command palette return to the picker. **Discovery roots** accepts one root per line. Folder paths can start with `~/` and may contain spaces; no shell interpolation is used to open them.
 
 To install the JavaScript dependencies, pinned Rust toolchain, and macOS

@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "beads:setup": "./scripts/setup-beads.sh",
     "predev": "node scripts/audit-emoji.mjs",
     "dev": "./scripts/with-fd-limit.sh vite",
     "prebuild": "node scripts/audit-emoji.mjs",
