@@ -15,10 +15,10 @@ test.beforeEach(async ({ page }) => {
 
 /** leader-v splits the active pane vertically (useVimNav.ts:344). The leader
  *  split bindings are gated on terminal focus, so enter the terminal first
- *  (Cmd/Ctrl+Enter fullscreen focus — Code-qqt) before arming the leader. */
+ *  (Cmd/Ctrl+Shift+Enter fullscreen focus — Code-qqt) before arming the leader. */
 async function splitVertical(page: import('@playwright/test').Page): Promise<void> {
   const before = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
-  await page.keyboard.press('Control+Enter')
+  await page.keyboard.press('Control+Shift+Enter')
   await page.waitForFunction(() => (window as any).__bsVim?.focused === 'terminal')
   await leader(page)
   await page.keyboard.press('v')
@@ -201,7 +201,7 @@ test('reload-restore soak: paneCount + ratio stable across 20 cycles, no orphan 
 test('focus-toggle soak: 20 enter/exit cycles — paneCount stable, no orphan xterm', async ({ page }) => {
   await splitVertical(page)
   // splitVertical leaves focused === 'terminal'; exit first so we start from 'board'.
-  await page.keyboard.press('Control+Enter')
+  await page.keyboard.press('Control+Shift+Enter')
   await page.waitForFunction(() => (window as any).__bsVim?.focused !== 'terminal')
 
   const expectedPaneCount = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
@@ -209,11 +209,11 @@ test('focus-toggle soak: 20 enter/exit cycles — paneCount stable, no orphan xt
 
   for (let i = 0; i < 20; i++) {
     // Enter terminal focus (focused → 'terminal').
-    await page.keyboard.press('Control+Enter')
+    await page.keyboard.press('Control+Shift+Enter')
     await page.waitForFunction(() => (window as any).__bsVim?.focused === 'terminal')
 
     // Exit terminal focus (focused → 'board').
-    await page.keyboard.press('Control+Enter')
+    await page.keyboard.press('Control+Shift+Enter')
     await page.waitForFunction(() => (window as any).__bsVim?.focused !== 'terminal')
 
     const paneCount = await page.evaluate(() => (window as any).__bsTerm?.paneCount)

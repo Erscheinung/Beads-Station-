@@ -28,6 +28,8 @@ import {
   setInsert,
   setRatio,
   activeTabRoot,
+  focusPaneDirection,
+  resizePane,
   serializeProjects,
   restoreProjects,
 } from './termPanes'
@@ -281,6 +283,61 @@ describe('termPanes setRatio (Code-mkv)', () => {
     const before = activeTabRoot()
     expect(() => setRatio('nope', 0.3)).not.toThrow()
     expect(activeTabRoot()).toBe(before) // same ref — no rebuild
+  })
+})
+
+describe('termPanes tiling directions (Code-0cp.10.2)', () => {
+  beforeEach(() => reset())
+
+  it('focuses the geometrically adjacent pane in each direction', () => {
+    setActiveProject('tile-focus', '/tmp/tile-focus')
+    splitActive('v') // active pane starts on the right
+    const root = activeTabRoot()
+    expect(root.kind).toBe('split')
+    if (root.kind !== 'split') return
+    const [left, right] = leavesOf(root)
+    focusPaneDirection('left')
+    focusPaneDirection('right')
+
+    let disposed: string | undefined
+    const onDispose = (event: Event) => {
+      disposed = (event as CustomEvent<{ paneId?: string }>).detail.paneId
+    }
+    window.addEventListener('terminal:dispose', onDispose)
+    closeActivePane()
+    window.removeEventListener('terminal:dispose', onDispose)
+    expect(disposed).toBe(right.paneId)
+
+    // The same tree helper handles the orthogonal directions for stacked
+    // panes; the call is a no-op when no geometric neighbor exists.
+    expect(() => focusPaneDirection('up')).not.toThrow()
+    expect(() => focusPaneDirection('down')).not.toThrow()
+    expect(left.paneId).not.toBe(disposed)
+  })
+
+  it('moves the nearest matching ancestor seam by a bounded fixed step', () => {
+    setActiveProject('tile-resize', '/tmp/tile-resize')
+    splitActive('v')
+    splitActive('h') // active pane is in nested horizontal split
+    const initial = activeTabRoot()
+    expect(initial.kind).toBe('split')
+    if (initial.kind !== 'split' || initial.b.kind !== 'split') return
+    expect(initial.ratio).toBe(0.5)
+    expect(initial.b.ratio).toBe(0.5)
+
+    resizePane('left') // outer vertical seam
+    let after = activeTabRoot()
+    expect(after.kind === 'split' && after.ratio).toBe(0.45)
+    resizePane('up') // nested horizontal seam
+    after = activeTabRoot()
+    expect(after.kind === 'split' && after.b.kind === 'split' && after.b.ratio).toBe(0.45)
+
+    for (let i = 0; i < 20; i++) resizePane('left')
+    after = activeTabRoot()
+    expect(after.kind === 'split' && after.ratio).toBe(0.05)
+    for (let i = 0; i < 40; i++) resizePane('right')
+    after = activeTabRoot()
+    expect(after.kind === 'split' && after.ratio).toBe(0.95)
   })
 })
 

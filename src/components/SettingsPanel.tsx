@@ -12,9 +12,21 @@ import './SettingsPanel.css'
 import { safeListen } from '../lib/listenerRegistry'
 import { openSettings } from '../state/settings'
 import { providerAvailability, providerLabel, setInteractiveChatProvider, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from '../state/chatProviders'
+import { resetUiCustomization, setUiCustomization, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, useUiCustomization } from '../state/uiCustomization'
 
-const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset', Sessions: 'claude codex provider chat resume agents' }
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents' }
 const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions'] as const
+const TERMINAL_PANE_COMMAND_IDS = new Set([
+  'fullscreen',
+  'focusLeft',
+  'focusRight',
+  'focusUp',
+  'focusDown',
+  'resizeLeft',
+  'resizeRight',
+  'resizeUp',
+  'resizeDown',
+])
 export function SettingsPanel() {
   const open = useSettingsOpen()
   const dialog = useRef<HTMLDialogElement>(null)
@@ -32,6 +44,29 @@ export function SettingsPanel() {
   const interactiveProvider = useInteractiveChatProvider()
   const providerStatuses = useNativeProviderAvailability()
   const appearance = useTerminalAppearance()
+  const customization = useUiCustomization()
+  const visibleCommands = COMMANDS.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
+  const terminalPaneCommands = visibleCommands.filter(c => TERMINAL_PANE_COMMAND_IDS.has(c.id))
+  const otherCommands = visibleCommands.filter(c => !TERMINAL_PANE_COMMAND_IDS.has(c.id))
+  const renderShortcut = (c: (typeof COMMANDS)[number]) => <div className="bs-settings__row" key={c.id}>
+    <span>{c.label}</span>
+    <div className="bs-settings__binding">
+      <button aria-label={`Shortcut for ${c.label}`} onClick={() => { setRecording(c.id); setError('') }} onKeyDown={e => {
+        // Handle keyboard activation on keydown so the capture state is
+        // visible immediately, including in WebViews that do not synthesize
+        // a button click until after their focus transition.
+        if (recording !== c.id && (e.key === 'Enter' || e.key === ' ')) {
+          e.preventDefault()
+          setRecording(c.id)
+          setError('')
+        }
+      }}>
+        <kbd>{recording === c.id ? 'Press shortcut…' : shortcutLabel(bindings[c.id]) || 'Not set'}</kbd>
+        {recording !== c.id && <span className="bs-settings__change-binding">{bindings[c.id] ? 'Change' : 'Set'}</span>}
+      </button>
+      <button aria-label={`Clear shortcut for ${c.label}`} disabled={!bindings[c.id]} onClick={() => { setBinding(c.id, ''); setRecording(current => current === c.id ? null : current); setError('') }}>Clear</button>
+    </div>
+  </div>
 
   // Shortcut capture must not depend on the recorder button retaining focus.
   // macOS can move focus while a Command chord is being delivered (and the
@@ -122,6 +157,22 @@ export function SettingsPanel() {
             <span>{t.name.replace(/-/g, ' ')}{palette === t.name ? ' · selected' : ''}</span>
           </button>)}</div>
           <button onClick={() => setThemePalette(DEFAULT_THEME_ID, themeView)}>Reset this view’s theme</button>
+          <div className="bs-settings__customization" aria-labelledby="interface-customization-title">
+            <h4 id="interface-customization-title">Interface</h4>
+            <p className="bs-settings__note">Adjusts application chrome text and spacing. Terminal canvas measurement and terminal font settings stay independent.</p>
+            <label className="bs-settings__row" htmlFor="interface-scale">
+              <span>Interface scale<small>Choose a comfortable reading size for menus, tabs and other application chrome.</small></span>
+              <span className="bs-settings__range-control"><input id="interface-scale" aria-label="Interface scale" type="range" min={UI_SCALE_MIN} max={UI_SCALE_MAX} step={UI_SCALE_STEP} value={customization.interfaceScale} onChange={e => setUiCustomization({ interfaceScale: Number(e.currentTarget.value) })} /><output htmlFor="interface-scale">{customization.interfaceScale}%</output></span>
+            </label>
+            <label className="bs-settings__row" htmlFor="interface-density">
+              <span>Interface density<small>Compact uses less spacing; comfortable keeps more room between controls.</small></span>
+              <select id="interface-density" aria-label="Interface density" value={customization.density} onChange={e => setUiCustomization({ density: e.currentTarget.value as typeof customization.density })}>
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+              </select>
+            </label>
+            <button onClick={resetUiCustomization}>Reset interface customization</button>
+          </div>
         </>}
         {(section === 'Appearance' || section === 'Terminal') && <>
           {section === 'Terminal' && <p className="bs-settings__intro">Changes apply to existing shells in both views. Applications such as Neovim can override the cursor.</p>}
@@ -137,19 +188,19 @@ export function SettingsPanel() {
           <button onClick={resetTerminalAppearance}>Restore terminal defaults</button>
         </>}
         {section === 'Keyboard shortcuts' && <>
-          <p className="bs-settings__intro">Click a shortcut and press a new combination. Leader chords are fixed and listed by context below.</p>
+          <p className="bs-settings__intro">Choose Change beside any action, then press a more comfortable Command or Control shortcut. Leader chords are fixed and listed by context below.</p>
           <input className="bs-settings__search" aria-label="Search shortcuts" placeholder="Search commands…" value={search} onChange={e => setSearch(e.target.value)} />
           {error && <p role="alert">{error}</p>}
-          {COMMANDS.filter(c => c.label.toLowerCase().includes(search.toLowerCase())).map(c => <div className="bs-settings__row" key={c.id}><span>{c.label}</span><div className="bs-settings__binding"><button aria-label={`Shortcut for ${c.label}`} onClick={() => { setRecording(c.id); setError('') }} onKeyDown={e => {
-            // Handle keyboard activation on keydown so the capture state is
-            // visible immediately, including in WebViews that do not synthesize
-            // a button click until after their focus transition.
-            if (recording !== c.id && (e.key === 'Enter' || e.key === ' ')) {
-              e.preventDefault()
-              setRecording(c.id)
-              setError('')
-            }
-          }}><kbd>{recording === c.id ? 'Press shortcut…' : shortcutLabel(bindings[c.id]) || 'Record shortcut'}</kbd></button><button aria-label={`Clear shortcut for ${c.label}`} disabled={!bindings[c.id]} onClick={() => { setBinding(c.id, ''); setRecording(current => current === c.id ? null : current); setError('') }}>Clear</button></div></div>)}
+          {terminalPaneCommands.length > 0 && <section className="bs-settings__shortcut-group" aria-labelledby="terminal-pane-shortcuts-title">
+            <h4 id="terminal-pane-shortcuts-title">Terminal pane controls</h4>
+            <p className="bs-settings__note">Fullscreen, move between tiles, and resize the active split. Every shortcut below can be replaced or cleared.</p>
+            {terminalPaneCommands.map(renderShortcut)}
+          </section>}
+          {otherCommands.length > 0 && <section className="bs-settings__shortcut-group" aria-labelledby="application-shortcuts-title">
+            <h4 id="application-shortcuts-title">Application shortcuts</h4>
+            {otherCommands.map(renderShortcut)}
+          </section>}
+          {visibleCommands.length === 0 && !'leader'.includes(search.toLowerCase()) && <p role="status">No matching shortcuts</p>}
           {(!search || 'leader'.includes(search.toLowerCase())) && <div className="bs-settings__leaders">
             <h4>Leader chords</h4>
             <p className="bs-settings__note">Space arms the leader in normal mode. Cmd/Ctrl+P arms it from any input. The second key depends on the focused surface.</p>
@@ -158,7 +209,7 @@ export function SettingsPanel() {
               {LEADER_SHORTCUTS[context].map(h => <div className="bs-settings__leader-row" key={`${context}-${h.key}`}><kbd>&lt;leader&gt; {h.key}</kbd><span>{h.label}</span></div>)}
             </section>)}
           </div>}
-          <p className="bs-settings__note">Escape belongs to your editor. Fullscreen terminal focus defaults to Cmd/Ctrl+Enter and can be rebound above. Existing leader sequences are unchanged.</p>
+          <p className="bs-settings__note">Escape belongs to your editor. Fullscreen terminal focus defaults to Cmd/Ctrl+Shift+Enter and can be rebound above. Existing leader sequences are unchanged.</p>
           <button onClick={() => { resetBindings(); setError('') }}>Restore default shortcuts</button>
         </>}
         {section === 'Sessions' && <>

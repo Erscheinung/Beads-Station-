@@ -61,7 +61,7 @@ export default function App() {
   const [terminalCollapsed, setTerminalCollapsed] = useState(false)
   // Code-qqt (RV1-focus) — fullscreen terminal focus. When true, the terminal
   // region covers the whole content area (Board stays mounted underneath, so no
-  // shell respawn). Toggled by Cmd/Ctrl+Enter via the `terminal:focus-toggle`
+  // shell respawn). Toggled by Cmd/Ctrl+Shift+Enter via the `terminal:focus-toggle`
   // event. Not persisted: it's a transient working mode, not a saved layout.
   // Fullscreen terminal focus is never a launch state. Older builds persisted
   // this flag and could reopen with Neovim covering the entire application.
@@ -157,7 +157,7 @@ export default function App() {
     return () => window.removeEventListener('sidebar:toggle', onToggle)
   }, [])
 
-  // Code-qqt (RV1-focus) — Cmd/Ctrl+Enter toggles fullscreen terminal focus.
+  // Code-qqt (RV1-focus) — Cmd/Ctrl+Shift+Enter toggles fullscreen terminal focus.
   // Entering focus also un-collapses the strip and moves vim focus to the
   // terminal so it's usable immediately; leaving restores the prior layout.
   useEffect(() => {
@@ -250,7 +250,7 @@ export default function App() {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
       // Snap to 25% / 50% of the content area when released within SNAP_PX.
-      // Fullscreen stays the Cmd/Ctrl+Enter path, not a drag target.
+      // Fullscreen stays the Cmd/Ctrl+Shift+Enter path, not a drag target.
       for (const frac of [0.25, 0.5]) {
         const cand = Math.min(700, Math.max(80, Math.round(contentH * frac)))
         if (Math.abs(last - cand) <= SNAP_PX) {
@@ -479,7 +479,7 @@ export default function App() {
               onClick={() => (terminalFocus
                 ? window.dispatchEvent(new CustomEvent('terminal:focus-toggle'))
                 : setTerminalCollapsed(c => !c))}
-              title={terminalFocus ? 'Exit fullscreen (Cmd/Ctrl+Enter)' : 'Fullscreen: Cmd/Ctrl+Enter'}
+              title={terminalFocus ? 'Exit fullscreen (Cmd/Ctrl+Shift+Enter)' : 'Fullscreen: Cmd/Ctrl+Shift+Enter'}
               style={{
                 height: 24,
                 padding: '0 10px',
@@ -501,7 +501,7 @@ export default function App() {
               <span style={{ display: 'inline-block', width: 8, transform: terminalCollapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 120ms ease' }}>
                 {terminalFocus ? '⤢' : '▼'}
               </span>
-              <span>terminal · {active.path}{terminalFocus ? '  ·  fullscreen (Cmd/Ctrl+Enter to exit)' : ''}</span>
+              <span>terminal · {active.path}{terminalFocus ? '  ·  fullscreen (Cmd/Ctrl+Shift+Enter to exit)' : ''}</span>
             </button>
             {!terminalCollapsed && (
               <div style={{ flex: 1, minHeight: 0 }}>

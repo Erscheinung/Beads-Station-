@@ -433,6 +433,15 @@ fn actionable_human_gates(all: Vec<Gate>) -> Vec<Gate> {
         .collect()
 }
 
+/// Parse `bd gate list --json` output. Some bd versions emit JSON `null` when
+/// there are no gates, while other versions emit an array. Treat both as an
+/// empty gate list, but preserve parse errors for malformed/non-array JSON.
+fn parse_gate_list(stdout: &[u8]) -> Result<Vec<Gate>, String> {
+    serde_json::from_slice::<Option<Vec<Gate>>>(stdout)
+        .map(|gates| gates.unwrap_or_default())
+        .map_err(|e| format!("failed to parse bd gate list JSON: {e}"))
+}
+
 /// `bd gate list --json` — open HUMAN gates only, template artifacts filtered
 /// out. These are the gates a human resolves in the cockpit; timer/gh/bead
 /// gates resolve themselves and aren't actionable here. NoDatabase -> empty.
@@ -441,8 +450,7 @@ pub async fn bd_gate_list(repo_path: String) -> Result<Vec<Gate>, String> {
     match run_bd_classified(&repo_path, &["gate", "list", "--json"]).await? {
         BdOutcome::NoDatabase => Ok(vec![]),
         BdOutcome::Ok(stdout) => {
-            let all: Vec<Gate> = serde_json::from_slice(&stdout)
-                .map_err(|e| format!("failed to parse bd gate list JSON: {e}"))?;
+            let all = parse_gate_list(&stdout)?;
             Ok(actionable_human_gates(all))
         }
     }
@@ -762,11 +770,35 @@ mod tests {
             {"id":"g-closed","title":"Gate: human","status":"closed","await_type":"human","is_template":false},
             {"id":"g-timer","title":"Gate: timer","status":"open","await_type":"timer","is_template":false}
         ]"#;
-        let all: Vec<Gate> = serde_json::from_slice(raw).unwrap();
+        let all = parse_gate_list(raw).unwrap();
         let out = actionable_human_gates(all);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "g1");
         assert_eq!(out[0].await_type, "human");
+    }
+
+    #[test]
+    fn parse_gate_list_null_is_empty() {
+        assert!(parse_gate_list(b"null").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_gate_list_array_preserves_existing_filtering() {
+        let all = parse_gate_list(
+            br#"[
+                {"id":"g1","status":"open","await_type":"human"},
+                {"id":"g2","status":"closed","await_type":"human"}
+            ]"#,
+        )
+        .unwrap();
+        let out = actionable_human_gates(all);
+        assert_eq!(out.iter().map(|gate| gate.id.as_str()).collect::<Vec<_>>(), ["g1"]);
+    }
+
+    #[test]
+    fn parse_gate_list_malformed_json_is_an_error() {
+        let error = parse_gate_list(br#"[{"id":"g1"}"#).unwrap_err();
+        assert!(error.starts_with("failed to parse bd gate list JSON:"));
     }
 
     #[test]

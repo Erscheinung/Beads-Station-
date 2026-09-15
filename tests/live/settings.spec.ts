@@ -32,6 +32,28 @@ test('settings shows the fullscreen binding and context-specific leader chords',
   await expect(page.getByRole('region', { name: 'terminal leader chords' })).toContainText('Open files explorer')
 })
 
+test('terminal pane controls are grouped and can be rebound to easier shortcuts', async ({ page }) => {
+  await page.getByTitle('Open settings', { exact: true }).click()
+  await page.getByLabel('Search settings', { exact: true }).fill('resize')
+  await expect(page.getByRole('button', { name: 'Keyboard shortcuts', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click()
+
+  const group = page.getByRole('region', { name: 'Terminal pane controls' })
+  await expect(group).toBeVisible()
+  await expect(group.getByRole('button', { name: /^Shortcut for / })).toHaveCount(9)
+
+  const focusLeft = group.getByRole('button', { name: 'Shortcut for Focus terminal pane left', exact: true })
+  await expect(focusLeft).toContainText('Change')
+  await focusLeft.click()
+  await page.keyboard.press('Meta+1')
+  await expect(focusLeft).toContainText('1')
+
+  await page.getByRole('button', { name: 'Close settings' }).click()
+  await page.keyboard.press('Meta+,')
+  await page.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Shortcut for Focus terminal pane left', exact: true })).toContainText('1')
+})
+
 test('appearance updates all surfaces without replacing the terminal', async ({ page }) => {
   const spawnCount = () => page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => e.cmd === 'pty_spawn').length)
   await expect.poll(spawnCount).toBeGreaterThan(0)
@@ -133,8 +155,8 @@ test('visible close and unsplit keep surviving terminal sessions', async ({ page
   const kills = (await calls('pty_kill')).length
   await page.getByRole('button', { name: 'Unsplit to tabs', exact: true }).click()
   await expect(page.locator('[data-terminal-pane]')).toHaveCount(1)
-  await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('button')).toHaveCount(2)
-  await page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('button').nth(1).click()
+  await expect(page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab')).toHaveCount(2)
+  await page.getByRole('tablist', { name: 'Terminal tabs' }).getByRole('tab').nth(1).click()
   await expect(page.locator('[data-terminal-pane]')).toBeVisible()
   expect((await calls('pty_spawn')).length).toBe(3)
   expect((await calls('pty_kill')).length).toBe(kills)

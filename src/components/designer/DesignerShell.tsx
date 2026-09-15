@@ -266,7 +266,7 @@ function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
       {error && <span style={{ color: 'var(--bs-red)' }}>{error}</span>}
       <button style={styles.primaryBtn} disabled={!title.trim()} onClick={create}>Create request</button>
     </div>}
-    <div style={{ flex: 1, minHeight: 0 }}><BeadGraph onSelect={onSelect} /></div>
+    <div className="du-request-graph" style={{ flex: 1, minHeight: 0 }}><BeadGraph onSelect={onSelect} /></div>
   </div>
 }
 
@@ -322,7 +322,7 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
       <div>
         <p style={styles.requestEyebrow}>REQUEST · {issue.id}</p>
         <h2 style={styles.requestTitle}>{issue.title}</h2>
-        <p style={styles.requestBody}>{issue.description || 'No additional request context was provided.'}</p>
+        <p className="du-request-body" style={styles.requestBody}>{issue.description || 'No additional request context was provided.'}</p>
       </div>
       <div style={styles.providerRow}>
         <label htmlFor="designer-provider">Run with</label>

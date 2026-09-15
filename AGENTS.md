@@ -1,5 +1,50 @@
 # Beads Station — agent handoff
 
+## Release versioning
+
+- Use Semantic Versioning and Git tags formatted as `vMAJOR.MINOR.PATCH`. Keep releases in `0.x` while the app is an incomplete preview.
+- During `0.x`, increment PATCH for compatible fixes and packaging/documentation corrections; increment MINOR for a new user-visible capability or a materially changed workflow. Document any breaking change explicitly even though SemVer permits it before `1.0.0`.
+- Keep the version synchronized in `package.json`, `package-lock.json` when npm changes it, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` when Cargo changes it, and `src-tauri/tauri.conf.json`. Do not edit lockfiles incidentally.
+- Mark preview releases as GitHub prereleases until the Developer workflow is release-tested and the Designer workflow is functional. Never call a Designer-only mock or visual prototype complete.
+- A release tag must point at the exact verified commit. Before publishing, require the production frontend build, relevant unit/browser/Rust suites, a fresh Tauri bundle, a packaged-app native smoke, and `git diff --check`. Record observed evidence separately from limitations.
+- Every release must include install/upgrade instructions, SHA-256 checksums, what works, what does not, a hands-on test checklist, future direction, architecture/OS support, signing/notarization status, and screenshots captured from that exact build.
+- Do not move or overwrite an existing public tag or release. If a published artifact is wrong, issue a higher patch version. Rewriting unpublished branch history still requires explicit user authorization and a verified force-with-lease target.
+
+## Latest handoff — 2026-09-15, designer readability and terminal controls
+
+Implemented the user-reported designer and multi-terminal UX slice on `main`
+at base HEAD `c80bc6b`; all changes remain uncommitted. `Code-0cp.10`,
+`Code-0cp.10.1`, and `Code-0cp.10.2` track the delivered work; `Code-6io`
+tracks the gate-list compatibility repair. Deferred epic `Code-1dh` records a
+future evidence-based React-to-Svelte migration evaluation; no migration work
+was performed.
+
+- The rejected request-card grid redesign was fully reverted to the original
+  designer layout. A deliberately narrow follow-up keeps that layout while
+  allowing long bead titles to wrap safely, revealing a third line on hover,
+  and wrapping long selected-request descriptions without clipping.
+- Settings > Appearance now provides persisted 80–120% interface scale,
+  comfortable/compact density, and reset. The implementation uses CSS
+  variables and event-driven local state rather than CSS zoom, polling, or any
+  PTY/provider hot-path work.
+- Terminal tiling now exposes configurable directional focus at
+  Cmd/Ctrl+Alt+Arrow, directional resize at Cmd/Ctrl+Alt+Shift+Arrow, and
+  full-canvas toggle at Cmd/Ctrl+Shift+Enter. Resize uses bounded 5% split-tree
+  steps; panes and PTYs remain mounted. Settings has a searchable Terminal pane
+  controls group where all nine actions can be changed or cleared individually.
+- Rust gate-list parsing now treats a valid JSON `null` response from `bd gate
+  list --json` as an empty list. Valid arrays retain human-gate filtering and
+  malformed non-null payloads still surface an error.
+
+Evidence: full Vitest `175/175`, full Playwright Chromium/mock `74/74`, focused
+Rust gate parsing `12/12`, production build, TypeScript, and `git diff --check`
+passed. The browser suite
+includes directional focus/resize, 50% -> 45% -> 50% ratio movement, pane DOM
+identity, and a 20-cycle fullscreen soak. No provider call, credential access,
+lockfile edit, commit, or push was made. A packaged WKWebView visual check of
+the designer wrapping, empty gate state, and real PTY keyboard behavior remains
+a separate native evidence gate; do not claim it from mock-browser results.
+
 ## Adaptive Orchestration Contract
 
 - Model and reasoning assignments live in `~/.codex/config.toml` and `~/.codex/agents/*.toml`; do not duplicate or override them here.

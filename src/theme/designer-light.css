@@ -55,6 +55,30 @@
   box-sizing: border-box;
 }
 
+/* BeadGraph keeps compact fixed-height nodes so dependency edges stay aligned.
+ * Break long words in the title, and let the hovered node briefly reveal a
+ * third line without changing the surrounding graph/list layout. */
+.du-request-graph [data-bs-bead-node] > div:last-child {
+  overflow-wrap: anywhere;
+}
+
+.du-request-graph [data-bs-bead-node]:hover {
+  z-index: 2;
+  height: 88px !important;
+}
+
+.du-request-graph [data-bs-bead-node]:hover > div:last-child {
+  display: block !important;
+  -webkit-line-clamp: unset !important;
+  max-height: 3.9em;
+  overflow: hidden !important;
+  overflow-wrap: anywhere;
+}
+
+.du-request-body {
+  overflow-wrap: anywhere;
+}
+
 /* DU4 (Code-kp4) — footer heartbeat pulse. Applied inline only while a pulse
  * is fresh; a soft breathe on the "Claude is awake" dot. */
 @keyframes du-heartbeat {

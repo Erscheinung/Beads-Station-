@@ -6,6 +6,13 @@
  */
 :root {
   color-scheme: dark;
+  --bs-interface-scale: 1;
+  --bs-interface-scale-percent: 100%;
+  --bs-density-factor: 1;
+  --bs-ui-font-size: calc(13px * var(--bs-interface-scale));
+  --bs-ui-control-pad-y: calc(6px * var(--bs-density-factor));
+  --bs-ui-control-pad-x: calc(9px * var(--bs-density-factor));
+  --bs-ui-row-pad-y: calc(14px * var(--bs-density-factor));
 
   /* Surfaces (translated from tokyonight_storm.lua) */
   --bs-bg: #24283b;             /* storm bg */
@@ -48,6 +55,8 @@
   --accent: var(--bs-blue);
 }
 
+:root[data-bs-density='compact'] { --bs-density-factor: .75; }
+
 html, body, #root { height: 100%; margin: 0; padding: 0; }
 
 /* JetBrains Mono everywhere in chrome. */
@@ -59,8 +68,15 @@ html, body, button, input, textarea, select {
 body {
   background: var(--bs-bg-dark);
   color: var(--bs-fg);
-  font-size: 13px;
+  font-size: var(--bs-ui-font-size);
 }
+
+/* Global customization intentionally scales typography and chrome spacing
+ * only. It does not zoom or transform the app, so xterm can keep measuring
+ * its own canvas and PTY/editor behavior remains unchanged. */
+.bs-app-chrome, .bs-app-statusline, .bs-tabstrip, .bs-issuelist-header, .workspace-picker { font-size: var(--bs-ui-font-size); }
+.bs-app-chrome button, .bs-app-chrome select { padding-block: var(--bs-ui-control-pad-y); padding-inline: var(--bs-ui-control-pad-x); }
+.bs-settings .bs-settings__row { padding-block: var(--bs-ui-row-pad-y); }
 
 /* Outer 1px hairline grid utility — matches App.tsx outer grid (gap: 1px,
    background: --bs-border-faint so the gap reads as a single-pixel rule). */

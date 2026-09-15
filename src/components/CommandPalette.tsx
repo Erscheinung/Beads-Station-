@@ -11,7 +11,7 @@ import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from 
 import { setSkin } from '../state/skin'
 import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
 import { closeFocusedPane } from './TerminalPanes'
-import { newTab, splitActive, unsplitToTabs, toggleZoom } from '../state/termPanes'
+import { newTab, splitActive, unsplitToTabs, toggleZoom, focusPaneDirection, resizePane } from '../state/termPanes'
 import { setFocused } from '../state/vim'
 import './CommandPalette.css'
 
@@ -132,6 +132,14 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'closePane': setSkin('terminal'); closeFocusedPane(); break
       case 'zoomPane': setSkin('terminal'); toggleZoom(); break
       case 'fullscreen': setSkin('terminal'); window.dispatchEvent(new CustomEvent('terminal:focus-toggle')); break
+      case 'focusLeft': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('left'); break
+      case 'focusRight': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('right'); break
+      case 'focusUp': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('up'); break
+      case 'focusDown': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('down'); break
+      case 'resizeLeft': setSkin('terminal'); setFocused('terminal'); resizePane('left'); break
+      case 'resizeRight': setSkin('terminal'); setFocused('terminal'); resizePane('right'); break
+      case 'resizeUp': setSkin('terminal'); setFocused('terminal'); resizePane('up'); break
+      case 'resizeDown': setSkin('terminal'); setFocused('terminal'); resizePane('down'); break
       case 'agent': onAction('agent:spawn'); break
       case 'files': onAction('filenav:spawn'); break
       case 'expand': case 'collapse': window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: id === 'expand' ? 'expandAll' : 'collapseAll' } })); break

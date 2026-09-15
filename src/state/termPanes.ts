@@ -21,6 +21,10 @@
 import { useSyncExternalStore } from 'react'
 
 export type SplitDir = 'h' | 'v'
+export type PaneDirection = 'left' | 'right' | 'up' | 'down'
+const RESIZE_STEP = 0.05
+const MIN_SPLIT_RATIO = 0.05
+const MAX_SPLIT_RATIO = 0.95
 
 export interface Leaf {
   kind: 'leaf'
@@ -636,7 +640,7 @@ export function focusPane(paneId: string): void {
  * change on a stable-keyed wrapper, never a tree-shape change — no remount).
  */
 export function setRatio(splitId: string, ratio: number): void {
-  const clamped = Math.min(0.95, Math.max(0.05, ratio))
+  const clamped = Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio))
   const tab = activeTab(state)
   const next = mapSplit(tab.root, splitId, s => (s.ratio === clamped ? s : { ...s, ratio: clamped }))
   if (next === tab.root) return
@@ -837,6 +841,51 @@ export function moveFocus(dir: 'h' | 'j' | 'k' | 'l'): void {
     if (!best || d < best.d) best = { paneId, d }
   }
   if (best) focusPane(best.paneId)
+}
+
+/**
+ * Focus the geometrically adjacent pane in a user-facing direction. The
+ * existing moveFocus helper owns the tree geometry and distance heuristic;
+ * this named adapter keeps keyboard/command callers independent of vim's
+ * h/j/k/l vocabulary.
+ */
+export function focusPaneDirection(direction: PaneDirection): void {
+  const vimDirection: Record<PaneDirection, 'h' | 'j' | 'k' | 'l'> = {
+    left: 'h',
+    right: 'l',
+    up: 'k',
+    down: 'j',
+  }
+  moveFocus(vimDirection[direction])
+}
+
+function splitMatchesDirection(split: Split, direction: PaneDirection): boolean {
+  return (direction === 'left' || direction === 'right') ? split.dir === 'v' : split.dir === 'h'
+}
+
+/** Return the nearest ancestor split whose seam runs along the requested axis. */
+function nearestResizeSplit(node: Node, paneId: string, direction: PaneDirection): Split | null {
+  if (node.kind === 'leaf') return null
+  const inA = findLeaf(node.a, paneId) !== null
+  const inB = findLeaf(node.b, paneId) !== null
+  if (!inA && !inB) return null
+  const child = inA ? node.a : node.b
+  const nested = nearestResizeSplit(child, paneId, direction)
+  return nested ?? (splitMatchesDirection(node, direction) ? node : null)
+}
+
+/**
+ * Move the active split seam by one small step. Left/up move the seam toward
+ * the origin (decreasing child-a's ratio); right/down move it away. The
+ * nearest matching ancestor is used, so nested splits resize where the active
+ * pane is actually tiled while unrelated cross-axis ancestors are skipped.
+ */
+export function resizePane(direction: PaneDirection): void {
+  const tab = activeTab(state)
+  const split = nearestResizeSplit(tab.root, tab.activePaneId, direction)
+  if (!split) return
+  const delta = direction === 'left' || direction === 'up' ? -RESIZE_STEP : RESIZE_STEP
+  setRatio(split.splitId, split.ratio + delta)
 }
 
 /** C-w w — cycle to the next leaf in reading order. */

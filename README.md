@@ -2,6 +2,26 @@
 
 A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
+> **Early preview — v0.1.0.** The Developer workspace is usable for local evaluation. The Designer workspace is a visual prototype only and is not yet a working end-to-end request, run, preview, or approval flow.
+
+## Preview
+
+### Developer workspace — Fahrenheit theme
+
+![Developer workspace using the Fahrenheit theme](docs/images/releases/v0.1.0/developer-fahrenheit.png)
+
+### Designer workspace — prototype
+
+![Designer workspace prototype](docs/images/releases/v0.1.0/designer-prototype.png)
+
+The Designer screenshot demonstrates the intended information architecture and visual direction. Its controls and workflow should not be treated as production-ready behavior.
+
+## Install the v0.1.0 preview
+
+The first release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads Station_0.1.0_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+
+Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.0 release notes](docs/releases/v0.1.0.md) for the verified feature list, known limitations, test checklist, and future plans.
+
 ## Current foundation
 
 - **Explicit workspaces:** search discovered projects or enter any folder path. Discovery does not open tabs or start agents. Only explicitly opened workspaces are restored.
@@ -10,7 +30,7 @@ A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agent
 - **Terminal navigation:** split panes, tabs, zoom, and saved layouts. Shells and their xterm screens survive project/tab switches, collapse/expand, and skin changes within the running app. Closing a workspace stops its terminals.
 - **Agents on intent:** the optional Claude chat starts when requested. Installed `codex`, `claude`, and `nvim` can also run directly in the terminal. Persistent agents have a separate capacity budget from short bd/git operations.
 - **Tickets and appearance:** bd issue board/tree, command palette, palette-driven surfaces and Ghostty-style theme import.
-- **Designer workspace:** available from the landing screen or command palette, and through `?ui=designer` on a fresh profile. Graph/timeline, gates, sensors, and conductor controls exist; the complete request/preview/review experience is still planned.
+- **Designer workspace prototype:** available from the landing screen or command palette, and through `?ui=designer` on a fresh profile. It can visualize request-oriented concepts, but its complete request/run/preview/review workflow does not work yet.
 
 This branch is foundation work, not a completed CMUX replacement. Closing the native window still stops local processes; saved layout restoration is not live process persistence. Durable runtime attachment, a structured Codex adapter, designer previews, and external GitHub/Jira pulses remain in the [Astra plan](docs/ASTRA-DAILY-DRIVER-PLAN.md).
 
@@ -87,7 +107,7 @@ For an app bundle:
 npm run tauri build
 ```
 
-Old DMG artifacts may predate this branch. Build the current source before evaluating these changes; signing and distribution polish remain future work.
+Old DMG artifacts may predate the native file-limit repair and can produce repeated `Too many open files (os error 24)` notifications. Quit old Beads Station instances and replace them with the current DMG before evaluating the app. Signing, notarization, auto-update, and broader distribution polish remain future work.
 
 ## Agent workflow
 

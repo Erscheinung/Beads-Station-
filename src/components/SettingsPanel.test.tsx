@@ -13,6 +13,7 @@ vi.mock('../lib/listenerRegistry', () => ({
 import { SettingsPanel } from './SettingsPanel'
 import { closeSettings, openSettings } from '../state/settings'
 import { getBinding, resetBindings } from '../state/commands'
+import { resetUiCustomization } from '../state/uiCustomization'
 
 function installDialogMethods(): void {
   if (!HTMLDialogElement.prototype.showModal) {
@@ -33,13 +34,14 @@ function renderShortcuts() {
   installDialogMethods()
   act(() => openSettings())
   render(<SettingsPanel />)
-  fireEvent.click(screen.getByRole('button', { name: 'Keyboard shortcuts', exact: true }))
+  fireEvent.click(screen.getByRole('button', { name: 'Keyboard shortcuts' }))
 }
 
 describe('SettingsPanel shortcut recorder', () => {
   beforeEach(() => {
     act(() => {
       resetBindings()
+      resetUiCustomization()
       closeSettings()
     })
     localStorage.clear()
@@ -93,12 +95,73 @@ describe('SettingsPanel shortcut recorder', () => {
     const clear = screen.getByRole('button', { name: 'Clear shortcut for Open workspace' })
     expect(clear).toBeEnabled()
     fireEvent.click(clear)
-    expect(record).toHaveTextContent('Record shortcut')
+    expect(record).toHaveTextContent('Not set')
     expect(clear).toBeDisabled()
 
     fireEvent.click(record)
     expect(record).toHaveTextContent('Press shortcut…')
     act(() => fireEvent.keyDown(document.body, { key: 'Escape', bubbles: true }))
-    expect(record).toHaveTextContent('Record shortcut')
+    expect(record).toHaveTextContent('Not set')
+  })
+
+  it('groups every terminal pane action and records an easier binding', async () => {
+    renderShortcuts()
+
+    const terminalGroup = screen.getByRole('region', { name: 'Terminal pane controls' })
+    expect(terminalGroup).toBeVisible()
+    expect(terminalGroup.querySelectorAll('[aria-label^="Shortcut for"]')).toHaveLength(9)
+
+    const focusLeft = screen.getByRole('button', { name: 'Shortcut for Focus terminal pane left' })
+    expect(focusLeft).toHaveTextContent('Change')
+    fireEvent.click(focusLeft)
+    act(() => fireEvent.keyDown(document.body, { key: '1', metaKey: true, bubbles: true }))
+
+    await waitFor(() => expect(getBinding('focusLeft')).toBe('Mod+1'))
+    expect(focusLeft).toHaveTextContent('1')
+  })
+})
+
+describe('SettingsPanel interface customization', () => {
+  beforeEach(() => {
+    act(() => {
+      resetUiCustomization()
+      closeSettings()
+    })
+    localStorage.clear()
+  })
+
+  afterEach(() => {
+    act(() => closeSettings())
+  })
+
+  it('offers accessible scale and density controls and persists changes', () => {
+    installDialogMethods()
+    act(() => openSettings())
+    render(<SettingsPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
+
+    const scale = screen.getByRole('slider', { name: 'Interface scale' })
+    expect(scale).toHaveValue('100')
+    fireEvent.change(scale, { target: { value: '115' } })
+    expect(scale).toHaveValue('115')
+    expect(document.documentElement.style.getPropertyValue('--bs-interface-scale')).toBe('1.15')
+
+    const density = screen.getByRole('combobox', { name: 'Interface density' })
+    fireEvent.change(density, { target: { value: 'compact' } })
+    expect(density).toHaveValue('compact')
+    expect(document.documentElement.dataset.bsDensity).toBe('compact')
+    expect(JSON.parse(localStorage.getItem('beads-station.ui-customization.v1')!)).toEqual({ interfaceScale: 115, density: 'compact' })
+  })
+
+  it('restores both interface defaults with one clear action', () => {
+    installDialogMethods()
+    act(() => openSettings())
+    render(<SettingsPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
+    fireEvent.change(screen.getByRole('slider', { name: 'Interface scale' }), { target: { value: '85' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Interface density' }), { target: { value: 'compact' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset interface customization' }))
+    expect(screen.getByRole('slider', { name: 'Interface scale' })).toHaveValue('100')
+    expect(screen.getByRole('combobox', { name: 'Interface density' })).toHaveValue('comfortable')
   })
 })

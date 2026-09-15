@@ -4,7 +4,7 @@ test('double-clicking a board card opens its detail and actions', async ({ page 
   await test.step('boot and show the board', async () => {
     await boot(page)
     await page.getByLabel('Beads view', { exact: true }).selectOption('board')
-    await page.getByTitle('Fullscreen: Cmd/Ctrl+Enter', { exact: true }).click()
+    await page.getByTitle('Fullscreen: Cmd/Ctrl+Shift+Enter', { exact: true }).click()
   })
 
   const card = page.locator('.bs-card').filter({ hasText: 'ready alpha' })

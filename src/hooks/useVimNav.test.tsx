@@ -182,4 +182,27 @@ describe('useVimNav — Phase 9 palette open', () => {
     window.removeEventListener('bs:command', onCommand)
     expect(received).toEqual(['workspace'])
   })
+
+  it('routes explicit tiling chords without consuming IME composition', () => {
+    render(<Harness />)
+    const received: string[] = []
+    const onCommand = (event: Event) => received.push((event as CustomEvent<string>).detail)
+    window.addEventListener('bs:command', onCommand)
+
+    const focus = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft', metaKey: true, altKey: true, bubbles: true, cancelable: true,
+    })
+    document.body.dispatchEvent(focus)
+    expect(focus.defaultPrevented).toBe(true)
+    expect(received).toEqual(['focusLeft'])
+
+    const composing = new KeyboardEvent('keydown', {
+      key: 'ArrowLeft', metaKey: true, altKey: true, isComposing: true, bubbles: true, cancelable: true,
+    })
+    document.body.dispatchEvent(composing)
+    expect(composing.defaultPrevented).toBe(false)
+    expect(received).toEqual(['focusLeft'])
+
+    window.removeEventListener('bs:command', onCommand)
+  })
 })
