@@ -39,3 +39,40 @@ test('a non-ready bead node does not spawn a pane', async ({ page }) => {
   await page.waitForTimeout(150)
   await expect(page.locator('[data-bs-agent-pane]')).toHaveCount(before)
 })
+
+test('long graph titles expand their cards and preserve the gap below', async ({ page }) => {
+  const longTitle = 'Redesign the provider chat and agent process panel so its controls remain readable'
+  const issue = (id: string, title: string) => ({
+    id, title, status: 'open', priority: 2, description: null, issue_type: 'feature',
+    assignee: null, created_at: '2026-09-15T00:00:00Z', updated_at: '2026-09-15T00:00:00Z',
+    closed_at: null, dependency_count: 0, dependent_count: 0, comment_count: 0,
+    labels: null, parent: null, dependencies: [],
+  })
+  const first = issue('Code-long-a', longTitle)
+  const second = issue('Code-long-b', 'A second card must begin after the expanded card')
+
+  await page.addInitScript(({ first, second }) => {
+    localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a'], activeId: 'proj-a' }))
+    ;(window as any).__bsMockOverride = {
+      bd_snapshot: { ready: [first, second], all: [first, second], no_db: false },
+    }
+  }, { first, second })
+  await page.goto('/?ui=designer')
+  await page.waitForFunction(() => (window as any).__bsMockReady === true)
+  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
+
+  const cards = page.locator('[data-bs-bead-node]')
+  await expect(cards).toHaveCount(2)
+  const firstCard = cards.nth(0)
+  const secondCard = cards.nth(1)
+  const geometry = await page.evaluate(() => {
+    const nodes = Array.from(document.querySelectorAll<HTMLElement>('[data-bs-bead-node]'))
+    const [first, second] = nodes.map(node => node.getBoundingClientRect())
+    const title = nodes[0].lastElementChild as HTMLElement
+    return { first, second, titleFits: title.scrollHeight <= title.clientHeight }
+  })
+
+  expect(geometry.first.height).toBeGreaterThan(64)
+  expect(geometry.second.top - geometry.first.bottom).toBeGreaterThanOrEqual(24)
+  expect(geometry.titleFits).toBe(true)
+})

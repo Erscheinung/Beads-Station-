@@ -55,23 +55,9 @@
   box-sizing: border-box;
 }
 
-/* BeadGraph keeps compact fixed-height nodes so dependency edges stay aligned.
- * Break long words in the title, and let the hovered node briefly reveal a
- * third line without changing the surrounding graph/list layout. */
+/* BeadGraph computes each node's height from its wrapped title and places the
+ * next node after that height. Break long words without a hover-only reveal. */
 .du-request-graph [data-bs-bead-node] > div:last-child {
-  overflow-wrap: anywhere;
-}
-
-.du-request-graph [data-bs-bead-node]:hover {
-  z-index: 2;
-  height: 88px !important;
-}
-
-.du-request-graph [data-bs-bead-node]:hover > div:last-child {
-  display: block !important;
-  -webkit-line-clamp: unset !important;
-  max-height: 3.9em;
-  overflow: hidden !important;
   overflow-wrap: anywhere;
 }
 

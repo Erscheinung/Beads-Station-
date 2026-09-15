@@ -12,10 +12,14 @@ import { useProjects } from '../../state/projects'
 // i.e. what bd_ready returns) is highlighted.
 
 const NODE_W = 190
-const NODE_H = 64
+const NODE_MIN_H = 64
 const COL_GAP = 72
 const ROW_GAP = 24
 const PAD = 32
+// The usable title width is 168px (190px card minus horizontal padding).  This
+// is deliberately conservative: it keeps a wrapped title inside its own node
+// instead of relying on a hover-only third line.
+const TITLE_CHARS_PER_LINE = 23
 
 type NodeState = 'ready' | 'in_progress' | 'blocked' | 'closed'
 
@@ -27,6 +31,7 @@ interface Placed {
   row: number
   x: number
   y: number
+  height: number
 }
 
 const STATE_TOKEN: Record<NodeState, string> = {
@@ -74,6 +79,38 @@ function blockersOf(issues: Issue[]): Map<string, string[]> {
   return map
 }
 
+function titleLineCount(title: string): number {
+  // Account for normal word wrapping while ensuring a long unbroken bead ID or
+  // URL still reserves enough vertical space (the CSS uses overflow-wrap).
+  const words = title.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return 1
+  let lines = 1
+  let lineLength = 0
+  for (const word of words) {
+    const wordLines = Math.ceil(word.length / TITLE_CHARS_PER_LINE)
+    if (wordLines > 1) {
+      if (lineLength > 0) lines++
+      lines += wordLines - 1
+      lineLength = word.length % TITLE_CHARS_PER_LINE || TITLE_CHARS_PER_LINE
+      continue
+    }
+    const nextLength = lineLength === 0 ? word.length : lineLength + 1 + word.length
+    if (nextLength > TITLE_CHARS_PER_LINE) {
+      lines++
+      lineLength = word.length
+    } else {
+      lineLength = nextLength
+    }
+  }
+  return lines
+}
+
+function nodeHeight(title: string): number {
+  // 16px vertical padding + borders + ~13px heading + 4px gap + 16.9px/title
+  // line, rounded up with a small pixel buffer for the actual font metrics.
+  return Math.max(NODE_MIN_H, Math.ceil(36 + titleLineCount(title) * 17))
+}
+
 function layout(issues: Issue[], readyIds: Set<string>): { nodes: Placed[]; width: number; height: number } {
   const byId = new Map(issues.map(i => [i.id, i]))
   const blockers = blockersOf(issues)
@@ -93,19 +130,21 @@ function layout(issues: Issue[], readyIds: Set<string>): { nodes: Placed[]; widt
     return col
   }
 
-  const rowCounters = new Map<number, number>()
+  const columnHeights = new Map<number, number>()
   const nodes: Placed[] = issues.map(issue => {
     const col = colOf(issue.id, new Set([issue.id]))
-    const row = rowCounters.get(col) ?? 0
-    rowCounters.set(col, row + 1)
+    const yOffset = columnHeights.get(col) ?? 0
+    const height = nodeHeight(issue.title)
+    columnHeights.set(col, yOffset + height + ROW_GAP)
     return {
       issue,
       state: classify(issue, readyIds),
       next: false,
       col,
-      row,
+      row: 0,
       x: PAD + col * (NODE_W + COL_GAP),
-      y: PAD + row * (NODE_H + ROW_GAP),
+      y: PAD + yOffset,
+      height,
     }
   })
 
@@ -114,11 +153,11 @@ function layout(issues: Issue[], readyIds: Set<string>): { nodes: Placed[]; widt
   if (firstReady) firstReady.next = true
 
   const maxCol = nodes.reduce((m, n) => Math.max(m, n.col), 0)
-  const maxRow = Math.max(0, ...Array.from(rowCounters.values()))
+  const graphHeight = Math.max(0, ...Array.from(columnHeights.values()))
   return {
     nodes,
     width: PAD * 2 + (maxCol + 1) * NODE_W + maxCol * COL_GAP,
-    height: PAD * 2 + maxRow * NODE_H + Math.max(0, maxRow - 1) * ROW_GAP,
+    height: PAD * 2 + Math.max(0, graphHeight - ROW_GAP),
   }
 }
 
@@ -194,9 +233,9 @@ function GraphInner({ repoPath, onSelect }: { repoPath: string; onSelect: (issue
           <svg width={width} height={height} style={styles.svg}>
             {edges.map(({ from, to }, i) => {
               const x1 = from.x + NODE_W
-              const y1 = from.y + NODE_H / 2
+              const y1 = from.y + from.height / 2
               const x2 = to.x
-              const y2 = to.y + NODE_H / 2
+              const y2 = to.y + to.height / 2
               const mid = (x1 + x2) / 2
               return (
                 <path
@@ -233,7 +272,7 @@ function GraphInner({ repoPath, onSelect }: { repoPath: string; onSelect: (issue
 }
 
 function Node({ node, onActivate }: { node: Placed; onActivate?: (issue: Issue) => void }) {
-  const { issue, state, next, x, y } = node
+  const { issue, state, next, x, y, height } = node
   const [hover, setHover] = useState(false)
   const clickable = state === 'ready' && onActivate != null
   return (
@@ -247,6 +286,7 @@ function Node({ node, onActivate }: { node: Placed; onActivate?: (issue: Issue) 
         ...styles.node,
         left: x,
         top: y,
+        height,
         cursor: clickable ? 'pointer' : 'default',
         borderColor: next || hover ? 'var(--bs-orange)' : 'var(--bs-border)',
         boxShadow: next
@@ -347,7 +387,6 @@ const styles: Record<string, React.CSSProperties> = {
   node: {
     position: 'absolute',
     width: NODE_W,
-    height: NODE_H,
     padding: '8px 10px',
     background: 'var(--bs-bg-float)',
     border: '1px solid var(--bs-border)',
@@ -386,10 +425,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     color: 'var(--bs-fg)',
     lineHeight: 1.3,
-    display: '-webkit-box',
-    WebkitLineClamp: 2,
-    WebkitBoxOrient: 'vertical',
-    overflow: 'hidden',
+    overflowWrap: 'anywhere',
   },
   legend: {
     display: 'flex',

@@ -10,11 +10,13 @@ A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agent
 
 ![Developer workspace using the Fahrenheit theme](docs/images/releases/v0.1.0/developer-fahrenheit.png)
 
+![Workspace picker over the Fahrenheit theme](docs/images/releases/v0.1.0/workspace-picker-fahrenheit.png)
+
 ### Designer workspace — prototype
 
 ![Designer workspace prototype](docs/images/releases/v0.1.0/designer-prototype.png)
 
-The Designer screenshot demonstrates the intended information architecture and visual direction. Its controls and workflow should not be treated as production-ready behavior.
+The Designer screenshot demonstrates the intended information architecture and visual direction, including graph cards that expand for wrapped titles while preserving spacing and connector alignment. Its controls and workflow should not be treated as production-ready behavior.
 
 ## Install the v0.1.0 preview
 
