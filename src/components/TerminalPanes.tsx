@@ -37,6 +37,7 @@ interface RenderCtx {
   insert: boolean
   /** when set, this paneId fills the region; all others are hidden. */
   zoomed: string | null
+  viewEpoch: string
 }
 
 function PaneLeaf({
@@ -85,6 +86,7 @@ function PaneLeaf({
         onSpawn={onSpawn}
         focused={isActive && ctx.termFocused}
         insert={isActive && ctx.termFocused && ctx.insert}
+        viewEpoch={ctx.viewEpoch}
       />
     </div>
   )
@@ -297,7 +299,13 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
   const zoomed = useZoom()
   const tab = tabs.find(t => t.id === activeTabId) ?? tabs[0]
   const visibleZoom = leavesOf(tab.root).some(l => l.paneId === zoomed) ? zoomed : null
-  const ctx: RenderCtx = { activePaneId: tab.activePaneId, termFocused, insert, zoomed: visibleZoom }
+  const ctx: RenderCtx = {
+    activePaneId: tab.activePaneId,
+    termFocused,
+    insert,
+    zoomed: visibleZoom,
+    viewEpoch: `${tab.id}:${visibleZoom ?? ''}:${fullscreen}`,
+  }
 
   return (
     <div className={`bs-terminal-panes${fullscreen ? ' bs-terminal-panes--fullscreen' : ''}`} style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>

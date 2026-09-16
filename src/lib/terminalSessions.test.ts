@@ -1,16 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-const mock = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), released: vi.fn(), write: vi.fn(), refresh: vi.fn(), clearTextureAtlas: vi.fn(), disposed: vi.fn(), themeListeners: new Set<() => void>() }))
+const mock = vi.hoisted(() => ({
+  invoke: vi.fn(), listen: vi.fn(), released: vi.fn(), write: vi.fn(), refresh: vi.fn(),
+  clearTextureAtlas: vi.fn(), disposed: vi.fn(), focus: vi.fn(), fit: vi.fn(),
+  scrollToBottom: vi.fn(), scrollToLine: vi.fn(), markerDispose: vi.fn(),
+  onScroll: null as null | (() => void), onWriteParsed: null as null | (() => void),
+  themeListeners: new Set<() => void>(),
+}))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
 vi.mock('../state/theme', () => ({ getActivePalette: () => null, subscribeTheme: (listener: () => void) => { mock.themeListeners.add(listener); return () => mock.themeListeners.delete(listener) } }))
 vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
-  loadAddon() {} open() {} focus() {}
+  buffer = {
+    active: { type: 'normal', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24 },
+    normal: { type: 'normal', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24 },
+    alternate: { type: 'alternate', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24 },
+    onBufferChange() { return { dispose() {} } },
+  }
+  loadAddon() {} open() {} focus = mock.focus
   attachCustomKeyEventHandler() {}
   write = mock.write; refresh = mock.refresh; clearTextureAtlas = mock.clearTextureAtlas; dispose = mock.disposed
   onData() { return { dispose() {} } }
+  onScroll(handler: () => void) { mock.onScroll = handler; return { dispose() {} } }
+  onWriteParsed(handler: () => void) { mock.onWriteParsed = handler; return { dispose() {} } }
+  scrollToBottom = mock.scrollToBottom
+  scrollToLine = mock.scrollToLine
+  registerMarker(offset = 0) {
+    const buffer = this.buffer.active
+    return { id: 1, line: buffer.baseY + buffer.cursorY + offset, isDisposed: false, dispose: mock.markerDispose, onDispose() { return { dispose() {} } } }
+  }
 } }))
-vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit = mock.fit } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
 import { disposeTerminalSession, getTerminalSession, SgrColorNormalizer } from './terminalSessions'
@@ -20,7 +40,13 @@ beforeEach(() => {
   mock.listen.mockResolvedValue(mock.released)
   mock.invoke.mockResolvedValue(7)
 })
-afterEach(() => { disposeTerminalSession('pane'); mock.themeListeners.clear(); document.body.innerHTML = '' })
+afterEach(() => { disposeTerminalSession('pane'); resetTerminalAppearance(); mock.themeListeners.clear(); document.body.innerHTML = ''; vi.unstubAllGlobals() })
+
+function visibleHost(width = 900, height = 400): HTMLDivElement {
+  const host = document.body.appendChild(document.createElement('div'))
+  vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: height, width, height, toJSON() {} })
+  return host
+}
 
 describe('terminal session ownership', () => {
   it('reuses one shell and screen after detaching and reattaching the view', async () => {
@@ -65,7 +91,6 @@ describe('terminal session ownership', () => {
     while (frames.length) frames.shift()!(0)
     expect(mock.refresh).toHaveBeenCalledTimes(repaintBeforeFrames + 1)
     expect(mock.refresh).toHaveBeenLastCalledWith(0, 23)
-    vi.unstubAllGlobals()
   })
   it('reapplies and repaints a detached session when the palette changes', async () => {
     const host = document.body.appendChild(document.createElement('div'))
@@ -85,8 +110,8 @@ describe('terminal session ownership', () => {
     let complete!: (id: number) => void
     mock.invoke.mockImplementation(cmd => cmd === 'pty_spawn' ? new Promise<number>(resolve => { complete = resolve }) : Promise.resolve())
     const session = getTerminalSession('pane', '/repo', vi.fn())
-    session.attach(document.body.appendChild(document.createElement('div')))
-    Object.defineProperties(session.element, { clientWidth: { value: 900 }, clientHeight: { value: 400 } })
+    const host = visibleHost()
+    session.attach(host)
     await vi.waitFor(() => expect(complete).toBeTypeOf('function'))
     Object.assign(session.terminal, { cols: 100, rows: 30 })
     session.resize()
@@ -94,6 +119,75 @@ describe('terminal session ownership', () => {
     complete(7)
     await session.ready
     expect(mock.invoke).toHaveBeenCalledWith('pty_resize', { id: 7, cols: 100, rows: 30 })
+  })
+  it('never fits or resizes a detached session against the 1px parking host', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    session.detach(host)
+    mock.fit.mockClear()
+    mock.invoke.mockClear()
+
+    setTerminalAppearance({ fontSize: 14 })
+
+    expect(mock.fit).not.toHaveBeenCalled()
+    expect(mock.invoke).not.toHaveBeenCalledWith('pty_resize', expect.anything())
+    expect(session.element.parentElement?.dataset.bsTerminalParking).toBe('true')
+  })
+  it('keeps a history reader anchored by buffer identity across a fit', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const buffer = session.terminal.buffer.active as unknown as { type: 'normal'; viewportY: number; baseY: number; cursorY: number }
+    Object.assign(buffer, { viewportY: 40, baseY: 100, cursorY: 10 })
+    mock.onScroll?.()
+    mock.fit.mockImplementationOnce(() => {
+      Object.assign(buffer, { viewportY: 80, baseY: 120 })
+    })
+
+    session.resize(host)
+
+    expect(mock.scrollToLine).toHaveBeenLastCalledWith(40)
+    expect(mock.scrollToBottom).not.toHaveBeenCalled()
+  })
+  it('follows live output conditionally and leaves alternate-screen viewport ownership alone', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const terminal = session.terminal as unknown as { buffer: { active: { type: 'normal' | 'alternate'; viewportY: number; baseY: number; cursorY: number } } }
+    Object.assign(terminal.buffer.active, { type: 'normal', viewportY: 100, baseY: 100, cursorY: 5 })
+    mock.onScroll?.()
+    mock.fit.mockImplementationOnce(() => Object.assign(terminal.buffer.active, { viewportY: 100, baseY: 120 }))
+    session.resize(host)
+    expect(mock.scrollToBottom).toHaveBeenCalledTimes(1)
+
+    terminal.buffer.active = { type: 'alternate', viewportY: 0, baseY: 0, cursorY: 3 }
+    mock.scrollToBottom.mockClear()
+    mock.scrollToLine.mockClear()
+    session.resize(host)
+    expect(mock.scrollToBottom).not.toHaveBeenCalled()
+    expect(mock.scrollToLine).not.toHaveBeenCalled()
+  })
+  it('does not steal focus from a dialog or another editable', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(visibleHost())
+    await session.ready
+    const dialog = document.body.appendChild(document.createElement('dialog'))
+    dialog.setAttribute('open', '')
+    const input = dialog.appendChild(document.createElement('input'))
+    input.focus()
+    expect(session.focus()).toBe(false)
+    dialog.remove()
+    const other = document.body.appendChild(document.createElement('input'))
+    other.focus()
+    expect(session.focus()).toBe(false)
+    other.remove()
+    document.body.focus()
+    expect(session.focus()).toBe(true)
+    expect(mock.focus).toHaveBeenCalledTimes(1)
   })
   it('does not spawn if output subscription fails', async () => {
     mock.listen.mockRejectedValueOnce(new Error('listener unavailable'))

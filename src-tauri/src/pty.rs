@@ -13,6 +13,8 @@ struct PtyHandle {
     master: Mutex<Box<dyn MasterPty + Send>>,
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
+    pid: Option<u32>,
+    size: Mutex<(u16, u16)>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 static PTYS: Lazy<Mutex<HashMap<u32, Arc<PtyHandle>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -26,6 +28,14 @@ struct PtyDataPayload {
 #[derive(Clone, Serialize)]
 struct PtyExitPayload {
     id: u32,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PtySnapshot {
+    id: u32,
+    pid: Option<u32>,
+    cols: u16,
+    rows: u16,
 }
 
 /// Retain an incomplete UTF-8 suffix across arbitrary OS read boundaries.
@@ -123,6 +133,7 @@ pub async fn pty_spawn(
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("spawn failed: {e}"))?;
+        let pid = child.process_id();
         drop(pair.slave);
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
         let mut map = PTYS.lock().unwrap_or_else(|e| e.into_inner());
@@ -132,6 +143,8 @@ pub async fn pty_spawn(
                 master: Mutex::new(pair.master),
                 writer: Mutex::new(writer),
                 child: Mutex::new(child),
+                pid,
+                size: Mutex::new((cols.max(1), rows.max(1))),
                 _permit: permit,
             }),
         );
@@ -202,7 +215,21 @@ pub async fn pty_resize(id: u32, cols: u16, rows: u16) -> Result<(), String> {
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    *handle.size.lock().map_err(|e| e.to_string())? = (cols.max(1), rows.max(1));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pty_snapshot(id: u32) -> Result<PtySnapshot, String> {
+    let handle = handle(id)?;
+    let (cols, rows) = *handle.size.lock().map_err(|e| e.to_string())?;
+    Ok(PtySnapshot {
+        id,
+        pid: handle.pid,
+        cols,
+        rows,
+    })
 }
 
 #[tauri::command]

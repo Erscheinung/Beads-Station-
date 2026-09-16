@@ -4,12 +4,13 @@ import { useThemePaletteId } from '../state/theme'
 import 'xterm/css/xterm.css'
 
 /** A view of a session. Unmounting the view never replaces its shell or screen. */
-export function Terminal({ paneId, cwd, onSpawn, focused, insert }: {
+export function Terminal({ paneId, cwd, onSpawn, focused, insert, viewEpoch }: {
   paneId: string
   cwd: string
   onSpawn: (paneId: string, ptyId: number) => void
   focused: boolean
   insert: boolean
+  viewEpoch: string
 }) {
   const host = useRef<HTMLDivElement>(null)
   const sessionRef = useRef<TerminalSession | null>(null)
@@ -26,7 +27,7 @@ export function Terminal({ paneId, cwd, onSpawn, focused, insert }: {
     const update = () => { setPhase(session.phase); setError(session.error) }
     update()
     const unsubscribe = session.subscribe(update)
-    const resize = new ResizeObserver(() => session.resize())
+    const resize = new ResizeObserver(() => session.resize(element))
     resize.observe(element)
     return () => {
       unsubscribe()
@@ -37,8 +38,8 @@ export function Terminal({ paneId, cwd, onSpawn, focused, insert }: {
   }, [paneId, cwd, onSpawn, attempt])
   useEffect(() => { sessionRef.current?.applyTheme() }, [paletteId])
   useEffect(() => {
-    if (focused && insert) sessionRef.current?.terminal.focus()
-  }, [focused, insert, phase, attempt])
+    if (focused && insert) sessionRef.current?.focus()
+  }, [focused, insert, phase, attempt, viewEpoch])
 
   return <div data-terminal-pane={paneId} data-terminal-phase={phase} style={{ width: '100%', height: '100%', position: 'relative' }}>
     <div ref={host} style={{ width: '100%', height: '100%' }} />

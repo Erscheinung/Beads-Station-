@@ -176,6 +176,7 @@ pub fn run() {
             projects::projects_set_claude_session,
             pty::pty_kill,
             pty::pty_resize,
+            pty::pty_snapshot,
             pty::pty_spawn,
             pty::pty_write,
             sense::sense_dismiss,

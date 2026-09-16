@@ -183,6 +183,20 @@ describe('useVimNav — Phase 9 palette open', () => {
     expect(received).toEqual(['workspace'])
   })
 
+  it('keeps terminal focus for fullscreen and pane commands', () => {
+    const { getByTestId } = render(<Harness />)
+    const input = getByTestId('chat-input') as HTMLInputElement
+    input.focus()
+    const onToggle = vi.fn()
+    window.addEventListener('terminal:focus-toggle', onToggle)
+
+    press('Enter', { metaKey: true, shiftKey: true })
+
+    window.removeEventListener('terminal:focus-toggle', onToggle)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(input)
+  })
+
   it('routes explicit tiling chords without consuming IME composition', () => {
     render(<Harness />)
     const received: string[] = []

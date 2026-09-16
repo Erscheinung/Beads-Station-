@@ -147,8 +147,13 @@ export function useVimNav(): void {
       // leader (a tested, documented binding) — Cmd+K is the cmdk convention.
       const command = matchedCommand(event)
       if (command) {
-        const el = document.activeElement as HTMLElement | null
-        el?.blur?.()
+        // Modal surfaces take focus themselves. Keep xterm focused for view
+        // and pane commands so fullscreen/zoom/resize do not erase the cursor
+        // merely because their shortcut was routed through the app.
+        if (command === 'palette' || command === 'settings' || command === 'workspace') {
+          const el = document.activeElement as HTMLElement | null
+          el?.blur?.()
+        }
         if (!event.repeat) dispatchCommand(command)
         event.preventDefault()
         return

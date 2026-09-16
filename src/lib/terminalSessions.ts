@@ -1,6 +1,6 @@
 // UI-lifetime terminal sessions. React attaches/detaches their DOM; only an
 // explicit pane/workspace close disposes xterm and its native process.
-import { Terminal as XTerm } from 'xterm'
+import { Terminal as XTerm, type IMarker } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { invoke } from '@tauri-apps/api/core'
@@ -10,6 +10,35 @@ import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/ter
 import { matchedCommand } from '../state/commands'
 
 type Phase = 'starting' | 'running' | 'exited' | 'error'
+
+interface ViewportState {
+  buffer: 'normal' | 'alternate'
+  followOutput: boolean
+  marker: IMarker | null
+  fallbackLine: number
+}
+
+interface NativePtySnapshot {
+  id: number
+  pid: number | null
+  cols: number
+  rows: number
+}
+
+export interface TerminalLifecycleSnapshot {
+  paneId: string
+  ptyId: number | null
+  pid: number | null
+  phase: Phase
+  attached: boolean
+  container: { x: number; y: number; width: number; height: number } | null
+  font: { family: string; size: number; lineHeight: number }
+  terminal: { cols: number; rows: number }
+  native: { cols: number; rows: number } | null
+  viewport: { buffer: 'normal' | 'alternate'; line: number; base: number; followOutput: boolean }
+  activeElement: string | null
+  ownsInputFocus: boolean
+}
 
 const ESC = '\u001b'
 
@@ -124,6 +153,9 @@ export class TerminalSession {
   // a layout frame; this is view work only and never replaces the PTY.
   private attachment = 0
   private repaintFrame: number | null = null
+  private attachedHost: HTMLElement | null = null
+  private restoringViewport = false
+  private viewport: ViewportState = { buffer: 'normal', followOutput: true, marker: null, fallbackLine: 0 }
 
   constructor(readonly paneId: string, cwd: string, onSpawn: (paneId: string, id: number) => void) {
     this.element.style.cssText = 'width:100%;height:100%;'
@@ -140,6 +172,17 @@ export class TerminalSession {
       }).catch(error => this.fail(error))
     })
     this.releases.push(() => onData.dispose())
+    const onScroll = this.terminal.onScroll(() => {
+      if (!this.restoringViewport) this.captureViewport()
+    })
+    this.releases.push(() => onScroll.dispose())
+    const onBufferChange = this.terminal.buffer.onBufferChange(() => this.captureViewport())
+    this.releases.push(() => onBufferChange.dispose())
+    // Output can advance baseY while a user is reading history. Restore the
+    // tracked line after parsing; bottom followers use xterm's native follow
+    // behavior and only get corrected if a resize left them above baseY.
+    const onWriteParsed = this.terminal.onWriteParsed(() => this.restoreViewport())
+    this.releases.push(() => onWriteParsed.dispose())
     // Detached tabs retain live terminals too; apply preferences without a React remount.
     this.releases.push(subscribeTerminalAppearance(() => this.applyAppearance()))
     // A retained session can have no mounted <Terminal> component while its
@@ -153,6 +196,55 @@ export class TerminalSession {
       this.requestNativeRedraw()
     }))
     this.ready = this.start(cwd, onSpawn)
+  }
+
+  private disposeViewportMarker() {
+    this.viewport.marker?.dispose()
+    this.viewport.marker = null
+  }
+
+  private captureViewport() {
+    const buffer = this.terminal.buffer.active
+    const followOutput = buffer.type === 'alternate' || buffer.viewportY >= buffer.baseY
+    if (buffer.type === 'alternate' || followOutput) {
+      this.disposeViewportMarker()
+      this.viewport = { buffer: buffer.type, followOutput, marker: null, fallbackLine: buffer.viewportY }
+      return
+    }
+
+    if (this.viewport.buffer !== 'normal' || this.viewport.marker?.line !== buffer.viewportY) {
+      this.disposeViewportMarker()
+      const cursorLine = buffer.baseY + buffer.cursorY
+      this.viewport.marker = this.terminal.registerMarker(buffer.viewportY - cursorLine)
+    }
+    this.viewport = {
+      buffer: 'normal',
+      followOutput: false,
+      marker: this.viewport.marker,
+      fallbackLine: buffer.viewportY,
+    }
+  }
+
+  private restoreViewport() {
+    const buffer = this.terminal.buffer.active
+    if (buffer.type !== this.viewport.buffer) {
+      this.captureViewport()
+      return
+    }
+    this.restoringViewport = true
+    try {
+      if (buffer.type === 'normal' && this.viewport.followOutput) {
+        if (buffer.viewportY < buffer.baseY) this.terminal.scrollToBottom()
+      } else if (buffer.type === 'normal' && !this.viewport.followOutput) {
+        const line = this.viewport.marker?.line ?? -1
+        // A marker is disposed when bounded scrollback evicts its line. In
+        // that case show the nearest surviving history instead of jumping to
+        // live output or to an unrelated old numeric offset.
+        this.terminal.scrollToLine(line >= 0 ? line : Math.min(this.viewport.fallbackLine, buffer.baseY))
+      }
+    } finally {
+      this.restoringViewport = false
+    }
   }
 
   private notify() { this.listeners.forEach(listener => listener()) }
@@ -204,16 +296,20 @@ export class TerminalSession {
 
   attach(host: HTMLElement) {
     const attachment = ++this.attachment
+    this.attachedHost = host
     this.element.removeAttribute('aria-hidden')
     host.appendChild(this.element)
     this.applyTheme()
     this.applyAppearance()
-    this.resize()
+    this.resize(host)
+    this.restoreViewport()
     this.repaint(attachment)
     this.scheduleRepaint(attachment)
   }
   detach(host: HTMLElement) {
     if (this.element.parentElement === host) {
+      this.captureViewport()
+      this.attachedHost = null
       // Do not let the xterm screen leave the document between React hosts.
       // Keeping it in a transparent, aria-hidden parking host avoids the
       // WebKit IntersectionObserver pause race while retaining the same
@@ -232,16 +328,13 @@ export class TerminalSession {
     try { this.terminal.refresh(0, Math.max(0, this.terminal.rows - 1)) } catch { /* disposed during a view transition */ }
   }
   private scheduleRepaint(attachment: number) {
-    // The immediate refresh covers browsers which paint synchronously. A
-    // second layout frame covers WKWebView after a split/tab host changes size.
+    // The immediate refresh covers browsers which paint synchronously. One
+    // committed layout frame covers WKWebView reparenting. Geometry itself is
+    // driven by ResizeObserver; do not poll fit across animation frames.
     this.repaintFrame = requestAnimationFrame(() => {
       if (this.closed || attachment !== this.attachment) return
-      this.repaintFrame = requestAnimationFrame(() => {
-        if (this.closed || attachment !== this.attachment) return
-        this.repaintFrame = null
-        this.resize()
-        this.repaint(attachment)
-      })
+      this.repaintFrame = null
+      this.repaint(attachment)
     })
   }
   applyTheme() {
@@ -271,15 +364,63 @@ export class TerminalSession {
     this.terminal.options.cursorStyle = appearance.cursorStyle
     this.terminal.options.cursorBlink = appearance.cursorBlink
     this.terminal.options.scrollback = appearance.scrollback
-    this.resize()
+    // Detached sessions sit in a deliberately tiny parking host. Updating
+    // options there must not fit xterm or resize the native PTY to 2x1; the
+    // active host's ResizeObserver will fit it when it is visible again.
+    if (this.attachedHost) this.resize(this.attachedHost)
   }
-  resize() {
-    if (this.closed || !this.element.isConnected || !this.element.clientWidth || !this.element.clientHeight) return
+  resize(host = this.attachedHost) {
+    // Ignore queued observers from an old React host and every update while
+    // parked. `isConnected` alone is insufficient because the parking host is
+    // intentionally connected and has a 1x1 box.
+    if (this.closed || !host || host !== this.attachedHost || this.element.parentElement !== host || !host.isConnected) return
+    const bounds = host.getBoundingClientRect()
+    if (bounds.width <= 1 || bounds.height <= 1) return
+    this.captureViewport()
     try { this.fit.fit() } catch { return }
+    this.restoreViewport()
     const size = `${this.terminal.cols}:${this.terminal.rows}`
     if (this.id !== null && this.phase === 'running' && this.nativeSize !== size) {
       this.nativeSize = size
       void invoke('pty_resize', { id: this.id, cols: this.terminal.cols, rows: this.terminal.rows }).catch(error => this.fail(error))
+    }
+  }
+  focus() {
+    if (!this.attachedHost || this.element.parentElement !== this.attachedHost) return false
+    const active = document.activeElement
+    if (active instanceof Element) {
+      if (active.closest('dialog[open], [role="dialog"]')) return false
+      if (!this.element.contains(active) && (active.matches('input, textarea, select') || (active as HTMLElement).isContentEditable)) return false
+    }
+    this.terminal.focus()
+    return true
+  }
+  async snapshot(): Promise<TerminalLifecycleSnapshot> {
+    const host = this.attachedHost
+    const rect = host?.getBoundingClientRect()
+    const buffer = this.terminal.buffer.active
+    let native: NativePtySnapshot | null = null
+    if (this.id !== null) {
+      try { native = await invoke<NativePtySnapshot>('pty_snapshot', { id: this.id }) } catch { /* exited between inspection and IPC */ }
+    }
+    const active = document.activeElement
+    return {
+      paneId: this.paneId,
+      ptyId: this.id,
+      pid: native?.pid ?? null,
+      phase: this.phase,
+      attached: host !== null,
+      container: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null,
+      font: {
+        family: String(this.terminal.options.fontFamily ?? ''),
+        size: Number(this.terminal.options.fontSize ?? 0),
+        lineHeight: Number(this.terminal.options.lineHeight ?? 1),
+      },
+      terminal: { cols: this.terminal.cols, rows: this.terminal.rows },
+      native: native ? { cols: native.cols, rows: native.rows } : null,
+      viewport: { buffer: buffer.type, line: buffer.viewportY, base: buffer.baseY, followOutput: this.viewport.followOutput },
+      activeElement: active instanceof HTMLElement ? `${active.tagName.toLowerCase()}${active.className ? `.${String(active.className).split(/\s+/).join('.')}` : ''}` : null,
+      ownsInputFocus: active instanceof Node && this.element.contains(active),
     }
   }
   dispose() {
@@ -287,6 +428,7 @@ export class TerminalSession {
     this.closed = true
     this.attachment++
     if (this.repaintFrame !== null) cancelAnimationFrame(this.repaintFrame)
+    this.disposeViewportMarker()
     this.releases.splice(0).forEach(release => release())
     this.listeners.clear()
     this.terminal.dispose()
@@ -304,6 +446,9 @@ export function getTerminalSession(paneId: string, cwd: string, onSpawn: (paneId
 export function disposeTerminalSession(paneId: string) {
   sessions.get(paneId)?.dispose()
   sessions.delete(paneId)
+}
+export function inspectTerminalSession(paneId: string): Promise<TerminalLifecycleSnapshot | null> {
+  return sessions.get(paneId)?.snapshot() ?? Promise.resolve(null)
 }
 
 function onDispose(event: Event) {

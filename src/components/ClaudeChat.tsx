@@ -20,7 +20,7 @@
 //   * The 24px header keeps a stable slot at #bs-claude-header-right that
 //     <PermissionModePicker> portals into.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen } from '../lib/safeListen'
 import { chanId } from '../lib/eventChannel'
@@ -31,7 +31,7 @@ import { accumulate as accumulateUsage } from '../state/claudeUsage'
 import { useVim } from '../state/vim'
 import { PermissionModePicker } from '../state/claudeSettings'
 import { setInsert as setTermInsert } from '../state/termPanes'
-import { buildRenderItems } from '../lib/renderItems'
+import { buildRenderItems, type RenderItem } from '../lib/renderItems'
 import { RenderItemView } from './RenderItems'
 import { claudeResumeKey, claudeStartSession } from '../state/sessionPreferences'
 import { type InteractiveChatProvider, providerLabel } from '../state/chatProviders'
@@ -144,12 +144,87 @@ function isEditableFocus(): boolean {
   return false
 }
 
+export interface ChatViewMemory {
+  draft: string
+  selectionStart: number
+  selectionEnd: number
+  selectionDirection: 'forward' | 'backward' | 'none'
+  followOutput: boolean
+  anchorId: string | null
+  anchorOffset: number
+}
+
+const CHAT_VIEW_CAP = 64
+const chatViews = new Map<string, ChatViewMemory>()
+
+function chatView(key: string): ChatViewMemory {
+  const existing = chatViews.get(key)
+  if (existing) return existing
+  if (chatViews.size >= CHAT_VIEW_CAP) chatViews.delete(chatViews.keys().next().value!)
+  const created: ChatViewMemory = {
+    draft: '', selectionStart: 0, selectionEnd: 0, selectionDirection: 'none',
+    followOutput: true, anchorId: null, anchorOffset: 0,
+  }
+  chatViews.set(key, created)
+  return created
+}
+
+export function captureChatViewport(element: HTMLDivElement, memory: ChatViewMemory) {
+  memory.followOutput = element.scrollHeight - element.clientHeight - element.scrollTop <= 2
+  if (memory.followOutput) {
+    memory.anchorId = null
+    memory.anchorOffset = 0
+    return
+  }
+  const anchors = Array.from(element.querySelectorAll<HTMLElement>('[data-bs-chat-anchor]'))
+  const anchor = anchors.find(candidate => candidate.offsetTop + candidate.offsetHeight > element.scrollTop)
+  memory.anchorId = anchor?.dataset.bsChatAnchor ?? null
+  memory.anchorOffset = anchor ? anchor.offsetTop - element.scrollTop : 0
+}
+
+export function restoreChatViewport(element: HTMLDivElement, memory: ChatViewMemory) {
+  if (memory.followOutput) {
+    element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight)
+    return
+  }
+  const anchor = Array.from(element.querySelectorAll<HTMLElement>('[data-bs-chat-anchor]'))
+    .find(candidate => candidate.dataset.bsChatAnchor === memory.anchorId)
+  if (anchor) element.scrollTop = Math.max(0, anchor.offsetTop - memory.anchorOffset)
+  else element.scrollTop = Math.min(element.scrollTop, Math.max(0, element.scrollHeight - element.clientHeight))
+}
+
+function hashAnchorText(value: string): string {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function renderItemIdentity(item: RenderItem): string {
+  if ('tool' in item && item.tool?.id) return `${item.kind}:tool:${item.tool.id}`
+  if ('text' in item) return `${item.kind}:text:${hashAnchorText(item.text)}`
+  return `${item.kind}:${item.key}`
+}
+
+function anchorRenderItems(items: RenderItem[]): Array<{ item: RenderItem; anchorId: string }> {
+  const occurrences = new Map<string, number>()
+  return items.map(item => {
+    const identity = renderItemIdentity(item)
+    const occurrence = occurrences.get(identity) ?? 0
+    occurrences.set(identity, occurrence + 1)
+    return { item, anchorId: `item:${identity}:${occurrence}` }
+  })
+}
+
 export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, provider = 'claude' }: ClaudeChatProps) {
   // RV2 — every claude-session-scoped key (events, usage, status, approval
   // RPCs, header portal id) uses `bridge`. The REAL projectId is kept only for
   // project-scoped RPCs (projects_get) and the header label.
   const bridge = bridgeId ?? projectId
   const chatProvider: InteractiveChatProvider = provider
+  const viewMemory = useMemo(() => chatView(`${chatProvider}:${bridge}`), [chatProvider, bridge])
   const isClaude = chatProvider === 'claude'
   const command = (action: 'start' | 'send' | 'kill' | 'scrollback'): string => {
     if (isClaude) {
@@ -166,7 +241,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
   const [hookEvents, setHookEvents] = useState<HookEvent[]>([])
   const [approvalStates, setApprovalStates] = useState<Record<string, ApprovalStatus>>({})
   const [evictedCount, setEvictedCount] = useState(0)
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(() => viewMemory.draft)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<StartStatus>('pending')
   const [stderrCount, setStderrCount] = useState(0)
@@ -175,6 +250,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
   const respawnAttemptsRef = useRef(0)
   const vim = useVim()
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
 
   // Resolve approvals to refs so the global keydown listener doesn't capture
   // a stale snapshot. This is the same trick useVimNav uses for vim state.
@@ -370,10 +446,18 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
   // panes (bridgeId set); the legacy grid chat must not steal focus on boot.
   useEffect(() => {
     if (bridgeId == null) return
-    // rAF: run after the browser has committed layout so .focus() sticks.
-    const id = requestAnimationFrame(() => inputRef.current?.focus())
+    if (active !== true) return
+    // Run after commit, but only restore the pane's own active input context.
+    // A modal or another editable owns focus until the user dismisses it.
+    const id = requestAnimationFrame(() => {
+      const focused = document.activeElement
+      if (focused instanceof Element && focused.closest('dialog[open], [role="dialog"]')) return
+      if (focused instanceof HTMLElement && focused !== document.body && focused.matches('input, textarea, select, [contenteditable="true"]') && focused !== inputRef.current) return
+      inputRef.current?.focus()
+      inputRef.current?.setSelectionRange(viewMemory.selectionStart, viewMemory.selectionEnd, viewMemory.selectionDirection)
+    })
     return () => cancelAnimationFrame(id)
-  }, [bridgeId])
+  }, [bridgeId, active, viewMemory])
 
   // Compute the topmost-pending approval for the keyboard shortcut. Walk
   // frames in order; the first frame that yields an extractable approval
@@ -421,6 +505,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
     () => buildRenderItems(frames, isApprovalPending),
     [frames, isApprovalPending],
   )
+  const anchoredRenderItems = useMemo(() => anchorRenderItems(renderItems), [renderItems])
 
   // Code-1cs (F2): the pending-approval list used to be derived by an
   // un-memoized frames.map(extractApproval) in the JSX on every render, on top
@@ -440,6 +525,13 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
     },
     [frames, gateToolUse, isClaude],
   )
+
+  // Frame growth and remounts preserve either the live bottom or the first
+  // visible message identity. Pixel-only scrollTop restoration points at the
+  // wrong content after wrapping, font changes, or bounded frame eviction.
+  useLayoutEffect(() => {
+    if (scrollRef.current) restoreChatViewport(scrollRef.current, viewMemory)
+  }, [renderItems, approvalItems, approvalStates, evictedCount, viewMemory])
 
   // Resolve the topmost pending approval. Shared by the window-level a/d
   // shortcut (chat/pane focus, no editable) AND the agent input's own onKeyDown
@@ -503,6 +595,9 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
     setBusy(true)
     appendFrame({ _local: true, role: 'user', text })
     setInput('')
+    viewMemory.draft = ''
+    viewMemory.selectionStart = 0
+    viewMemory.selectionEnd = 0
     try {
       await invoke(command('send'), { projectId: bridge, text })
     } catch (e) {
@@ -569,7 +664,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
 
       <ToolDrawer projectId={bridge} events={hookEvents} />
 
-      <div className="bs-chat-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12, fontSize: 12, lineHeight: 1.5 }}>
+      <div ref={scrollRef} onScroll={e => captureChatViewport(e.currentTarget, viewMemory)} className="bs-chat-scroll" style={{ flex: 1, overflowY: 'auto', padding: 12, fontSize: 12, lineHeight: 1.5 }}>
         {evictedCount > 0 && (
           <div style={{ color: 'var(--bs-fg-muted)', fontSize: 11, padding: '2px 0 8px', opacity: 0.7 }}>— {evictedCount} earlier frames evicted —</div>
         )}
@@ -577,8 +672,10 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
             unified diffs, recursive subagent chains. Pending tool approvals are
             excluded here (isApprovalPending) and rendered as ApprovalCards below,
             so a tool flips ApprovalCard → resolved pair once it runs. */}
-        {renderItems.map(item => (
-          <RenderItemView key={item.key} item={item} />
+        {anchoredRenderItems.map(({ item, anchorId }) => (
+          <div key={item.key} data-bs-chat-anchor={anchorId}>
+            <RenderItemView item={item} />
+          </div>
         ))}
         {/* Pending approvals — the only frames NOT in renderItems. Chronologically
             the newest (awaiting the user), so they sit at the tail.
@@ -594,17 +691,9 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
           // Unmount once resolved UNLESS this is a real permission frame, which
           // must show its resolved confirmation (Code-x5l).
           if (!pending && !a.isPermissionFrame) return null
-          return (
-            <ApprovalCard
-              key={`approval-${i}-${a.requestId}`}
-              projectId={bridge}
-              requestId={a.requestId}
-              toolName={a.toolName}
-              input={a.input}
-              status={state}
-              onResolve={next => onResolveApproval(a.requestId, next)}
-            />
-          )
+          return <div key={`approval-${i}-${a.requestId}`} data-bs-chat-anchor={`approval:${a.requestId}`}>
+            <ApprovalCard projectId={bridge} requestId={a.requestId} toolName={a.toolName} input={a.input} status={state} onResolve={next => onResolveApproval(a.requestId, next)} />
+          </div>
         })}
       </div>
 
@@ -615,7 +704,18 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
           ref={inputRef}
           data-bs-agent-input
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={e => {
+            setInput(e.target.value)
+            viewMemory.draft = e.target.value
+            viewMemory.selectionStart = e.target.selectionStart ?? e.target.value.length
+            viewMemory.selectionEnd = e.target.selectionEnd ?? viewMemory.selectionStart
+            viewMemory.selectionDirection = e.target.selectionDirection ?? 'none'
+          }}
+          onSelect={e => {
+            viewMemory.selectionStart = e.currentTarget.selectionStart ?? 0
+            viewMemory.selectionEnd = e.currentTarget.selectionEnd ?? viewMemory.selectionStart
+            viewMemory.selectionDirection = e.currentTarget.selectionDirection ?? 'none'
+          }}
           // RV2 — for agent panes (bridgeId set), the input's REAL focus is the
           // source of truth for insert mode. Binding onFocus/onBlur keeps the
           // termPanes `insert` mirror in sync no matter how focus was acquired
