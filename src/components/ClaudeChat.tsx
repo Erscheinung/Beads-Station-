@@ -33,7 +33,7 @@ import { PermissionModePicker } from '../state/claudeSettings'
 import { setInsert as setTermInsert } from '../state/termPanes'
 import { buildRenderItems, type RenderItem } from '../lib/renderItems'
 import { RenderItemView } from './RenderItems'
-import { claudeResumeKey, claudeStartSession } from '../state/sessionPreferences'
+import { claudeResumeKey, claudeStartSession, rememberObservedProviderSession } from '../state/sessionPreferences'
 import { type InteractiveChatProvider, providerLabel } from '../state/chatProviders'
 
 type Frame = any
@@ -396,7 +396,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
             setTimeout(async () => {
               try {
                 const cliSid = await invoke<string | null>('claude_get_session_id', { projectId: bridge })
-                if (cliSid) localStorage.setItem(resumeKey!, cliSid)
+                if (cliSid) rememberObservedProviderSession('claude', bridge, cliSid)
               } catch (_) { /* non-fatal */ }
             }, 2000)
           }
@@ -404,6 +404,8 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
           // Codex uses an app-server thread. Creating the thread does not
           // request a model turn; that happens only when the user sends text.
           await invoke(command('start'), { projectId: bridge, cwd })
+          const threadId = await invoke<string | null>('codex_chat_get_session_id', { projectId: bridge })
+          if (threadId) rememberObservedProviderSession('codex', bridge, threadId)
         }
         if (!signal.aborted) setStatus('started')
       } catch (e) {

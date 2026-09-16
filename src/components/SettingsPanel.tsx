@@ -214,6 +214,7 @@ export function SettingsPanel() {
         </>}
         {section === 'Sessions' && <>
           <p className="bs-settings__intro">Agents start when you ask them to. Interactive chat uses the selected local adapter.</p>
+          <label className="bs-settings__row"><span>Restore saved context on launch<small>Restores workspaces, layout, selected panes and bounded screen context. It never attaches a live process or starts a provider turn.</small></span><input aria-label="Restore saved context on launch" type="checkbox" checked={session.restoreContextOnLaunch} onChange={e => setSessionPreferences({ restoreContextOnLaunch: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>Interactive chat provider<small>Choose a supported provider for the developer chat pane. Availability checks only whether its CLI is installed; login stays owned by that CLI.</small></span><select aria-label="Interactive chat provider" value={interactiveProvider} onChange={e => setInteractiveChatProvider(e.target.value as InteractiveChatProvider)}>
             {(['claude', 'codex'] as const).map(name => {
               const status = providerAvailability(providerStatuses, name)

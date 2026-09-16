@@ -1413,6 +1413,33 @@ pub async fn conductor_stop(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn active_owned_run_count() -> usize {
+    IN_FLIGHT.lock().map(|attempts| attempts.len()).unwrap_or(0)
+}
+
+/// Close-policy boundary: stop future pulses, cancel every app-owned attempt,
+/// and wait briefly for the attempt futures to kill/reap their exact children.
+pub async fn stop_owned_work_for_close(app: &AppHandle) -> Result<usize, String> {
+    conductor_stop(app.clone()).await?;
+    let attempts: Vec<Arc<tokio::sync::Notify>> = IN_FLIGHT
+        .lock()
+        .map_err(|e| format!("in-flight lock: {e}"))?
+        .values()
+        .map(|attempt| attempt.cancel.clone())
+        .collect();
+    let count = attempts.len();
+    for cancel in attempts {
+        cancel.notify_one();
+    }
+    for _ in 0..200 {
+        if active_owned_run_count() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    Ok(count)
+}
+
 /// Code-jx3.2 (RV6.2) — read a running conductor's posture for a repo, if one is
 /// running for exactly that repo. Returns `(dry_run, interval_secs)`. `None` means
 /// no conductor is running for this repo, so an on-demand pulse falls back to its

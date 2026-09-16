@@ -2,6 +2,7 @@ import { useMemo, useSyncExternalStore } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { safeInvoke } from '../lib/invokeErrorBoundary'
 import { migrateProjectSurface, removeProjectSurface, setActiveProject as activateSurface } from './termPanes'
+import { shouldRestoreContextOnLaunch } from './sessionPreferences'
 
 export interface Project {
   id: string
@@ -67,7 +68,11 @@ function persistSelection() {
 function applyDiscovery(result: Discovery) {
   let selection: WorkspaceSelection = { openIds: state.openIds, activeId: state.activeId }
   if (!state.loaded) {
-    try { selection = restoreSelection(result.projects, localStorage.getItem(WORKSPACES_KEY), localStorage.getItem(LEGACY_ACTIVE_KEY)) }
+    try {
+      selection = shouldRestoreContextOnLaunch()
+        ? restoreSelection(result.projects, localStorage.getItem(WORKSPACES_KEY), localStorage.getItem(LEGACY_ACTIVE_KEY))
+        : { openIds: [], activeId: null }
+    }
     catch { selection = { openIds: [], activeId: null } }
     for (const project of result.projects) {
       migrateProjectSurface(project.path, project.id)

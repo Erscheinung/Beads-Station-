@@ -6,12 +6,14 @@ import "./index.css";
 import "@vscode/codicons/dist/codicon.css";
 import App from "./App";
 import { InvokeErrorBoundary } from "./lib/invokeErrorBoundary";
+import { AppCloseGuard } from "./components/AppCloseGuard";
 
 function mount() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <InvokeErrorBoundary>
         <App />
+        <AppCloseGuard />
       </InvokeErrorBoundary>
     </React.StrictMode>,
   );

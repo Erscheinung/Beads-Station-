@@ -367,6 +367,7 @@ describe('termPanes persistence round-trip (Code-mkv)', () => {
     expect(restored.length).toBe(3)
     // ptyId stripped on every leaf.
     expect(restored.every(l => l.ptyId === null)).toBe(true)
+    expect(restored.filter(l => !l.fileNav).every(l => l.restored === true)).toBe(true)
     // Agent bridge preserved (resume key stability).
     expect(restored.some(l => l.agent?.bridgeId === agentBridge)).toBe(true)
   })

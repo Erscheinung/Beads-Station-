@@ -5,6 +5,7 @@
 // Keep that block easy to merge into.
 
 mod bd;
+mod app_lifecycle;
 mod binresolve;
 mod claude;
 mod codex;
@@ -20,6 +21,8 @@ mod spawngov;
 mod spending;
 mod telemetry;
 mod watcher;
+
+use tauri::Manager;
 
 /// macOS GUI apps launched via launchd/Finder inherit the default soft
 /// RLIMIT_NOFILE of 256 (a login shell gets 1048576). Against 256 the
@@ -69,7 +72,8 @@ pub fn run() {
     let keys = envloader::install_into_process_env(&map);
     eprintln!("{}", envloader::loaded_summary(&keys));
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .manage(app_lifecycle::CloseCoordinator::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
@@ -109,18 +113,13 @@ pub fn run() {
                 let _ = app.emit("settings:open", ());
             }
         })
-        // RV2-fix (Code-51e): reap every live `claude --print` child when the
-        // window closes. Without this, each visited project / spawned agent
-        // pane leaked a persistent claude process for the app's lifetime —
-        // the fork/subprocess-exhaustion vector behind "issues gone on project
-        // switch". block_on is safe here: the close path is not latency
-        // sensitive and kill_all_sessions only does a bounded drain + waits.
-        .on_window_event(|_window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                let reaped = tauri::async_runtime::block_on(claude::kill_all_sessions());
-                eprintln!("[claude] window close: reaped {reaped} live session(s)");
-                let ptys = pty::kill_all_ptys();
-                eprintln!("[pty] window close: reaped {ptys} live pty child(ren)");
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<app_lifecycle::CloseCoordinator>();
+                if !app_lifecycle::should_allow_close(&state) {
+                    api.prevent_close();
+                    app_lifecycle::request_close(window.app_handle(), &state, "window");
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -188,7 +187,21 @@ pub fn run() {
             watcher::sense_watch_stop,
             watcher::watcher_start,
             watcher::watcher_stop,
+            app_lifecycle::app_request_close,
+            app_lifecycle::app_close_scope,
+            app_lifecycle::app_resolve_close,
+            app_lifecycle::app_recover_stale_sessions,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            let state = app_handle.state::<app_lifecycle::CloseCoordinator>();
+            if !app_lifecycle::should_allow_close(&state) {
+                api.prevent_exit();
+                app_lifecycle::request_close(app_handle, &state, "menu-quit");
+            }
+        }
+    });
 }

@@ -493,6 +493,10 @@ pub async fn kill_all_codex_sessions() -> usize {
     count
 }
 
+pub async fn active_codex_session_count() -> usize {
+    SESSIONS.lock().await.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

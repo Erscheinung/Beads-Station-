@@ -874,6 +874,10 @@ pub async fn kill_all_sessions() -> usize {
     total
 }
 
+pub async fn active_close_scope() -> (usize, usize) {
+    (SESSIONS.lock().await.len(), NATIVE_RUNS.lock().await.len())
+}
+
 /// Code-4je — return the CLI-assigned session_id for a running bridge. The
 /// FE calls this after the first frame arrives (or after mount) to get the
 /// id it should persist and pass back as --resume on the next mount.

@@ -2,15 +2,19 @@ import { useSyncExternalStore } from 'react'
 
 export interface SessionPreferences {
   askBeforeResume: boolean
+  restoreContextOnLaunch: boolean
 }
 
 const STORAGE_KEY = 'beads-station.session-preferences'
-const DEFAULTS: SessionPreferences = { askBeforeResume: true }
+const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true }
 
 function load(): SessionPreferences {
   try {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') as Partial<SessionPreferences>
-    return { askBeforeResume: parsed.askBeforeResume !== false }
+    return {
+      askBeforeResume: parsed.askBeforeResume !== false,
+      restoreContextOnLaunch: parsed.restoreContextOnLaunch !== false,
+    }
   } catch {
     return { ...DEFAULTS }
   }
@@ -34,10 +38,40 @@ export function useSessionPreferences(): SessionPreferences {
 
 export function setSessionPreferences(next: Partial<SessionPreferences>): void {
   const updated = { ...state, ...next }
-  if (updated.askBeforeResume === state.askBeforeResume) return
+  if (updated.askBeforeResume === state.askBeforeResume && updated.restoreContextOnLaunch === state.restoreContextOnLaunch) return
   state = updated
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* optional */ }
   listeners.forEach(listener => listener())
+}
+
+/** Synchronous boot-time read used before React mounts the workspace stores. */
+export function shouldRestoreContextOnLaunch(): boolean {
+  return state.restoreContextOnLaunch
+}
+
+export type ObservedProvider = 'claude' | 'codex'
+
+export function providerSessionKey(provider: ObservedProvider, bridge: string): string {
+  return provider === 'claude' ? claudeResumeKey(bridge) : `bs.codex.thread:${bridge}`
+}
+
+export function observedProviderSession(provider: ObservedProvider, bridge: string): string | null {
+  try {
+    const value = localStorage.getItem(providerSessionKey(provider, bridge))
+    return value?.trim() ? value.trim() : null
+  } catch {
+    return null
+  }
+}
+
+export function rememberObservedProviderSession(provider: ObservedProvider, bridge: string, value: string): void {
+  const observed = value.trim()
+  if (!observed) return
+  try { localStorage.setItem(providerSessionKey(provider, bridge), observed) } catch { /* optional */ }
+}
+
+export function clearObservedProviderSession(provider: ObservedProvider, bridge: string): void {
+  try { localStorage.removeItem(providerSessionKey(provider, bridge)) } catch { /* optional */ }
 }
 
 export function claudeResumeKey(bridge: string): string {
@@ -45,16 +79,11 @@ export function claudeResumeKey(bridge: string): string {
 }
 
 export function observedClaudeSession(bridge: string): string | null {
-  try {
-    const value = localStorage.getItem(claudeResumeKey(bridge))
-    return value?.trim() ? value : null
-  } catch {
-    return null
-  }
+  return observedProviderSession('claude', bridge)
 }
 
 export function clearObservedClaudeSession(bridge: string): void {
-  try { localStorage.removeItem(claudeResumeKey(bridge)) } catch { /* optional */ }
+  clearObservedProviderSession('claude', bridge)
 }
 
 /** Arguments for claude_start derived solely from a provider-observed id. */

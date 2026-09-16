@@ -263,6 +263,10 @@ pub fn kill_all_ptys() -> usize {
     n
 }
 
+pub fn active_pty_count() -> usize {
+    PTYS.lock().unwrap_or_else(|e| e.into_inner()).len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

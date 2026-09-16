@@ -40,6 +40,16 @@ export interface TerminalLifecycleSnapshot {
   ownsInputFocus: boolean
 }
 
+export interface PersistedTerminalScreen {
+  lines: string[]
+  cols: number
+  rows: number
+  buffer: 'normal' | 'alternate'
+  cursorX: number
+  cursorY: number
+  capturedAt: number
+}
+
 const ESC = '\u001b'
 
 // Keep a detached xterm screen connected while React re-parents its view.
@@ -156,8 +166,14 @@ export class TerminalSession {
   private attachedHost: HTMLElement | null = null
   private restoringViewport = false
   private viewport: ViewportState = { buffer: 'normal', followOutput: true, marker: null, fallbackLine: 0 }
+  private screenTimer: ReturnType<typeof setTimeout> | null = null
 
-  constructor(readonly paneId: string, cwd: string, onSpawn: (paneId: string, id: number) => void) {
+  constructor(
+    readonly paneId: string,
+    cwd: string,
+    onSpawn: (paneId: string, id: number) => void,
+    private readonly onScreen?: (paneId: string, screen: PersistedTerminalScreen) => void,
+  ) {
     this.element.style.cssText = 'width:100%;height:100%;'
     this.terminal.loadAddon(this.fit)
     this.terminal.loadAddon(new WebLinksAddon())
@@ -181,7 +197,10 @@ export class TerminalSession {
     // Output can advance baseY while a user is reading history. Restore the
     // tracked line after parsing; bottom followers use xterm's native follow
     // behavior and only get corrected if a resize left them above baseY.
-    const onWriteParsed = this.terminal.onWriteParsed(() => this.restoreViewport())
+    const onWriteParsed = this.terminal.onWriteParsed(() => {
+      this.restoreViewport()
+      this.scheduleScreenCheckpoint()
+    })
     this.releases.push(() => onWriteParsed.dispose())
     // Detached tabs retain live terminals too; apply preferences without a React remount.
     this.releases.push(subscribeTerminalAppearance(() => this.applyAppearance()))
@@ -248,6 +267,37 @@ export class TerminalSession {
   }
 
   private notify() { this.listeners.forEach(listener => listener()) }
+  private scheduleScreenCheckpoint() {
+    if (!this.onScreen || this.screenTimer !== null) return
+    // Output can be byte-dense. One bounded checkpoint every two seconds keeps
+    // persistence off the PTY hot path while still recovering useful context.
+    this.screenTimer = setTimeout(() => {
+      this.screenTimer = null
+      this.checkpointScreen()
+    }, 2000)
+  }
+  checkpointScreen() {
+    if (!this.onScreen || this.closed) return
+    const buffer = this.terminal.buffer.active
+    const first = Math.max(0, buffer.length - 200)
+    const lines: string[] = []
+    let chars = 0
+    for (let index = first; index < buffer.length && chars < 64 * 1024; index++) {
+      const line = buffer.getLine(index)?.translateToString(true) ?? ''
+      const bounded = line.slice(0, Math.max(0, 64 * 1024 - chars))
+      lines.push(bounded)
+      chars += bounded.length
+    }
+    this.onScreen(this.paneId, {
+      lines,
+      cols: this.terminal.cols,
+      rows: this.terminal.rows,
+      buffer: buffer.type,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY,
+      capturedAt: Date.now(),
+    })
+  }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private fail(error: unknown) {
     if (this.closed) return
@@ -425,9 +475,11 @@ export class TerminalSession {
   }
   dispose() {
     if (this.closed) return
+    this.checkpointScreen()
     this.closed = true
     this.attachment++
     if (this.repaintFrame !== null) cancelAnimationFrame(this.repaintFrame)
+    if (this.screenTimer !== null) clearTimeout(this.screenTimer)
     this.disposeViewportMarker()
     this.releases.splice(0).forEach(release => release())
     this.listeners.clear()
@@ -438,10 +490,18 @@ export class TerminalSession {
 }
 
 const sessions = new Map<string, TerminalSession>()
-export function getTerminalSession(paneId: string, cwd: string, onSpawn: (paneId: string, id: number) => void): TerminalSession {
+export function getTerminalSession(
+  paneId: string,
+  cwd: string,
+  onSpawn: (paneId: string, id: number) => void,
+  onScreen?: (paneId: string, screen: PersistedTerminalScreen) => void,
+): TerminalSession {
   let session = sessions.get(paneId)
-  if (!session) { session = new TerminalSession(paneId, cwd, onSpawn); sessions.set(paneId, session) }
+  if (!session) { session = new TerminalSession(paneId, cwd, onSpawn, onScreen); sessions.set(paneId, session) }
   return session
+}
+export function flushTerminalSessionScreens() {
+  for (const session of sessions.values()) session.checkpointScreen()
 }
 export function disposeTerminalSession(paneId: string) {
   sessions.get(paneId)?.dispose()

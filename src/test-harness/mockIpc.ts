@@ -194,6 +194,12 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return null
     case 'native_run_snapshot':
       return []
+    case 'app_close_scope':
+      return { ptyCount: 1, providerCount: 1, runCount: 0 }
+    case 'app_request_close':
+    case 'app_resolve_close':
+    case 'app_recover_stale_sessions':
+      return null
 
     // --- everything else is fire-and-forget void (watcher_start,
     //     bd mutations, pty_write/resize/kill, set_status, etc.) ---

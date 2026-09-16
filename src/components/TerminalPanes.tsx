@@ -18,6 +18,8 @@ import {
   closeActivePane, unsplitToTabs, splitActive, toggleZoom, leavesOf,
   useZoom,
   registerPty,
+  updatePaneScreen,
+  activateRestoredPane,
   focusPane,
   setInsert,
   setRatio,
@@ -26,9 +28,28 @@ import {
   type Leaf,
 } from '../state/termPanes'
 import { setFocused } from '../state/vim'
+import { clearObservedProviderSession, observedProviderSession } from '../state/sessionPreferences'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
+}
+
+function onScreen(paneId: string, screen: Parameters<typeof updatePaneScreen>[1]) {
+  updatePaneScreen(paneId, screen)
+}
+
+function RestoredShell({ leaf }: { leaf: Leaf }) {
+  return <div data-restored-pane={leaf.paneId} style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bs-bg)' }}>
+    <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--bs-border)', color: 'var(--bs-yellow)', fontSize: 11 }}>
+      Saved screen · previous shell is stopped · no live process attached
+    </div>
+    <pre aria-label="Saved terminal screen" style={{ flex: 1, minHeight: 0, overflow: 'auto', margin: 0, padding: 10, color: 'var(--bs-fg-muted)', whiteSpace: 'pre-wrap', font: 'inherit' }}>
+      {leaf.savedScreen?.lines.join('\n') || 'No terminal screen was captured before the app stopped.'}
+    </pre>
+    <div style={{ padding: 8, borderTop: '1px solid var(--bs-border)' }}>
+      <button onClick={() => activateRestoredPane(leaf.paneId)}>Start new shell</button>
+    </div>
+  </div>
 }
 
 interface RenderCtx {
@@ -80,14 +101,15 @@ function PaneLeaf({
         boxShadow: isActive && ctx.termFocused ? 'inset 0 0 0 1px var(--bs-blue)' : undefined,
       }}
     >
-      <Terminal
+      {leaf.restored ? <RestoredShell leaf={leaf} /> : <Terminal
         paneId={paneId}
         cwd={leaf.cwd}
         onSpawn={onSpawn}
+        onScreen={onScreen}
         focused={isActive && ctx.termFocused}
         insert={isActive && ctx.termFocused && ctx.insert}
         viewEpoch={ctx.viewEpoch}
-      />
+      />}
     </div>
   )
 }
@@ -106,6 +128,8 @@ const STATUS_DOT: Record<string, string> = {
 }
 function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
   const a = leaf.agent!
+  const provider = a.provider ?? 'claude'
+  const observedId = observedProviderSession(provider, a.bridgeId)
   const isActive = leaf.paneId === ctx.activePaneId
   const isZoomed = ctx.zoomed === leaf.paneId
   const hiddenByZoom = ctx.zoomed !== null && !isZoomed
@@ -147,17 +171,29 @@ function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
           display: 'inline-block', width: 7, height: 7, borderRadius: '50%',
           background: STATUS_DOT[status] ?? STATUS_DOT.idle, flexShrink: 0,
         }} />
-        <span>agent · {a.projectId} · {status}</span>
+        <span>agent · {a.projectId} · {leaf.restored ? 'saved context' : status}</span>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        <ClaudeChat
+        {leaf.restored ? <div data-restored-provider={a.bridgeId} style={{ height: '100%', display: 'grid', placeContent: 'center', gap: 10, padding: 20, textAlign: 'center', color: 'var(--bs-fg-muted)' }}>
+          <strong style={{ color: 'var(--bs-fg)' }}>Saved {provider === 'claude' ? 'Claude session' : 'Codex thread'}</strong>
+          <span>{observedId ?? 'No provider-observed session ID'} · {a.configurationId ?? `native:${provider}`}</span>
+          <span>This transcript context is restored. No live process is attached and no model turn was started.</span>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
+            {provider === 'claude' && observedId && <button onClick={() => activateRestoredPane(leaf.paneId)}>Resume session</button>}
+            <button onClick={() => {
+              clearObservedProviderSession(provider, a.bridgeId)
+              activateRestoredPane(leaf.paneId)
+            }}>Start new session</button>
+          </div>
+        </div> : <ClaudeChat
           projectId={a.projectId}
           bridgeId={a.bridgeId}
           cwd={leaf.cwd}
           sessionId={a.sessionId}
           permissionMode={a.permissionMode}
+          provider={provider}
           active={isActive && ctx.termFocused}
-        />
+        />}
       </div>
     </div>
   )

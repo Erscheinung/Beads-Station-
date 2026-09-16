@@ -4,6 +4,8 @@ import {
   claudeResumeKey,
   claudeStartSession,
   clearObservedClaudeSession,
+  observedProviderSession,
+  rememberObservedProviderSession,
   observedClaudeSession,
   setSessionPreferences,
   useSessionPreferences,
@@ -12,7 +14,7 @@ import {
 describe('session preferences', () => {
   beforeEach(() => {
     localStorage.clear()
-    act(() => setSessionPreferences({ askBeforeResume: true }))
+    act(() => setSessionPreferences({ askBeforeResume: true, restoreContextOnLaunch: true }))
   })
 
   it('defaults to asking and persists preference changes', () => {
@@ -22,7 +24,7 @@ describe('session preferences', () => {
     act(() => setSessionPreferences({ askBeforeResume: false }))
 
     expect(result.current.askBeforeResume).toBe(false)
-    expect(JSON.parse(localStorage.getItem('beads-station.session-preferences')!)).toEqual({ askBeforeResume: false })
+    expect(JSON.parse(localStorage.getItem('beads-station.session-preferences')!)).toEqual({ askBeforeResume: false, restoreContextOnLaunch: true })
   })
 
   it('recognizes only a non-empty provider-observed bridge session', () => {
@@ -33,6 +35,14 @@ describe('session preferences', () => {
     expect(claudeStartSession('bridge')).toEqual({ sessionId: 'provider-session', resume: true })
 
     clearObservedClaudeSession('bridge')
+    expect(observedClaudeSession('bridge')).toBeNull()
+  })
+
+  it('keeps provider-observed Codex identities separate and rejects blank values', () => {
+    rememberObservedProviderSession('codex', 'bridge', ' thread-7 ')
+    rememberObservedProviderSession('codex', 'blank', '   ')
+    expect(observedProviderSession('codex', 'bridge')).toBe('thread-7')
+    expect(observedProviderSession('codex', 'blank')).toBeNull()
     expect(observedClaudeSession('bridge')).toBeNull()
   })
 })

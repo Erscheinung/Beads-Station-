@@ -19,6 +19,7 @@
 // The R3.5 render-loop was an uncached getSnapshot; do not repeat it.
 
 import { useSyncExternalStore } from 'react'
+import { shouldRestoreContextOnLaunch, type ObservedProvider } from './sessionPreferences'
 
 export type SplitDir = 'h' | 'v'
 export type PaneDirection = 'left' | 'right' | 'up' | 'down'
@@ -31,6 +32,10 @@ export interface Leaf {
   paneId: string
   ptyId: number | null
   cwd: string
+  /** Deserialized process-backed panes are inert until the user explicitly starts them. */
+  restored?: boolean
+  /** Bounded display-only evidence. It is never replayed as shell input. */
+  savedScreen?: SavedTerminalScreen
   /**
    * RV2 — additive agent-pane payload. Absent/undefined => legacy shell leaf.
    * Present => this leaf hosts a Claude agent session (ClaudeChat) instead of
@@ -47,6 +52,8 @@ export interface Leaf {
     /** claude --session-id (uuid). */
     sessionId: string
     permissionMode?: 'acceptEdits' | 'default' | 'plan'
+    provider?: ObservedProvider
+    configurationId?: string
   }
   /**
    * RV3-B — additive file-nav payload, mirroring `agent?`. Absent => shell or
@@ -57,6 +64,16 @@ export interface Leaf {
   fileNav?: {
     rootPath: string
   }
+}
+
+export interface SavedTerminalScreen {
+  lines: string[]
+  cols: number
+  rows: number
+  buffer: 'normal' | 'alternate'
+  cursorX: number
+  cursorY: number
+  capturedAt: number
 }
 
 /** Named guard for call-site readability (G5). */
@@ -149,7 +166,10 @@ function newAgentLeaf(
     paneId: uid('pane'),
     ptyId: null,
     cwd,
-    agent: { bridgeId: uid('agent'), projectId, sessionId, permissionMode },
+    agent: {
+      bridgeId: uid('agent'), projectId, sessionId, permissionMode,
+      provider: 'claude', configurationId: `native:claude:${permissionMode ?? 'acceptEdits'}`,
+    },
   }
 }
 
@@ -238,11 +258,23 @@ PROJECTS.set(BOOT_PROJECT, state)
 // BOOT_PROJECT surface is never persisted (it's the pre-project scratch leaf).
 
 const PERSIST_KEY = 'beads-station.termPanes'
-const PERSIST_VERSION = 1
+const PERSIST_VERSION = 2
 
 /** Deep-copy a node, resetting every leaf's ptyId to null (stale after reload). */
 function sanitizeNode(node: Node): Node {
-  if (node.kind === 'leaf') return { ...node, ptyId: null }
+  if (node.kind === 'leaf') {
+    return {
+      ...node,
+      ptyId: null,
+      // File navigation is read-only and has no process/provider side effect.
+      restored: node.fileNav ? undefined : true,
+      ...(node.agent ? { agent: {
+        ...node.agent,
+        provider: node.agent.provider ?? 'claude',
+        configurationId: node.agent.configurationId ?? `native:${node.agent.provider ?? 'claude'}:${node.agent.permissionMode ?? 'acceptEdits'}`,
+      } } : {}),
+    }
+  }
   return { ...node, a: sanitizeNode(node.a), b: sanitizeNode(node.b) }
 }
 
@@ -272,7 +304,7 @@ export function restoreProjects(json: string | null): void {
   if (!json) return
   try {
     const parsed = JSON.parse(json) as { v?: number; projects?: Record<string, TermPanesState> }
-    if (parsed.v !== PERSIST_VERSION || !parsed.projects) return
+    if ((parsed.v !== 1 && parsed.v !== PERSIST_VERSION) || !parsed.projects) return
     const allIds: string[] = []
     for (const [pid, s] of Object.entries(parsed.projects)) {
       if (!s?.tabs?.length) continue
@@ -302,7 +334,7 @@ function schedulePersist(): void {
 // PROJECTS (not the live `state`), and setActiveProject prefers an existing
 // PROJECTS entry over adopting the boot leaf, so a restored project wins.
 try {
-  restoreProjects(localStorage.getItem(PERSIST_KEY))
+  if (shouldRestoreContextOnLaunch()) restoreProjects(localStorage.getItem(PERSIST_KEY))
 } catch {
   /* non-browser — ignore */
 }
@@ -591,16 +623,58 @@ export function registerPty(paneId: string, ptyId: number): void {
     for (const [projectId, project] of PROJECTS) {
       const owner = project.tabs.find(t => findLeaf(t.root, paneId))
       if (!owner) continue
-      const next = { ...owner, root: mapLeaf(owner.root, paneId, l => ({ ...l, ptyId })) }
+      const next = { ...owner, root: mapLeaf(owner.root, paneId, l => ({ ...l, ptyId, restored: undefined })) }
       PROJECTS.set(projectId, replaceTab(project, owner.id, next))
       emit()
       return
     }
     return
   }
-  const next = { ...tab, root: mapLeaf(tab.root, paneId, l => ({ ...l, ptyId })) }
+  const next = { ...tab, root: mapLeaf(tab.root, paneId, l => ({ ...l, ptyId, restored: undefined })) }
   state = replaceTab(state, tab.id, next)
   emit()
+}
+
+/** Store a bounded display snapshot without treating it as a live attachment. */
+export function updatePaneScreen(paneId: string, savedScreen: SavedTerminalScreen): void {
+  const update = (source: TermPanesState): TermPanesState => {
+    const tab = source.tabs.find(candidate => findLeaf(candidate.root, paneId))
+    if (!tab) return source
+    return replaceTab(source, tab.id, {
+      ...tab,
+      root: mapLeaf(tab.root, paneId, leaf => ({ ...leaf, savedScreen })),
+    })
+  }
+  const before = state
+  state = update(state)
+  for (const [projectId, project] of PROJECTS) {
+    if (project === before && state !== before) PROJECTS.set(projectId, state)
+    else {
+      const next = update(project)
+      if (next !== project) PROJECTS.set(projectId, next)
+    }
+  }
+  if (state !== before) emit()
+}
+
+/** Explicit user intent converts an inert restored pane into a new attachment attempt. */
+export function activateRestoredPane(paneId: string): void {
+  const tab = state.tabs.find(candidate => findLeaf(candidate.root, paneId))
+  if (!tab) return
+  state = replaceTab(state, tab.id, {
+    ...tab,
+    root: mapLeaf(tab.root, paneId, leaf => ({ ...leaf, restored: undefined })),
+  })
+  emit()
+}
+
+/** Synchronous close/crash checkpoint; localStorage is the atomic browser-owned value. */
+export function flushTermPanePersistence(): void {
+  if (_persistTimer !== null) {
+    clearTimeout(_persistTimer)
+    _persistTimer = null
+  }
+  try { localStorage.setItem(PERSIST_KEY, serializeProjects()) } catch { /* optional */ }
 }
 
 // ---- mutations ---------------------------------------------------------

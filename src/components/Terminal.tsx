@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { disposeTerminalSession, getTerminalSession, type TerminalSession } from '../lib/terminalSessions'
+import { disposeTerminalSession, getTerminalSession, type PersistedTerminalScreen, type TerminalSession } from '../lib/terminalSessions'
 import { useThemePaletteId } from '../state/theme'
 import 'xterm/css/xterm.css'
 
 /** A view of a session. Unmounting the view never replaces its shell or screen. */
-export function Terminal({ paneId, cwd, onSpawn, focused, insert, viewEpoch }: {
+export function Terminal({ paneId, cwd, onSpawn, onScreen, focused, insert, viewEpoch }: {
   paneId: string
   cwd: string
   onSpawn: (paneId: string, ptyId: number) => void
+  onScreen?: (paneId: string, screen: PersistedTerminalScreen) => void
   focused: boolean
   insert: boolean
   viewEpoch: string
@@ -21,7 +22,7 @@ export function Terminal({ paneId, cwd, onSpawn, focused, insert, viewEpoch }: {
 
   useEffect(() => {
     const element = host.current!
-    const session = getTerminalSession(paneId, cwd, onSpawn)
+    const session = getTerminalSession(paneId, cwd, onSpawn, onScreen)
     sessionRef.current = session
     session.attach(element)
     const update = () => { setPhase(session.phase); setError(session.error) }
@@ -35,7 +36,7 @@ export function Terminal({ paneId, cwd, onSpawn, focused, insert, viewEpoch }: {
       session.detach(element)
       sessionRef.current = null
     }
-  }, [paneId, cwd, onSpawn, attempt])
+  }, [paneId, cwd, onSpawn, onScreen, attempt])
   useEffect(() => { sessionRef.current?.applyTheme() }, [paletteId])
   useEffect(() => {
     if (focused && insert) sessionRef.current?.focus()
