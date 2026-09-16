@@ -1,5 +1,52 @@
 # Beads Station — agent handoff
 
+## Current planning handoff — 2026-09-16, after v0.1.0
+
+Start with [the 0.1.x / 0.2.0 master plan](docs/roadmap-0.2/MASTER-PLAN.md),
+then its [research](docs/roadmap-0.2/RESEARCH.md),
+[Sol/Luna implementation prompts](docs/roadmap-0.2/IMPLEMENTATION-PROMPTS.md),
+and [hands-on validation](docs/roadmap-0.2/ACCEPTANCE.md).
+These documents supersede older release sequencing and next-task suggestions,
+not the safety, tracking, or adaptive orchestration contract below.
+
+Observed baseline: clean `main`, HEAD and local `v0.1.0` both
+`f61430b5a0c74041db036ddad1bcabb953069f00`; GitHub reports v0.1.0 published
+2026-09-15 as a prerelease, with DMG, checksum, and screenshots. The September
+15 and earlier “uncommitted” handoffs below are historical, not current status.
+Designer remains a prototype in the released README. Partial controls in source
+are not proof of a complete request/run/preview/revision/approval journey.
+
+This session is research/planning only: no app fixes, provider launches, auth,
+Beads writes, new releases, commits, or pushes. Prompts are saved, not executed.
+The user requests Sol-led implementation with bounded Luna ownership later.
+Runtime/protocol slices explicitly use Sol; local model configuration still
+owns actual model IDs and effort. No mandatory review agent or fixed pipeline.
+
+Meta-priorities: hardware efficiency and speed; stable terminal process,
+screen, scroll anchor, and focus across navigation; no hidden model turns on
+restore, configuration reads, idle orchestration, or unchanged pulse results.
+Pulses are optional intake, never required for manual/local orchestration.
+Settings must offer simple defaults plus named harnesses, connections, command
+recipes, and a schema-validated manual/prompt editing route that works from a DMG.
+
+User-reported priorities: systemic terminal bottom clipping/cursor loss and
+scroll jumps; close/quit confirmation and honest session continuity; lightweight
+workspace finder with native Browse; Beads initialization; tab reorder and
+ergonomic navigation even in fullscreen; named interaction recording. The five
+Developer feature items are staged with the 0.1.x workstream at the user's
+request. This is an explicit release-policy exception for compatible preview
+additions; material/breaking workflows remain documented and versioned honestly.
+The 0.2.0 target is the functional Designer plus shared orchestrator, configurable
+harnesses/MCP intake, optional bounded pulses, and packaged acceptance gates.
+
+References include `~/codex-astra-luna-orchestrator` and
+`~/Desktop/Code/cmux`. Borrow patterns; inspect pinned
+licenses before copying material. Future authenticated `work-auth-mcp` and
+internal `work-tools` work for Jira/GitHub/Teams is explicitly recorded; their
+schemas and authentication flow are unknown here and must be discovered where
+Sol has those tools. Svelte assessment stays under `Code-1dh`, not a release
+prerequisite or an authorized migration.
+
 ## Release versioning
 
 - Use Semantic Versioning and Git tags formatted as `vMAJOR.MINOR.PATCH`. Keep releases in `0.x` while the app is an incomplete preview.
