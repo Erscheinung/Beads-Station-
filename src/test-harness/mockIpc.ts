@@ -46,6 +46,12 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return { projects: PROJECTS, roots: ['/tmp'], warnings: [] }
     case 'projects_set_roots':
       return { projects: PROJECTS, roots: args?.roots ?? [], warnings: [] }
+    case 'projects_browse':
+      return null
+    case 'projects_cancel_discovery':
+      return null
+    case 'projects_discover_under_folder':
+      return { projects: PROJECTS, roots: [args?.root ?? '/tmp'], warnings: [], truncated: false }
     case 'projects_open': {
       const path = args?.path as string
       return PROJECTS.find(p => p.path === path) ?? { id: path, name: path.split('/').pop(), path, hasGit: false, hasBeads: false, claudeSessionId: 'opened-session' }

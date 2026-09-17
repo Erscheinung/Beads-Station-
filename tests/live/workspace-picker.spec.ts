@@ -4,10 +4,10 @@ for (const mode of ['', '?ui=designer']) {
   test(`fresh launch discovers without opening workspaces or agents ${mode}`, async ({ page }) => {
     await page.goto(`/${mode}`)
     await expect(page.getByRole('heading', { name: 'Your work starts here.' })).toBeVisible()
-    await expect(page.getByRole('button', { name: /Beads-Station.*\/tmp\/beads-station/ })).toBeVisible()
+    await expect(page.getByRole('option', { name: /Beads-Station.*\/tmp\/beads-station/ })).toBeVisible()
     const starts = await page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => ['pty_spawn', 'claude_start', 'projects_open'].includes(e.cmd)))
     expect(starts).toEqual([])
-    await page.getByRole('button', { name: /Beads-Station.*\/tmp\/beads-station/ }).click()
+    await page.getByRole('option', { name: /Beads-Station.*\/tmp\/beads-station/ }).click()
     await expect(page.getByRole('heading', { name: 'Your work starts here.' })).toHaveCount(0)
     expect(await page.evaluate(() => JSON.parse(localStorage.getItem('beads-station.workspaces.v2')!).openIds)).toEqual(['proj-a'])
     const agents = await page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => e.cmd === 'claude_start'))
@@ -17,10 +17,10 @@ for (const mode of ['', '?ui=designer']) {
 
 test('open, close and reload preserves only explicitly opened workspaces', async ({ page }) => {
   await page.goto('/')
-  await page.getByRole('button', { name: /Beads-Station.*\/tmp\/beads-station/ }).click()
+  await page.getByRole('option', { name: /Beads-Station.*\/tmp\/beads-station/ }).click()
   await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveCount(1)
   await page.getByRole('button', { name: 'Open workspace', exact: true }).click()
-  await page.getByRole('button', { name: /Nexus.*\/tmp\/nexus/ }).click()
+  await page.getByRole('option', { name: /Nexus.*\/tmp\/nexus/ }).click()
   await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveCount(2)
   await page.getByRole('button', { name: 'Close workspace Beads-Station' }).click()
   await page.reload()
@@ -36,7 +36,7 @@ test('missing discovery roots leave folder opening and settings usable', async (
   await page.goto('/')
   await page.getByText('Discovery roots', { exact: false }).click()
   await expect(page.getByLabel('Discovery roots', { exact: true })).toHaveValue('/missing')
-  await page.getByLabel('Folder path', { exact: true }).fill('/tmp/new-folder')
+  await page.getByRole('combobox', { name: 'Find a workspace or enter a path' }).fill('/tmp/new-folder')
   await page.getByRole('button', { name: 'Open folder', exact: false }).click()
   await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveText('new-folder')
 })
@@ -45,7 +45,7 @@ test('primary workspace entry filters discovered projects and Enter opens only t
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Your work starts here.' })).toBeVisible()
 
-  const folder = page.getByLabel('Folder path', { exact: true })
+  const folder = page.getByRole('combobox', { name: 'Find a workspace or enter a path' })
   await folder.fill('Nex')
   await expect(page.locator('.workspace-picker__project')).toHaveCount(1)
   await expect(page.locator('.workspace-picker__project')).toContainText('Nexus')
@@ -60,10 +60,10 @@ test('primary workspace entry filters discovered projects and Enter opens only t
 
 test('workspace modal accepts real key presses after terminal focus', async ({ page }) => {
   await page.goto('/')
-  await page.getByRole('button', { name: /Beads-Station.*\/tmp\/beads-station/ }).click()
+  await page.getByRole('option', { name: /Beads-Station.*\/tmp\/beads-station/ }).click()
   await page.locator('.xterm textarea').first().focus()
   await page.getByRole('button', { name: 'Open workspace', exact: true }).click()
-  const folder = page.getByLabel('Folder path', { exact: true })
+  const folder = page.getByRole('combobox', { name: 'Find a workspace or enter a path' })
   await folder.click()
   await folder.pressSequentially('/tmp/a folder')
   await expect(folder).toHaveValue('/tmp/a folder')

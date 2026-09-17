@@ -16,9 +16,11 @@ export interface Discovery {
   projects: Project[]
   roots: string[]
   warnings: string[]
+  truncated?: boolean
 }
 const WORKSPACES_KEY = 'beads-station.workspaces.v2'
 const LEGACY_ACTIVE_KEY = 'beads-station.activeProjectId'
+const RECENT_WORKSPACES_KEY = 'beads-station.workspaceRecents.v1'
 interface WorkspaceSelection { openIds: string[]; activeId: string | null }
 
 export function restoreSelection(projects: Project[], saved: string | null, legacy: string | null): WorkspaceSelection {
@@ -46,12 +48,13 @@ export function restoreSelection(projects: Project[], saved: string | null, lega
 
 interface ProjectsState extends WorkspaceSelection {
   availableProjects: Project[]
+  recentIds: string[]
   roots: string[]
   warnings: string[]
   loaded: boolean
   error: string | null
 }
-let state: ProjectsState = { availableProjects: [], openIds: [], activeId: null, roots: [], warnings: [], loaded: false, error: null }
+let state: ProjectsState = { availableProjects: [], recentIds: [], openIds: [], activeId: null, roots: [], warnings: [], loaded: false, error: null }
 const listeners = new Set<() => void>()
 let inFlight: Promise<void> | null = null
 
@@ -64,6 +67,20 @@ function persistSelection() {
     localStorage.setItem(WORKSPACES_KEY, JSON.stringify({ openIds: state.openIds, activeId: state.activeId }))
     localStorage.removeItem(LEGACY_ACTIVE_KEY)
   } catch { /* private browsing / quota: the current session still works */ }
+}
+function readRecentIds(): string[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(RECENT_WORKSPACES_KEY) ?? '[]')
+    return Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === 'string'))].slice(0, 20) : []
+  } catch { return [] }
+}
+function persistRecentIds(ids: string[]) {
+  try { localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(ids.slice(0, 20))) } catch { /* optional preference */ }
+}
+function rememberRecent(id: string) {
+  const recentIds = [id, ...state.recentIds.filter(existing => existing !== id)].slice(0, 20)
+  setState({ recentIds })
+  persistRecentIds(recentIds)
 }
 function applyDiscovery(result: Discovery) {
   let selection: WorkspaceSelection = { openIds: state.openIds, activeId: state.activeId }
@@ -91,7 +108,7 @@ function applyDiscovery(result: Discovery) {
   const retained = state.availableProjects.filter(p => state.openIds.includes(p.id) && !result.projects.some(n => n.id === p.id))
   const active = result.projects.find(p => p.id === selection.activeId)
   if (active) activateSurface(active.id, active.path)
-  setState({ ...selection, availableProjects: [...result.projects, ...retained], roots: result.roots, warnings: result.warnings, loaded: true, error: null })
+  setState({ ...selection, availableProjects: [...result.projects, ...retained], recentIds: readRecentIds(), roots: result.roots, warnings: result.warnings, loaded: true, error: null })
   persistSelection()
 }
 
@@ -114,7 +131,25 @@ export async function openFolder(path: string): Promise<void> {
   const availableProjects = [...state.availableProjects.filter(p => p.id !== project.id), project]
   activateSurface(project.id, project.path)
   setState({ availableProjects, openIds: state.openIds.includes(project.id) ? state.openIds : [...state.openIds, project.id], activeId: project.id })
+  rememberRecent(project.id)
   persistSelection()
+}
+
+export interface FolderDiscovery extends Discovery { truncated: boolean }
+
+/** Build a bounded, ignore-aware folder index only after the user chooses that scope. */
+export function discoverUnderFolder(root: string, requestId: string): Promise<FolderDiscovery> {
+  return invoke<FolderDiscovery>('projects_discover_under_folder', { root, requestId })
+}
+
+/** Stop an in-flight native folder walk when the scope changes or the picker closes. */
+export function cancelFolderDiscovery(requestId: string): Promise<void> {
+  return invoke('projects_cancel_discovery', { requestId })
+}
+
+/** Native Browse is intentionally selection-only; opening still requires Enter or an explicit button. */
+export function browseForFolder(): Promise<string | null> {
+  return invoke<string | null>('projects_browse')
 }
 
 export function setActiveProject(id: string): void {
