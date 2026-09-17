@@ -2,7 +2,7 @@
 
 A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
-> **Early preview — v0.1.0.** The Developer workspace is usable for local evaluation. The Designer workspace is a visual prototype only and is not yet a working end-to-end request, run, preview, or approval flow.
+> **Early preview — v0.1.0.** The Developer workspace is usable for local evaluation. The Designer workspace is a visual prototype only and is not yet a working end-to-end request, run, preview, or approval flow. Upcoming bug fixes and feature add-ons in v0.1.x!
 
 ## Preview
 
