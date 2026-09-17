@@ -32,6 +32,10 @@ import {
   resizePane,
   serializeProjects,
   restoreProjects,
+  reorderTab,
+  moveActiveTab,
+  terminalTabIds,
+  activeTerminalTabId,
 } from './termPanes'
 
 // The store is a module singleton. Reset it to a known shape before each
@@ -137,6 +141,20 @@ describe('termPanes tree algebra', () => {
     expect(snapshotLeafCount()).toBe(2)
     switchTab(1) // tab1
     expect(snapshotLeafCount()).toBe(1)
+  })
+
+  it('reorders terminal tabs without changing stable tab identity or selection', () => {
+    setActiveProject('reorder-tabs', '/tmp/reorder-tabs')
+    newTab()
+    newTab()
+    const before = terminalTabIds()
+    const selected = activeTerminalTabId()
+    reorderTab(2, 0)
+    expect(terminalTabIds()).toEqual([before[2], before[0], before[1]])
+    expect(activeTerminalTabId()).toBe(selected)
+    moveActiveTab(-1)
+    expect(activeTerminalTabId()).toBe(selected)
+    expect(terminalTabIds()[0]).toBe(selected)
   })
 
   it('toggleZoom flips zoom target', () => {

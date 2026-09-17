@@ -17,6 +17,7 @@ import {
 import { Card } from './Card'
 import { Column } from './Column'
 import { useBdSnapshot, invalidate } from '../lib/bdCache'
+import { InitializeBeadsAction } from './InitializeBeadsAction'
 
 interface BoardProps {
   repoPath: string
@@ -264,6 +265,7 @@ export function Board({ repoPath, projectId, projectName }: BoardProps) {
         onDragEnd={handleDragEnd}
         onDragCancel={() => setActiveIssue(null)}
       >
+        {noBeadsDb && <InitializeBeadsAction repoPath={repoPath} />}
         <div
           style={{
             flex: 1,

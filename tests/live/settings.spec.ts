@@ -68,12 +68,12 @@ test('appearance updates all surfaces without replacing the terminal', async ({ 
   await expect(page.locator('.bs-settings')).toHaveCSS('background-color', 'rgb(250, 250, 250)')
   await page.screenshot({ path: 'test-results/settings-one-light.png' })
   await page.getByRole('button', { name: 'Sessions', exact: true }).click()
-  await page.getByRole('checkbox').uncheck()
+  await page.getByRole('checkbox', { name: 'Ask before resuming Claude' }).uncheck()
   expect(await spawnCount()).toBe(before)
   await page.reload()
   await page.getByTitle('Open settings', { exact: true }).click()
   await page.getByRole('button', { name: 'Sessions', exact: true }).click()
-  await expect(page.getByRole('checkbox')).not.toBeChecked()
+  await expect(page.getByRole('checkbox', { name: 'Ask before resuming Claude' })).not.toBeChecked()
 })
 
 test('a new project starts chat without a fabricated resume prompt', async ({ page }) => {

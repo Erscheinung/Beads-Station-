@@ -131,6 +131,7 @@ pub fn run() {
             bd::bd_gate_list,
             bd::bd_gate_resolve,
             bd::bd_git_branch,
+            bd::bd_initialize,
             bd::bd_list,
             bd::bd_note,
             bd::bd_prime,

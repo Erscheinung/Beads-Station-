@@ -9,6 +9,7 @@
 // every spawn and never pass `-C`.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 pub(crate) const ACTOR: &str = "Beads Station";
@@ -162,6 +163,217 @@ async fn run_bd(repo_path: &str, args: &[&str]) -> Result<Vec<u8>, String> {
 /// stderr on non-zero exit (or spawn failure).
 async fn run_bd_write(repo_path: &str, args: &[&str]) -> Result<(), String> {
     run_bd(repo_path, args).await.map(|_| ())
+}
+
+// ---------- initialization -------------------------------------------------
+
+/// The narrow, intent-only initialization boundary used by the empty Board
+/// and Explorer states.  It deliberately does not expose `--reinit-local` or
+/// any other destructive bd flag.  The frontend can show the exact target and
+/// refresh only after this report has verified the resulting store.
+#[derive(Serialize, Debug, Clone)]
+pub struct BdInitReport {
+    pub outcome: String,
+    pub target: String,
+    pub command: String,
+    pub message: String,
+}
+
+fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
+    let input = raw.trim();
+    if input.is_empty() {
+        return Err("failure: workspace path must not be empty".into());
+    }
+    let path = std::fs::canonicalize(input).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            format!("permission: cannot access workspace {input}: {e}")
+        } else {
+            format!("failure: cannot access workspace {input}: {e}")
+        }
+    })?;
+    let metadata = std::fs::metadata(&path)
+        .map_err(|e| format!("permission: cannot read workspace {}: {e}", path.display()))?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "failure: workspace is not a directory: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// Detect only an actual local beads store.  A directory containing an export,
+/// backup, config, or metadata is intentionally *not* considered initialized:
+/// `bd bootstrap` must get a chance to restore those supported formats.
+fn has_local_store(beads: &Path) -> Result<bool, String> {
+    if !beads.exists() {
+        return Ok(false);
+    }
+    let metadata = std::fs::metadata(beads)
+        .map_err(|e| format!("permission: cannot inspect {}: {e}", beads.display()))?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "corrupt: {} exists but is not a directory",
+            beads.display()
+        ));
+    }
+
+    fn walk(path: &Path, depth: u8) -> Result<bool, String> {
+        let entries = std::fs::read_dir(path)
+            .map_err(|e| format!("permission: cannot read {}: {e}", path.display()))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|e| format!("permission: cannot inspect Beads store: {e}"))?;
+            let child = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == ".dolt" && child.is_dir() {
+                return Ok(true);
+            }
+            if child.is_file() && child.extension().is_some_and(|ext| ext == "db") {
+                return Ok(true);
+            }
+            // Embedded Dolt stores use .beads/embeddeddolt/<prefix>/.dolt.
+            // Keep this bounded so backups/exports never become a broad scan.
+            if depth > 0 && child.is_dir() && walk(&child, depth - 1)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    walk(beads, 3)
+}
+
+fn classify_init_failure(detail: &str) -> String {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("permission denied")
+        || lower.contains("operation not permitted")
+        || lower.contains("read-only file system")
+    {
+        format!("permission: {detail}")
+    } else if lower.contains("corrupt")
+        || lower.contains("invalid json")
+        || lower.contains("malformed")
+        || lower.contains("schema")
+        || lower.contains("parse")
+        || lower.contains("cannot open")
+    {
+        format!("corrupt: {detail}")
+    } else {
+        format!("failure: {detail}")
+    }
+}
+
+async fn run_bd_init_once(repo_path: &Path, args: &[&str]) -> Result<(), String> {
+    let _permit = crate::spawngov::permit().await;
+    let bd_path = crate::binresolve::resolve_bin("bd").map_err(|e| format!("missing_bd: {e}"))?;
+    let output = Command::new(&bd_path)
+        .current_dir(repo_path)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| format!("missing_bd: failed to spawn bd: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let detail = if stderr.is_empty() { stdout } else { stderr };
+    Err(classify_init_failure(if detail.is_empty() {
+        "bd initialization failed"
+    } else {
+        &detail
+    }))
+}
+
+async fn run_bd_init(repo_path: &Path, args: &[&str]) -> Result<(), String> {
+    crate::spawngov::with_retry(|| run_bd_init_once(repo_path, args)).await
+}
+
+/// Initialize or bootstrap only `repo_path`, after canonicalizing it and
+/// refusing to touch an existing local store.  A store is verified with a
+/// read-only `bd list --json` before an already-initialized report is returned,
+/// and again after a successful init/bootstrap.
+#[tauri::command]
+pub async fn bd_initialize(repo_path: String) -> Result<BdInitReport, String> {
+    let target = canonical_workspace(&repo_path)?;
+    let target_text = target.to_string_lossy().into_owned();
+    let beads = target.join(".beads");
+
+    // Resolve the executable before inspecting state so a missing CLI is
+    // reported distinctly even when the target already has a store.
+    crate::binresolve::resolve_bin("bd").map_err(|e| format!("missing_bd: {e}"))?;
+
+    if has_local_store(&beads)? {
+        match run_bd_classified(&target_text, &["list", "--json"]).await {
+            Ok(BdOutcome::Ok(_)) => {
+                return Ok(BdInitReport {
+                    outcome: "already_exists".into(),
+                    target: target_text,
+                    command: "bd list --json (verification)".into(),
+                    message: "This workspace already has a readable Beads store; no initialization was performed.".into(),
+                });
+            }
+            Ok(BdOutcome::NoDatabase) => {
+                return Err("corrupt: a local Beads store marker exists but bd reports no database; initialization was not attempted".into());
+            }
+            Err(error) => {
+                return Err(format!("corrupt: existing Beads store could not be verified; initialization was not attempted: {error}"));
+            }
+        }
+    }
+
+    let bootstrap = beads.exists();
+    let args: &[&str] = if bootstrap {
+        &["bootstrap", "--yes"]
+    } else {
+        // Do not let an empty-state action create or overwrite project agent
+        // instructions/hooks. Those are explicit setup choices outside A5.
+        &[
+            "init",
+            "--non-interactive",
+            "--skip-agents",
+            "--skip-hooks",
+            "--role",
+            "maintainer",
+        ]
+    };
+    run_bd_init(&target, args)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !has_local_store(&beads)? {
+        return Err(
+            "corrupt: bd reported success but no local Beads store was found during verification"
+                .into(),
+        );
+    }
+    match run_bd_classified(&target_text, &["list", "--json"]).await {
+        Ok(BdOutcome::Ok(_)) => Ok(BdInitReport {
+            outcome: if bootstrap {
+                "bootstrapped".into()
+            } else {
+                "initialized".into()
+            },
+            target: target_text,
+            command: if bootstrap {
+                "bd bootstrap --yes".into()
+            } else {
+                "bd init --non-interactive --skip-agents --skip-hooks --role maintainer".into()
+            },
+            message: if bootstrap {
+                "Tracked Beads data was bootstrapped and verified.".into()
+            } else {
+                "A new Beads store was initialized and verified.".into()
+            },
+        }),
+        Ok(BdOutcome::NoDatabase) => {
+            Err("corrupt: bd completed but its store could not be read during verification".into())
+        }
+        Err(error) => Err(format!(
+            "corrupt: bd completed but verification failed: {error}"
+        )),
+    }
 }
 
 /// RV4.1 — crate-internal escape hatch for the conductor to run bd verbs that
@@ -881,5 +1093,25 @@ mod tests {
         let (issues, no_db) = parse_read(BdOutcome::Ok(b"[]".to_vec()), "list").unwrap();
         assert!(issues.is_empty());
         assert!(!no_db);
+    }
+
+    #[test]
+    fn initialization_store_detection_allows_exports_but_not_local_dolt() {
+        let root = std::env::temp_dir().join(format!("beads-station-init-{}", std::process::id()));
+        let beads = root.join(".beads");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&beads).unwrap();
+        std::fs::write(beads.join("issues.jsonl"), "[]\n").unwrap();
+        assert!(!has_local_store(&beads).unwrap());
+        std::fs::create_dir_all(beads.join("embeddeddolt").join("demo").join(".dolt")).unwrap();
+        assert!(has_local_store(&beads).unwrap());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn initialization_failures_keep_distinct_categories() {
+        assert!(classify_init_failure("permission denied").starts_with("permission:"));
+        assert!(classify_init_failure("malformed JSONL").starts_with("corrupt:"));
+        assert!(classify_init_failure("bd exited with status 1").starts_with("failure:"));
     }
 }

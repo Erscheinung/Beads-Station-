@@ -13,9 +13,10 @@ import { safeListen } from '../lib/listenerRegistry'
 import { openSettings } from '../state/settings'
 import { providerAvailability, providerLabel, setInteractiveChatProvider, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from '../state/chatProviders'
 import { resetUiCustomization, setUiCustomization, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, useUiCustomization } from '../state/uiCustomization'
+import { RecipeSettings } from './RecipeSettings'
 
-const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents' }
-const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions'] as const
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents', Recipes: 'recording replay interaction recipe steps binding import export undo' }
+const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions', 'Recipes'] as const
 const TERMINAL_PANE_COMMAND_IDS = new Set([
   'fullscreen',
   'focusLeft',
@@ -129,6 +130,11 @@ export function SettingsPanel() {
     return () => { disposed = true; release?.() }
   }, [])
   useEffect(() => {
+    const onOpenRecipes = () => setSection('Recipes')
+    window.addEventListener('recipes:open', onOpenRecipes)
+    return () => window.removeEventListener('recipes:open', onOpenRecipes)
+  }, [])
+  useEffect(() => {
     if (open) { setThemeView(getSkin()); dialog.current?.showModal(); return () => { dialog.current?.close() } }
   }, [open])
   if (!open) return null
@@ -228,6 +234,7 @@ export function SettingsPanel() {
           <label className="bs-settings__row"><span>Ask before resuming Claude<small>When starting chat, offer a choice for a previously observed Claude session. Turn off to resume it directly.</small></span><input type="checkbox" checked={session.askBeforeResume} onChange={e => setSessionPreferences({ askBeforeResume: e.target.checked })} /></label>
           <p className="bs-settings__note">Opening a folder does not start an agent. A saved conversation is not proof of a running process; a session removed by Claude may no longer be resumable.</p>
         </>}
+        {section === 'Recipes' && <RecipeSettings />}
       </main>
     </div>
   </dialog>, document.body)

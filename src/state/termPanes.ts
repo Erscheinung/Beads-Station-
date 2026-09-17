@@ -851,6 +851,30 @@ export function switchTab(index: number): void {
   emit()
 }
 
+/** Stable terminal-tab reorder. The tab objects (and every pane identity
+ * inside them) are retained; only their array position changes. */
+export function reorderTab(fromIndex: number, toIndex: number): void {
+  if (fromIndex < 0 || toIndex < 0 || fromIndex >= state.tabs.length || toIndex >= state.tabs.length || fromIndex === toIndex) return
+  const tabs = state.tabs.slice()
+  const [moved] = tabs.splice(fromIndex, 1)
+  tabs.splice(toIndex, 0, moved)
+  state = { ...state, tabs }
+  emit()
+}
+
+export function moveActiveTab(delta: -1 | 1): void {
+  const index = state.tabs.findIndex(tab => tab.id === state.activeTabId)
+  reorderTab(index, index + delta)
+}
+
+export function terminalTabIds(): string[] {
+  return state.tabs.map(tab => tab.id)
+}
+
+export function activeTerminalTabId(): string {
+  return state.activeTabId
+}
+
 export function cycleTab(delta: number): void {
   if (state.tabs.length < 2) return
   const idx = state.tabs.findIndex(t => t.id === state.activeTabId)

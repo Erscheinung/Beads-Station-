@@ -80,6 +80,23 @@ export interface BdSnapshotData {
   no_db: boolean;
 }
 
+export interface BdInitReport {
+  outcome: 'initialized' | 'bootstrapped' | 'already_exists'
+  target: string
+  command: string
+  message: string
+}
+
+/** Intent-only `bd init`/`bd bootstrap` wrapper. The backend refuses to
+ * reinitialize an existing store and verifies the result before resolving. */
+export async function bdInitialize(repoPath: string): Promise<BdInitReport> {
+  return (await safeInvoke<BdInitReport>(
+    'bd_initialize',
+    { repoPath },
+    { rethrow: true },
+  ))!
+}
+
 export async function bdSnapshot(repoPath: string): Promise<BdSnapshotData> {
   const r = (await safeInvoke<BdSnapshotData>(
     'bd_snapshot',

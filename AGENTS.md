@@ -1,5 +1,39 @@
 # Beads Station — agent handoff
 
+## Latest handoff — 2026-09-17, roadmap A4–A7 implementation
+
+The user authorized implementation after the 0.2 roadmap planning session.
+`main` now includes A4 commit `4fdae38` (`Add workspace finder and native Browse`)
+on top of the existing A2 commit `92ee4d7`. A3 durable terminal ownership remains
+open and unimplemented; do not invent a commit or claim live-process persistence.
+A4 remains open only for its packaged WKWebView/Finder Browse and warm-search gates.
+
+A5–A7 are implemented and tracked as closed in `Code-6un.5`, `.6`, and `.7`, but
+their source changes are uncommitted. Preserve them and the tracker update in
+`.beads/interactions.jsonl`; no push was made.
+
+- A5 adds canonical, intent-only Beads initialization/bootstrap with verified
+  `bd 1.2.2` arguments, existing-store refusal, error classification, duplicate
+  suppression, post-success verification/refresh, Board/Explorer actions, and a
+  rebindable command. Packaged real missing-binary/permission checks remain unrun.
+- A6 adds persisted workspace order, stable pointer/keyboard workspace and terminal
+  tab reorder, next/previous/direct selection and reorder commands, and accessible
+  announcements without replacing pane/session identities. The browser reload-ratio
+  soak passed twice for all 20 cycles at pane count 2 and ratio 0.421875. Native
+  fullscreen, real Neovim/IME, reduced-motion, and pointer-drag checks remain unrun.
+- A7 adds versioned schema-validated semantic recipes, recording only while explicit,
+  typed targets/arguments, import/export/migration, bounded undo, editor/binding UI,
+  authorization, cancellation/timeouts/recursion bounds, and a Review workspace
+  fixture. It never records raw terminal keys, clipboard, passwords, or provider
+  output. Packaged record/edit/import/export/replay evidence remains unrun.
+
+Evidence after integration: full Vitest `217/217`, focused A5/A6 `37/37`, focused
+A5/A7 `26/26`, recipe browser `1/1`, Rust Beads tests `14/14`, TypeScript/production
+build, Cargo check, and `git diff --check` passed. The first full browser run was
+`73/75`; its ambiguous Settings selector was corrected and passes focused `1/1`,
+while the layout soak passes focused twice. The full browser suite was not rerun
+after those focused checks, so do not record `75/75`.
+
 ## Current planning handoff — 2026-09-16, after v0.1.0
 
 Start with [the 0.1.x / 0.2.0 master plan](docs/roadmap-0.2/MASTER-PLAN.md),

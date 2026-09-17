@@ -19,6 +19,7 @@ import { useBdSnapshot } from '../lib/bdCache';
 import { useTreeNav } from '../hooks/useTreeNav';
 import { buildTree } from '../state/tree';
 import { projectLabelFor } from '../state/projectLabel';
+import { InitializeBeadsAction } from './InitializeBeadsAction';
 
 interface SidebarCursorDetail {
   delta?: number;
@@ -120,6 +121,7 @@ export function IssueList({ repoPath }: { repoPath: string }) {
         BEADS · {!loaded ? 'loading…' : snap.noDb ? 'no beads db · 0' : `${headerLabel} (${issues.length})`}
       </div>
       <div className="bs-issuelist-scroll" style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+        {loaded && snap.noDb && <InitializeBeadsAction repoPath={repoPath} compact />}
         <IssueTree
           roots={roots}
           flatRows={nav.rows}

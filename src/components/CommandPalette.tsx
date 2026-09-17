@@ -11,8 +11,10 @@ import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from 
 import { setSkin } from '../state/skin'
 import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
 import { closeFocusedPane } from './TerminalPanes'
-import { newTab, splitActive, unsplitToTabs, toggleZoom, focusPaneDirection, resizePane } from '../state/termPanes'
+import { newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab } from '../state/termPanes'
+import { initializeBeads } from '../lib/beadsInit'
 import { setFocused } from '../state/vim'
+import { dispatchSemanticCommand } from '../state/recipeIntegration'
 import './CommandPalette.css'
 
 // Phase 9 (Code-ky4.9) — cmdk command palette. Opens on Cmd/Ctrl+K or leader-k
@@ -30,7 +32,7 @@ type View = 'root' | 'projects' | 'ready' | 'grep' | 'newIssue' | 'themes' | 'la
 
 export function CommandPalette({ repoPath }: { repoPath: string }) {
   const { open } = usePalette()
-  const { projects, activeId, setActive, refresh } = useProjects()
+  const { projects, activeId, refresh } = useProjects()
   const snap = useBdSnapshot(repoPath)
   const activePaletteId = useThemePaletteId()
   const bindings = useCommandBindings()
@@ -58,9 +60,9 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
   }, [])
 
   const onSwitchProject = useCallback((id: string) => {
-    setActive(id)
+    dispatchSemanticCommand('workspace.select', { workspaceId: id }, { kind: 'workspace', workspaceId: id })
     dismiss()
-  }, [setActive, dismiss])
+  }, [dismiss])
 
   const onClaim = useCallback(async (id: string) => {
     setBusy(true)
@@ -118,6 +120,41 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       setView(id as View); openPalette(); return
     }
     dismiss()
+    if (id === 'initializeBeads') {
+      void initializeBeads(repoPath).catch(() => {})
+      return
+    }
+    if (id === 'workspacePrevious' || id === 'workspaceNext') {
+      window.dispatchEvent(new CustomEvent('workspace:navigate', { detail: { action: id === 'workspaceNext' ? 'next' : 'previous' } }))
+      return
+    }
+    if (id === 'workspaceMoveLeft' || id === 'workspaceMoveRight') {
+      window.dispatchEvent(new CustomEvent('workspace:navigate', { detail: { action: id === 'workspaceMoveLeft' ? 'move-left' : 'move-right' } }))
+      return
+    }
+    if (id.startsWith('workspaceSelect')) {
+      const index = Number(id.slice('workspaceSelect'.length)) - 1
+      window.dispatchEvent(new CustomEvent('workspace:navigate', { detail: { action: 'select', index } }))
+      return
+    }
+    if (id === 'terminalPrevious' || id === 'terminalNext') {
+      setSkin('terminal')
+      cycleTab(id === 'terminalNext' ? 1 : -1)
+      setFocused('terminal')
+      return
+    }
+    if (id === 'terminalMoveLeft' || id === 'terminalMoveRight') {
+      setSkin('terminal')
+      moveActiveTab(id === 'terminalMoveLeft' ? -1 : 1)
+      setFocused('terminal')
+      return
+    }
+    if (id.startsWith('terminalSelect')) {
+      setSkin('terminal')
+      switchTab(Number(id.slice('terminalSelect'.length)) - 1)
+      setFocused('terminal')
+      return
+    }
     switch (id) {
       case 'palette': openPalette(); break
       case 'settings': openSettings(); break
@@ -126,16 +163,16 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'designer': onSwitchToDesigner(); break
       case 'terminal': setSkin('terminal'); break
       case 'newTab': setSkin('terminal'); newTab(); setFocused('terminal'); break
-      case 'splitH': setSkin('terminal'); splitActive('h'); setFocused('terminal'); break
-      case 'splitV': setSkin('terminal'); splitActive('v'); setFocused('terminal'); break
+      case 'splitH': dispatchSemanticCommand('terminal.split', { direction: 'right' }, { kind: 'active-terminal' }); break
+      case 'splitV': dispatchSemanticCommand('terminal.split', { direction: 'down' }, { kind: 'active-terminal' }); break
       case 'unsplit': setSkin('terminal'); unsplitToTabs(); break
       case 'closePane': setSkin('terminal'); closeFocusedPane(); break
       case 'zoomPane': setSkin('terminal'); toggleZoom(); break
       case 'fullscreen': setSkin('terminal'); window.dispatchEvent(new CustomEvent('terminal:focus-toggle')); break
-      case 'focusLeft': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('left'); break
-      case 'focusRight': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('right'); break
-      case 'focusUp': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('up'); break
-      case 'focusDown': setSkin('terminal'); setFocused('terminal'); focusPaneDirection('down'); break
+      case 'focusLeft': dispatchSemanticCommand('terminal.focus', { direction: 'left' }, { kind: 'active-terminal' }); break
+      case 'focusRight': dispatchSemanticCommand('terminal.focus', { direction: 'right' }, { kind: 'active-terminal' }); break
+      case 'focusUp': dispatchSemanticCommand('terminal.focus', { direction: 'up' }, { kind: 'active-terminal' }); break
+      case 'focusDown': dispatchSemanticCommand('terminal.focus', { direction: 'down' }, { kind: 'active-terminal' }); break
       case 'resizeLeft': setSkin('terminal'); setFocused('terminal'); resizePane('left'); break
       case 'resizeRight': setSkin('terminal'); setFocused('terminal'); resizePane('right'); break
       case 'resizeUp': setSkin('terminal'); setFocused('terminal'); resizePane('up'); break
@@ -144,6 +181,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'files': onAction('filenav:spawn'); break
       case 'expand': case 'collapse': window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: id === 'expand' ? 'expandAll' : 'collapseAll' } })); break
       case 'hideExplorer': setUiPreferences({ sidebarCollapsed: true }); break
+      case 'showBoard': dispatchSemanticCommand('view.show', { view: 'board' }, { kind: 'view', view: 'board' }); break
     }
   }
   useEffect(() => {

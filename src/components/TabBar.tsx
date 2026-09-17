@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Project } from '../state/projects'
 import { useClaudeStatus, type ClaudeStatus } from '../state/claudeStatus'
 
@@ -6,6 +6,7 @@ interface TabBarProps {
   projects: Project[]
   activeId: string | null
   onSelect: (id: string) => void
+  onReorder?: (fromId: string, toId: string) => void
   onOpen?: () => void
   onClose?: (id: string) => void
 }
@@ -45,8 +46,10 @@ function TabStatusDot({ projectId }: { projectId: string }) {
  * horizontally with a thin custom scrollbar, and the active tab is scrolled
  * into view on selection change.
  */
-export function TabBar({ projects, activeId, onSelect, onOpen, onClose }: TabBarProps) {
+export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClose }: TabBarProps) {
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
+  const draggedId = useRef<string | null>(null)
+  const [announcement, setAnnouncement] = useState('')
 
   useEffect(() => {
     if (!activeId) return
@@ -56,9 +59,19 @@ export function TabBar({ projects, activeId, onSelect, onOpen, onClose }: TabBar
     }
   }, [activeId])
 
+  const moveWithKeyboard = (id: string, delta: -1 | 1) => {
+    const index = projects.findIndex(project => project.id === id)
+    const target = projects[index + delta]
+    if (!target || !onReorder) return
+    onReorder(id, target.id)
+    setAnnouncement(`${projects[index].name} moved ${delta < 0 ? 'before' : 'after'} ${target.name}`)
+  }
+
   return (
     <div
       className="bs-tabstrip"
+      role="tablist"
+      aria-label="Workspaces"
       style={{
         display: 'flex',
         flexDirection: 'row',
@@ -71,18 +84,53 @@ export function TabBar({ projects, activeId, onSelect, onOpen, onClose }: TabBar
         flexShrink: 0,
       }}
     >
+      <span role="status" aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{announcement}</span>
       {projects.map(p => {
         const active = p.id === activeId
         return (
           <div key={p.id} style={{ display: 'flex', flexShrink: 0, background: active ? 'var(--bs-bg-elev)' : 'transparent' }}>
           <button
+            draggable={Boolean(onReorder)}
             ref={el => {
               if (el) tabRefs.current.set(p.id, el)
               else tabRefs.current.delete(p.id)
             }}
             onClick={() => onSelect(p.id)}
+            onKeyDown={event => {
+              if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return
+              if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+              event.preventDefault()
+              moveWithKeyboard(p.id, event.key === 'ArrowLeft' ? -1 : 1)
+            }}
+            onDragStart={event => {
+              draggedId.current = p.id
+              event.dataTransfer.effectAllowed = 'move'
+              event.dataTransfer.setData('text/plain', p.id)
+            }}
+            onDragOver={event => {
+              if (draggedId.current && draggedId.current !== p.id) {
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+              }
+            }}
+            onDrop={event => {
+              event.preventDefault()
+              const from = draggedId.current ?? event.dataTransfer.getData('text/plain')
+              if (from && from !== p.id && onReorder) {
+                const fromProject = projects.find(project => project.id === from)
+                const relation = projects.findIndex(project => project.id === from) < projects.indexOf(p) ? 'after' : 'before'
+                onReorder(from, p.id)
+                setAnnouncement(`${fromProject?.name ?? 'Workspace'} moved ${relation} ${p.name}`)
+              }
+              draggedId.current = null
+            }}
+            onDragEnd={() => { draggedId.current = null }}
+            aria-posinset={projects.indexOf(p) + 1}
+            aria-setsize={projects.length}
             title={p.path}
             className={active ? 'bs-tab bs-tab--active' : 'bs-tab'}
+            role="tab"
+            aria-selected={active}
             style={{
               display: 'flex',
               alignItems: 'center',

@@ -7,6 +7,7 @@
 // wrapper is promoted to position:absolute/inset:0 over the region while
 // siblings are visually hidden. Nothing unmounts.
 
+import { useRef, useState } from 'react'
 import './TerminalPanes.css'
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
@@ -23,7 +24,7 @@ import {
   focusPane,
   setInsert,
   setRatio,
-  switchTab,
+  switchTab, reorderTab,
   type Node,
   type Leaf,
 } from '../state/termPanes'
@@ -332,6 +333,8 @@ function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
 
 export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused: boolean; fullscreen?: boolean }) {
   const { tabs, activeTabId, insert } = useTermPanes()
+  const draggedTab = useRef<string | null>(null)
+  const [announcement, setAnnouncement] = useState('')
   const zoomed = useZoom()
   const tab = tabs.find(t => t.id === activeTabId) ?? tabs[0]
   const visibleZoom = leavesOf(tab.root).some(l => l.paneId === zoomed) ? zoomed : null
@@ -366,6 +369,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
             overflowX: 'auto',
           }}
         >
+          <span role="status" aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{announcement}</span>
           {tabs.map((t, i) => {
             const activeLeaf = leavesOf(t.root).find(l => l.paneId === t.activePaneId)
             const kind = activeLeaf?.agent ? 'agent' : activeLeaf?.fileNav ? 'files' : 'shell'
@@ -377,7 +381,41 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
                 role="tab"
                 aria-label={name}
                 aria-selected={selected}
+                aria-posinset={i + 1}
+                aria-setsize={tabs.length}
+                draggable
                 onClick={() => switchTab(i)}
+                onKeyDown={event => {
+                  if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return
+                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+                  const target = i + (event.key === 'ArrowLeft' ? -1 : 1)
+                  if (target < 0 || target >= tabs.length) return
+                  event.preventDefault()
+                  reorderTab(i, target)
+                  setAnnouncement(`${name} moved ${event.key === 'ArrowLeft' ? 'before' : 'after'} terminal tab ${target + 1}`)
+                }}
+                onDragStart={event => {
+                  draggedTab.current = t.id
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('text/plain', t.id)
+                }}
+                onDragOver={event => {
+                  if (draggedTab.current && draggedTab.current !== t.id) {
+                    event.preventDefault()
+                    event.dataTransfer.dropEffect = 'move'
+                  }
+                }}
+                onDrop={event => {
+                  event.preventDefault()
+                  const fromId = draggedTab.current ?? event.dataTransfer.getData('text/plain')
+                  const fromIndex = tabs.findIndex(tab => tab.id === fromId)
+                  if (fromIndex >= 0 && fromIndex !== i) {
+                    reorderTab(fromIndex, i)
+                    setAnnouncement(`Terminal tab ${fromIndex + 1} moved ${fromIndex < i ? 'after' : 'before'} terminal tab ${i + 1}`)
+                  }
+                  draggedTab.current = null
+                }}
+                onDragEnd={() => { draggedTab.current = null }}
                 style={{
                   padding: '2px 10px',
                   fontSize: 10,

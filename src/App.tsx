@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges } from './state/termPanes'
+import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges, splitActive, focusPaneDirection } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -26,6 +26,8 @@ import { useCommandBindings, shortcutLabel } from './state/commands'
 import { setBeadsView, setUiPreferences, useUiPreferences, type BeadsView } from './state/uiPreferences'
 import { clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
 import { providerAvailability, providerLabel, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from './state/chatProviders'
+import { reorderWorkspace, useWorkspaceOrder } from './state/workspaceOrder'
+import { dispatchSemanticCommand, getRecipeRuntimeContext, setRecipeRuntimeContext, useRecipeRecording } from './state/recipeIntegration'
 
 // Code-mkv — per-project terminal strip height. Falls back to the legacy global
 // key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
@@ -52,6 +54,11 @@ export default function App() {
   const vim = useVim()
   const skin = useSkin()
   const { projects, activeId, setActive, closeProject } = useProjects()
+  const workspaceIds = projects.map(project => project.id)
+  const persistedWorkspaceOrder = useWorkspaceOrder(workspaceIds)
+  const orderedProjects = persistedWorkspaceOrder
+    .map(id => projects.find(project => project.id === id))
+    .filter((project): project is typeof projects[number] => project != null)
   const active = projects.find(p => p.id === activeId) ?? null
   const [pickerOpen, setPickerOpen] = useState(false)
   const closePicker = useCallback(() => setPickerOpen(false), [])
@@ -110,6 +117,7 @@ export default function App() {
   const sessionPrefs = useSessionPreferences()
   const interactiveChatProvider = useInteractiveChatProvider()
   const providerStatuses = useNativeProviderAvailability()
+  const recipeRecording = useRecipeRecording()
 
   // Phase 6 — pull permissionMode for the active project so we can thread
   // it into ClaudeChat. The hook is called unconditionally with a stable
@@ -126,22 +134,109 @@ export default function App() {
     if (active) setActiveProject(active.id, active.path)
   }, [active])
 
+  // Recipe commands use this one semantic boundary for both manual actions and
+  // replay. The listener only receives typed app commands; terminal keystrokes
+  // and provider output never enter the recipe system.
+  useEffect(() => {
+    const onSemanticCommand = (event: Event) => {
+      const detail = (event as CustomEvent<{ commandId?: string; args?: Record<string, unknown> }>).detail
+      if (!detail?.commandId || !detail.args) return
+      switch (detail.commandId) {
+        case 'workspace.select':
+        case 'workspace.open': {
+          const workspaceId = detail.args.workspaceId
+          if (typeof workspaceId === 'string' && projects.some(project => project.id === workspaceId)) {
+            setActive(workspaceId)
+            // Keep recipe replay's synchronous context boundary aligned with
+            // the project-surface switch before React effects run.
+            setRecipeRuntimeContext({ ...getRecipeRuntimeContext(), workspaceId }, workspaceIds)
+          }
+          return
+        }
+        case 'terminal.split': {
+          const direction = detail.args.direction
+          if (direction !== 'right' && direction !== 'down') return
+          setSkin('terminal')
+          splitActive(direction === 'right' ? 'h' : 'v')
+          setFocused('terminal')
+          return
+        }
+        case 'terminal.focus': {
+          const direction = detail.args.direction
+          if (direction !== 'left' && direction !== 'right' && direction !== 'up' && direction !== 'down') return
+          setSkin('terminal')
+          setFocused('terminal')
+          focusPaneDirection(direction)
+          return
+        }
+        case 'view.show': {
+          const view = detail.args.view
+          if (view === 'board' || view === 'explorer' || view === 'terminal-only' || view === 'both') setBeadsView(view)
+          return
+        }
+      }
+    }
+    window.addEventListener('bs:semantic-command', onSemanticCommand)
+    return () => window.removeEventListener('bs:semantic-command', onSemanticCommand)
+  }, [projects, setActive])
+
+  useEffect(() => {
+    setRecipeRuntimeContext({
+      workspaceId: active?.id ?? null,
+      terminalId: active ? 'active' : null,
+      view: uiPrefs.view === 'board' || uiPrefs.view === 'both' ? 'board' : 'terminal',
+      fullscreen: terminalFocus,
+    }, workspaceIds)
+  }, [active?.id, terminalFocus, uiPrefs.view, workspaceIds.join('|')])
+
   // <leader>p and Shift-Tab / Ctrl-Shift-Tab — cycle projects. Wraps both ways.
   // The custom event carries an optional direction (default +1) so the same
   // handler serves forward (leader-p) and backward (Shift-Tab) cycling. This
   // keeps useVimNav decoupled from project state.
   useEffect(() => {
     const onCycle = (e: Event) => {
-      if (projects.length === 0) { setPickerOpen(true); return }
+      if (orderedProjects.length === 0) { setPickerOpen(true); return }
       const dir = (e as CustomEvent<{ dir?: number }>).detail?.dir ?? 1
-      const idx = projects.findIndex(p => p.id === activeId)
-      const n = projects.length
-      const next = projects[((idx + dir) % n + n) % n]
+      const idx = orderedProjects.findIndex(p => p.id === activeId)
+      const n = orderedProjects.length
+      const next = orderedProjects[((idx + dir) % n + n) % n]
       if (next) setActive(next.id)
     }
     window.addEventListener('project:cycle', onCycle)
     return () => window.removeEventListener('project:cycle', onCycle)
-  }, [projects, activeId, setActive])
+  }, [orderedProjects, activeId, setActive])
+
+  // A6 — workspace next/previous/direct-select/reorder commands are routed as
+  // semantic events so the command palette and configurable keymap share one
+  // implementation. Reordering changes only tab order; project IDs and pane
+  // surfaces remain untouched.
+  useEffect(() => {
+    const onCommand = (e: Event) => {
+      const detail = (e as CustomEvent<{ action?: string; index?: number }>).detail ?? {}
+      const action = detail.action
+      if (!action) return
+      if (action === 'next' || action === 'previous') {
+        if (orderedProjects.length === 0) { setPickerOpen(true); return }
+        const direction = action === 'next' ? 1 : -1
+        const index = orderedProjects.findIndex(project => project.id === activeId)
+        const next = orderedProjects[((index + direction) % orderedProjects.length + orderedProjects.length) % orderedProjects.length]
+        if (next) setActive(next.id)
+        return
+      }
+      if (action === 'select' && typeof detail.index === 'number') {
+        const target = orderedProjects[detail.index]
+        if (target) setActive(target.id)
+        return
+      }
+      if ((action === 'move-left' || action === 'move-right') && activeId) {
+        const index = orderedProjects.findIndex(project => project.id === activeId)
+        const target = orderedProjects[index + (action === 'move-left' ? -1 : 1)]
+        if (target) reorderWorkspace(activeId, target.id)
+      }
+    }
+    window.addEventListener('workspace:navigate', onCommand)
+    return () => window.removeEventListener('workspace:navigate', onCommand)
+  }, [orderedProjects, activeId, setActive])
 
   useEffect(() => {
     const onOpen = () => setPickerOpen(true)
@@ -389,7 +484,13 @@ export default function App() {
 
   const showExplorer = uiPrefs.view === 'explorer' || uiPrefs.view === 'both'
   const showBoard = uiPrefs.view === 'board' || uiPrefs.view === 'both'
-  const switchView = (view: BeadsView) => setBeadsView(view)
+  const switchView = (view: BeadsView) => {
+    const semanticView = view === 'terminal-only' || view === 'explorer' || view === 'board' || view === 'both' ? view : 'terminal-only'
+    dispatchSemanticCommand('view.show', { view: semanticView }, { kind: 'view', view: semanticView === 'terminal-only' ? 'terminal' : semanticView === 'explorer' ? 'files' : 'board' })
+  }
+  const selectWorkspace = (id: string) => {
+    dispatchSemanticCommand('workspace.select', { workspaceId: id }, { kind: 'workspace', workspaceId: id })
+  }
 
   return (
     <BdLiveProvider>
@@ -413,6 +514,7 @@ export default function App() {
         <header className="bs-toolbar bs-app-chrome">
           <span className="bs-toolbar__brand">BEADS STATION</span>
           <button onClick={openPalette} title="Open command palette">Commands <kbd>{shortcutLabel(commandBindings.palette)}</kbd></button>
+          {recipeRecording.status === 'recording' && <button aria-label="Recipe recording active; open recipe settings to stop" onClick={() => { openSettings(); window.dispatchEvent(new Event('recipes:open')) }} title="Recipe recording is active">● Recording · {recipeRecording.stepCount}</button>}
           <button onClick={() => setSkin('designer')}>Designer</button>
           <label className="bs-toolbar__select">View
             <select aria-label="Beads view" value={uiPrefs.view} onChange={e => switchView(e.target.value as BeadsView)}>
@@ -437,7 +539,7 @@ export default function App() {
           <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
         </header>
         <div className="bs-app-chrome">
-          <TabBar projects={projects} activeId={activeId} onSelect={setActive} onOpen={() => setPickerOpen(true)} onClose={id => {
+          <TabBar projects={orderedProjects} activeId={activeId} onSelect={selectWorkspace} onReorder={reorderWorkspace} onOpen={() => setPickerOpen(true)} onClose={id => {
             setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
             void closeProject(id)
           }} />

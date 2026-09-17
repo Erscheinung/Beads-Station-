@@ -70,6 +70,13 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return 'main'
     case 'bd_prime':
       return ''
+    case 'bd_initialize':
+      return {
+        outcome: 'initialized',
+        target: (args?.repoPath as string) ?? '/tmp/beads-station',
+        command: 'bd init --role maintainer',
+        message: 'Beads initialized in the selected workspace.',
+      }
 
     // Code-9d8 — Gateway spend aggregate. A live value so the CostMeter's
     // right-aligned `day/mo` row renders in the harness. The real command reads
