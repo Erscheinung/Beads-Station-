@@ -14,6 +14,7 @@ import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
 import { bdCreate, bdNote, type Issue } from '../../types/issue'
 import { cancelNativeRun, reconcileNativeRuns, startNativeRun, useNativeRun, type NativeProvider } from './nativeRuns'
+import { approveArtifact, captureArtifact, requestArtifactChanges, useArtifactReview, type ArtifactRevision } from './artifacts'
 import { openPalette } from '../../state/palette'
 import { openSettings } from '../../state/settings'
 
@@ -276,9 +277,18 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
   const [provider, setProvider] = useState<NativeProvider>('claude')
   const [providers, setProviders] = useState<ProviderAvailability[]>([])
   const [feedback, setFeedback] = useState('')
+  const [artifactBusy, setArtifactBusy] = useState(false)
+  const [artifactError, setArtifactError] = useState<string | null>(null)
   const runKey = `${project?.id ?? 'missing'}:${issue.id}`
   const run = useNativeRun(runKey, project?.id ?? 'missing', issue.id)
   const { status, output } = run
+  const artifactIdentity = {
+    workspaceId: run.workspaceId,
+    ticketId: run.ticketId,
+    runId: run.runId ?? '',
+    attemptId: run.attemptId ?? '',
+  }
+  const review = useArtifactReview(artifactIdentity, status)
   const availability = providers.find(p => p.provider === provider)
   const prompt = useMemo(() => [
     `Work on ticket ${issue.id}: ${issue.title}`,
@@ -316,6 +326,33 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
     await cancelNativeRun(runKey)
   }
 
+  const capture = async () => {
+    if (!project || status !== 'needs_review' || !run.runId || !run.attemptId) return
+    setArtifactBusy(true); setArtifactError(null)
+    try { await captureArtifact(artifactIdentity, run.cwd || project.path) }
+    catch (error) { setArtifactError(String(error)) }
+    finally { setArtifactBusy(false) }
+  }
+
+  const approve = async () => {
+    if (!review.revision) return
+    setArtifactBusy(true); setArtifactError(null)
+    try { await approveArtifact(review.revision, status) }
+    catch (error) { setArtifactError(String(error)) }
+    finally { setArtifactBusy(false) }
+  }
+
+  const requestChanges = () => {
+    const text = feedback.trim()
+    if (!text || !run.runId || !run.attemptId) return
+    try {
+      requestArtifactChanges(artifactIdentity, text)
+      setFeedback('')
+      setArtifactError(null)
+      void start(text)
+    } catch (error) { setArtifactError(String(error)) }
+  }
+
   return (
     <section style={styles.requestDetail} data-testid="designer-ticket-run">
       <button style={styles.skinBtn} onClick={onBack}>← Back to requests</button>
@@ -347,12 +384,30 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
       </div>
       {status === 'needs_review' && <div style={styles.reviewBox}>
         <strong>Run finished; review is required.</strong>
-        <span>Approval is unavailable until this run has a captured artifact revision. Completion has not been claimed.</span>
+        <span>Approval is available only for this exact run and an immutable workspace capture. Completion has not been claimed.</span>
+        <div style={styles.runActions}>
+          <button style={styles.skinBtn} disabled={artifactBusy || Boolean(review.approval)} onClick={() => void capture()}>{artifactBusy ? 'Capturing…' : review.revision ? 'Recapture artifact' : 'Capture artifact'}</button>
+          <button style={styles.primaryBtn} disabled={artifactBusy || !review.revision || Boolean(review.approval)} onClick={() => void approve()}>{review.approval ? 'Approved exact revision' : 'Approve revision'}</button>
+        </div>
+        {review.revision && <ArtifactReview revision={review.revision} approval={Boolean(review.approval)} />}
+        {review.feedback.length > 0 && <div style={styles.feedbackHistory}><strong>Revision feedback</strong>{review.feedback.map(item => <p key={item.feedbackId}>{item.text}</p>)}</div>}
         <textarea value={feedback} onChange={e => setFeedback(e.target.value)} placeholder="Describe what should change" style={styles.feedback} />
-        <button style={styles.skinBtn} disabled={!feedback.trim()} onClick={() => { void start(feedback.trim()); setFeedback('') }}>Request changes</button>
+        <button style={styles.skinBtn} disabled={!feedback.trim() || artifactBusy} onClick={requestChanges}>Request changes</button>
+        {artifactError && <span style={{ color: 'var(--bs-red)' }}>{artifactError}</span>}
       </div>}
     </section>
   )
+}
+
+function ArtifactReview({ revision, approval }: { revision: ArtifactRevision; approval: boolean }) {
+  return <div style={styles.artifactReview} data-testid="designer-artifact-review">
+    <div style={styles.artifactHeader}><strong>Artifact revision {revision.revisionId}</strong><span style={styles.requestMeta}>hash {revision.revisionHash}</span>{approval && <span style={{ color: 'var(--bs-green)' }}>Approved</span>}</div>
+    <p style={styles.requestMeta}>Captured {new Date(revision.capturedAt).toLocaleString()} · {revision.files.length} changed file{revision.files.length === 1 ? '' : 's'}{revision.sourceRevision ? ` · source ${revision.sourceRevision.slice(0, 12)}` : ''}</p>
+    <ul style={styles.artifactManifest}>{revision.files.map(file => <li key={file.path}><code>{file.status || 'changed'}</code> <span>{file.path}</span>{file.truncated && <em> (preview truncated)</em>}</li>)}</ul>
+    <div style={styles.validationList}><strong>Validation evidence</strong>{revision.validation.length > 0 ? revision.validation.map((item, index) => <span key={index}>{item}</span>) : <span>No independent checks were captured for this revision.</span>}</div>
+    {revision.diff && <details><summary>Diff preview</summary><pre style={styles.artifactPreview}>{revision.diff}</pre></details>}
+    {!revision.diff && revision.files.map(file => file.content != null && <details key={file.path}><summary>{file.path} preview{file.binary ? ' (binary)' : ''}</summary><pre style={styles.artifactPreview}>{file.content}</pre></details>)}
+  </div>
 }
 
 // ── Inline styles ─────────────────────────────────────────────────────────────
@@ -544,6 +599,12 @@ const styles: Record<string, React.CSSProperties> = {
   runOutput: { minHeight: 160, maxHeight: 360, overflow: 'auto', padding: 16, borderRadius: 10, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg-muted)', whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.55 },
   reviewBox: { display: 'flex', flexDirection: 'column', gap: 10, padding: 16, borderRadius: 10, border: '1px solid var(--bs-yellow)', color: 'var(--bs-fg)' },
   feedback: { minHeight: 72, padding: 10, borderRadius: 7, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg)', fontFamily: 'var(--du-font-sans)', resize: 'vertical' },
+  artifactReview: { display: 'flex', flexDirection: 'column', gap: 8, padding: 12, borderRadius: 8, border: '1px solid var(--bs-border)', background: 'var(--bs-bg-dark)' },
+  artifactHeader: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  artifactManifest: { margin: 0, paddingLeft: 20, maxHeight: 160, overflow: 'auto', fontSize: 12, lineHeight: 1.5 },
+  artifactPreview: { maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: '8px 0 0', padding: 10, borderRadius: 6, background: 'var(--bs-bg)', color: 'var(--bs-fg-muted)', fontSize: 11 },
+  validationList: { display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, color: 'var(--bs-fg-muted)' },
+  feedbackHistory: { display: 'flex', flexDirection: 'column', gap: 4, padding: 8, borderLeft: '2px solid var(--bs-border)', color: 'var(--bs-fg-muted)', fontSize: 12 },
   viewPlaceholder: {
     flex: 1,
     display: 'flex',

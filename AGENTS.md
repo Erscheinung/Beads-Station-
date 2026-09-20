@@ -1,5 +1,35 @@
 # Beads Station — agent handoff
 
+## Latest handoff — 2026-09-20, Designer artifact review slice
+
+Roadmap B3 artifact/revision work is implemented under `Code-am5.2`; the bead is
+closed, while B1 durable orchestration, B2 harness profiles, the remainder of B3,
+and packaged real-provider acceptance remain open. The implementation was delegated
+to Luna, then reviewed and corrected by the primary agent as explicitly requested.
+
+- Designer request detail can capture, recapture, inspect, and locally approve an
+  exact artifact revision after the authoritative native run reaches
+  `needs_review`. Manifest identity includes workspace, ticket, run, attempt, source
+  Git revision, relative paths, content hashes, and capture time.
+- Rust owns an atomic app-data ledger and revalidates both native-run identity/cwd
+  and current workspace hashes before approval. A new run cannot race capture or
+  approval. Browser state is only a lightweight cache and reconciles from Rust.
+- Supported captures are deliberately bounded to 256 UTF-8 files, 256 KiB per file,
+  and 4 MiB total frozen content. Traversal, changed symlinks, binary files, oversized
+  content, oversized status output, and incomplete manifests fail instead of being
+  silently approved. Text/diff previews are escaped inert content; no project HTML
+  executes with Tauri privileges.
+- Revision feedback is retained, a new attempt invalidates the prior actionable
+  approval, stale or mutated artifacts are rejected, and approval is local only: it
+  does not publish, merge, post, or start a model. No independent validation result
+  is fabricated when the run supplies none.
+
+Evidence: full Vitest `222/222`, full Rust `116/116`, full Chromium/mock `78/78`,
+production build, Cargo check, focused artifact/native-run suites, debug macOS app
+bundle, and `git diff --check` passed. No provider/auth/credential work call or push
+was made. The packaged app was built but the real WKWebView request → provider run →
+artifact → revision → approval journey was not exercised; keep that as a B3/B6 gate.
+
 ## Latest handoff — 2026-09-17, roadmap A4–A7 implementation
 
 The user authorized implementation after the 0.2 roadmap planning session.

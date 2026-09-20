@@ -11,6 +11,8 @@ export interface NativeRunState {
   workspaceId: string
   ticketId: string
   attemptId: string | null
+  /** Exact workspace root supplied to the owned native child. */
+  cwd: string
   provider: NativeProvider
   status: NativeRunStatus
   output: string[]
@@ -22,6 +24,7 @@ interface NativeRunSnapshot {
   workspaceId: string
   ticketId: string
   attemptId: string
+  cwd?: string
   provider: NativeProvider
   status: NativeRunStatus
   events: NativeRunEvent[]
@@ -44,6 +47,7 @@ try {
     workspaceId: run.workspaceId ?? run.key.split(':')[0] ?? '',
     ticketId: run.ticketId ?? '',
     attemptId: run.attemptId ?? null,
+    cwd: run.cwd ?? '',
     status: run.status === 'running' || run.status === 'starting' ? 'unknown' : run.status,
   }]))
 } catch { /* corrupt summaries do not block requests */ }
@@ -53,7 +57,7 @@ function emit() {
   listeners.forEach(listener => listener())
 }
 function setRun(key: string, patch: Partial<NativeRunState>) {
-  const current = states.get(key) ?? { key, runId: null, workspaceId: '', ticketId: '', attemptId: null, provider: 'claude', status: 'idle', output: [] }
+  const current = states.get(key) ?? { key, runId: null, workspaceId: '', ticketId: '', attemptId: null, cwd: '', provider: 'claude', status: 'idle', output: [] }
   states = new Map(states).set(key, { ...current, ...patch })
   emit()
 }
@@ -147,7 +151,7 @@ export async function reconcileNativeRuns(workspaceId: string) {
       if (generationChanged || differentRetainedTerminal) return false
       setRun(key, {
         runId: snapshot.runId, workspaceId: snapshot.workspaceId, ticketId: snapshot.ticketId,
-        attemptId: snapshot.attemptId, provider: snapshot.provider,
+        attemptId: snapshot.attemptId, cwd: snapshot.cwd || current?.cwd || '', provider: snapshot.provider,
       })
       mergeSnapshot(key, snapshot)
       candidates.set(snapshot.runId, { key, runId: snapshot.runId })
@@ -227,7 +231,7 @@ async function reconcileNativeRunsFresh(workspaceId: string) {
 export async function startNativeRun(key: string, args: { runId: string; workspaceId: string; ticketId: string; attemptId: string; provider: NativeProvider; cwd: string; prompt: string }) {
   if (['starting', 'running', 'unknown'].includes(states.get(key)?.status ?? 'idle')) return
   keyGenerations.set(key, (keyGenerations.get(key) ?? 0) + 1)
-  setRun(key, { runId: args.runId, workspaceId: args.workspaceId, ticketId: args.ticketId, attemptId: args.attemptId, provider: args.provider, status: 'starting', output: [] })
+  setRun(key, { runId: args.runId, workspaceId: args.workspaceId, ticketId: args.ticketId, attemptId: args.attemptId, cwd: args.cwd, provider: args.provider, status: 'starting', output: [] })
   eventHistory.set(args.runId, new Map())
   snapshotAuthorities.delete(args.runId)
   let listenerReady = true
@@ -269,7 +273,7 @@ export async function cancelNativeRun(key: string) {
 export function useNativeRun(key: string, workspaceId: string, ticketId: string): NativeRunState {
   let empty = emptyStates.get(key)
   if (!empty) {
-    empty = { key, runId: null, workspaceId, ticketId, attemptId: null, provider: 'claude', status: 'idle', output: [] }
+    empty = { key, runId: null, workspaceId, ticketId, attemptId: null, cwd: '', provider: 'claude', status: 'idle', output: [] }
     emptyStates.set(key, empty)
   }
   useEffect(() => { void reconcileNativeRuns(workspaceId) }, [workspaceId])

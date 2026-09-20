@@ -55,7 +55,7 @@ describe('designer native run reconciliation', () => {
   it('closes the discovery gap for a backend-only run', async () => {
     const runId = 'workspace-b:Code-two:attempt-two'
     const snapshot = [{
-      runId, workspaceId: 'workspace-b', ticketId: 'Code-two', attemptId: 'attempt-two', provider: 'claude', status: 'running',
+      runId, workspaceId: 'workspace-b', ticketId: 'Code-two', attemptId: 'attempt-two', cwd: '/authoritative/workspace-b', provider: 'claude', status: 'running',
       events: [{ seq: 1, kind: 'output', parsed: { text: 'discovered' } }],
     }]
     const handlers = new Map<string, (event: { payload: any }) => void>()
@@ -77,7 +77,7 @@ describe('designer native run reconciliation', () => {
 
     const saved = JSON.parse(localStorage.getItem('beads-station.designer-runs.v1')!)[0]
     expect(saved.output).toEqual(['discovered', 'during-attach'])
-    expect(saved).toMatchObject({ runId, attemptId: 'attempt-two', status: 'running' })
+    expect(saved).toMatchObject({ runId, attemptId: 'attempt-two', cwd: '/authoritative/workspace-b', status: 'running' })
     expect(invoke).toHaveBeenCalledTimes(2)
   })
 

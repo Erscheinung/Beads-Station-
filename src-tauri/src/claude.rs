@@ -134,6 +134,7 @@ struct NativeRun {
     workspace_id: String,
     ticket_id: String,
     attempt_id: String,
+    cwd: String,
     provider: String,
     events: VecDeque<Value>,
     next_seq: u64,
@@ -147,6 +148,12 @@ static NATIVE_RUNS: Lazy<Mutex<HashMap<String, NativeRun>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static NATIVE_TERMINALS: Lazy<Mutex<VecDeque<NativeRunSnapshot>>> =
     Lazy::new(|| Mutex::new(VecDeque::new()));
+static NATIVE_REVIEW_ACTIONS: Lazy<Arc<Mutex<()>>> =
+    Lazy::new(|| Arc::new(Mutex::new(())));
+
+pub(crate) async fn lock_native_review_action() -> tokio::sync::OwnedMutexGuard<()> {
+    NATIVE_REVIEW_ACTIONS.clone().lock_owned().await
+}
 
 fn native_ticket_is_reserved(runs: &HashMap<String, NativeRun>, workspace_id: &str, ticket_id: &str) -> bool {
     runs.values().any(|run| run.workspace_id == workspace_id && run.ticket_id == ticket_id)
@@ -161,6 +168,7 @@ pub struct NativeRunSnapshot {
     workspace_id: String,
     ticket_id: String,
     attempt_id: String,
+    cwd: String,
     provider: String,
     status: String,
     events: Vec<Value>,
@@ -201,6 +209,7 @@ async fn retain_native_terminal(runs: &mut HashMap<String, NativeRun>, run_id: &
         workspace_id: run.workspace_id,
         ticket_id: run.ticket_id,
         attempt_id: run.attempt_id,
+        cwd: run.cwd,
         provider: run.provider,
         status: status.into(),
         events: run.events.into_iter().collect(),
@@ -231,6 +240,7 @@ pub async fn native_run_snapshot(workspace_id: String) -> Result<Vec<NativeRunSn
                 workspace_id: run.workspace_id.clone(),
                 ticket_id: run.ticket_id.clone(),
                 attempt_id: run.attempt_id.clone(),
+                cwd: run.cwd.clone(),
                 provider: run.provider.clone(),
                 status: status.into(),
                 events: run.events.iter().cloned().collect(),
@@ -240,6 +250,46 @@ pub async fn native_run_snapshot(workspace_id: String) -> Result<Vec<NativeRunSn
     let mut snapshots: Vec<_> = by_ticket.into_values().collect();
     snapshots.sort_by(|a, b| a.run_id.cmp(&b.run_id));
     Ok(snapshots)
+}
+
+/// Prove that an artifact command targets the authoritative terminal attempt.
+/// Frontend state is only a projection and cannot authorize capture/approval.
+pub(crate) async fn ensure_native_run_reviewable(
+    workspace_id: &str,
+    ticket_id: &str,
+    run_id: &str,
+    attempt_id: &str,
+    workspace_path: &std::path::Path,
+) -> Result<(), String> {
+    let runs = NATIVE_RUNS.lock().await;
+    if runs.values().any(|run| run.workspace_id == workspace_id && run.ticket_id == ticket_id) {
+        return Err(format!(
+            "ticket {ticket_id} still has an active or unreconciled native run"
+        ));
+    }
+    let terminals = NATIVE_TERMINALS.lock().await;
+    let snapshot = terminals
+        .iter()
+        .find(|snapshot| snapshot.run_id == run_id)
+        .ok_or_else(|| format!("run {run_id} is not available for artifact review"))?;
+    if snapshot.workspace_id != workspace_id
+        || snapshot.ticket_id != ticket_id
+        || snapshot.attempt_id != attempt_id
+    {
+        return Err("artifact identity does not match the native run".into());
+    }
+    if snapshot.status != "needs_review" {
+        return Err(format!(
+            "run {run_id} is {}, not needs_review",
+            snapshot.status
+        ));
+    }
+    let recorded = std::fs::canonicalize(&snapshot.cwd)
+        .map_err(|error| format!("recorded workspace path: {error}"))?;
+    if recorded != workspace_path {
+        return Err("artifact workspace does not match the native run".into());
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -283,6 +333,9 @@ pub async fn native_run_start(
     cwd: String,
     prompt: String,
 ) -> Result<(), String> {
+    // Starting the next attempt and approving/capturing the prior one are
+    // mutually exclusive ticket-review transitions.
+    let _review_guard = lock_native_review_action().await;
     if [run_id.as_str(), workspace_id.as_str(), ticket_id.as_str(), attempt_id.as_str()]
         .iter().any(|value| value.trim().is_empty()) || prompt.trim().is_empty()
     {
@@ -342,6 +395,7 @@ pub async fn native_run_start(
         workspace_id,
         ticket_id,
         attempt_id,
+        cwd,
         provider: provider.clone(),
         events: VecDeque::new(),
         next_seq: 1,
@@ -1058,6 +1112,7 @@ mod tests {
             workspace_id: workspace_id.into(),
             ticket_id: ticket_id.into(),
             attempt_id: attempt_id.into(),
+            cwd: "/tmp".into(),
             provider: "fake".into(),
             events: VecDeque::new(),
             next_seq: 1,
@@ -1088,6 +1143,61 @@ mod tests {
         // through this boundary.
         assert!(validate_permission_mode("bypassPermissions").is_err());
         assert!(validate_permission_mode("garbage").is_err());
+    }
+
+    #[tokio::test]
+    async fn artifact_review_requires_the_exact_successful_terminal_attempt() {
+        let run_id = format!("artifact-review-{}", std::process::id());
+        let cwd = std::fs::canonicalize("/tmp").unwrap();
+        NATIVE_TERMINALS.lock().await.push_back(NativeRunSnapshot {
+            run_id: run_id.clone(),
+            workspace_id: "workspace-artifact".into(),
+            ticket_id: "Code-artifact".into(),
+            attempt_id: "attempt-artifact".into(),
+            cwd: cwd.to_string_lossy().into_owned(),
+            provider: "fake".into(),
+            status: "failed".into(),
+            events: Vec::new(),
+        });
+        assert!(ensure_native_run_reviewable(
+            "workspace-artifact",
+            "Code-artifact",
+            &run_id,
+            "attempt-artifact",
+            &cwd,
+        )
+        .await
+        .unwrap_err()
+        .contains("not needs_review"));
+        NATIVE_TERMINALS
+            .lock()
+            .await
+            .iter_mut()
+            .find(|snapshot| snapshot.run_id == run_id)
+            .unwrap()
+            .status = "needs_review".into();
+        assert!(ensure_native_run_reviewable(
+            "workspace-artifact",
+            "Code-artifact",
+            &run_id,
+            "wrong-attempt",
+            &cwd,
+        )
+        .await
+        .is_err());
+        ensure_native_run_reviewable(
+            "workspace-artifact",
+            "Code-artifact",
+            &run_id,
+            "attempt-artifact",
+            &cwd,
+        )
+        .await
+        .unwrap();
+        NATIVE_TERMINALS
+            .lock()
+            .await
+            .retain(|snapshot| snapshot.run_id != run_id);
     }
 
     // RV2 compound-key contract: MODES is keyed by BRIDGE id, not project id.

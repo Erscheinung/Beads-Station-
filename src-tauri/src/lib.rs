@@ -6,6 +6,7 @@
 
 mod bd;
 mod app_lifecycle;
+mod artifacts;
 mod binresolve;
 mod claude;
 mod codex;
@@ -195,6 +196,10 @@ pub fn run() {
             app_lifecycle::app_close_scope,
             app_lifecycle::app_resolve_close,
             app_lifecycle::app_recover_stale_sessions,
+            artifacts::artifact_capture,
+            artifacts::artifact_review,
+            artifacts::artifact_verify,
+            artifacts::artifact_approve,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
