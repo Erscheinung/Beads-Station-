@@ -18,11 +18,11 @@ A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agent
 
 The Designer screenshot demonstrates the intended information architecture and visual direction, including graph cards that expand for wrapped titles while preserving spacing and connector alignment. Its controls and workflow should not be treated as production-ready behavior.
 
-## Install the v0.1.0 preview
+## Install the v0.1.3 preview
 
-The first release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.0_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.3_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
 
-Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.0 release notes](docs/releases/v0.1.0.md) for the verified feature list, known limitations, test checklist, and future plans.
+Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.3 release notes](docs/releases/v0.1.3.md) for the verified feature list, known limitations, test checklist, and future plans.
 
 ## Current foundation
 
