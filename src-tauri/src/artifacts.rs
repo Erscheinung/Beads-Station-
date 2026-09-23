@@ -357,7 +357,7 @@ fn read_file(
     }))
 }
 
-fn capture_inner(args: &CaptureArgs) -> Result<ArtifactRevision, String> {
+pub(crate) fn capture_inner(args: &CaptureArgs) -> Result<ArtifactRevision, String> {
     for (value, label) in [
         (&args.workspace_id, "workspace_id"),
         (&args.ticket_id, "ticket_id"),

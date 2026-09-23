@@ -336,6 +336,9 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
     issue.acceptance_criteria ? `Acceptance criteria:\n${issue.acceptance_criteria}` : '',
     issue.notes ? `Notes:\n${issue.notes}` : '',
     'Keep the work scoped to this ticket. Run relevant checks and report changed files, evidence, and limitations.',
+    // Approval binds to this run's captured revision, so the agent must not
+    // close the ticket ahead of the requester's review.
+    'Do not close or mark the ticket done; the requester reviews and approves the result in Beads Station.',
   ].filter(Boolean).join('\n\n'), [issue])
 
   useEffect(() => {

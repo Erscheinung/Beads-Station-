@@ -383,56 +383,8 @@ pub async fn native_run_start(
         return Err(format!("ticket {ticket_id} already has an active native run in workspace {workspace_id}"));
     }
 
-    let binary = match provider.as_str() {
-        "claude" | "codex" => crate::binresolve::resolve_bin(&provider)
-            .map_err(|e| format!("{provider} is unavailable: {e}"))?,
-        crate::conductors::CODEX_ORCHESTRATOR => {
-            crate::conductors::current_orchestrator_skill(Some(std::path::Path::new(&cwd)))
-                .ok_or_else(|| format!("adaptive-orchestrator skill is not installed; see {}", crate::conductors::ORCHESTRATOR_SOURCE))?;
-            crate::binresolve::resolve_bin("codex").map_err(|e| format!("codex is unavailable: {e}"))?
-        }
-        crate::conductors::OPUS_CONDUCTOR => {
-            return Err(crate::conductors::opus_placeholder_detail(crate::conductors::opus_conductor_dir().as_deref()))
-        }
-        _ => return Err(format!("unsupported provider {provider}")),
-    };
-    let mut cmd = Command::new(binary);
-    match provider.as_str() {
-        "claude" => {
-            cmd.arg("--print")
-                .arg("--verbose")
-                .arg("--output-format=stream-json")
-                .arg("--permission-mode=acceptEdits")
-                .arg("--add-dir")
-                .arg(&cwd)
-                .arg(&prompt);
-        }
-        "codex" | crate::conductors::CODEX_ORCHESTRATOR => {
-            let prompt = if provider == crate::conductors::CODEX_ORCHESTRATOR {
-                crate::conductors::orchestrator_prompt(&prompt)
-            } else {
-                prompt.clone()
-            };
-            cmd.arg("exec")
-                .arg("--json")
-                .arg("--sandbox=workspace-write")
-                .arg("--ask-for-approval=never")
-                .arg("--cd")
-                .arg(&cwd)
-                .arg(prompt);
-        }
-        _ => unreachable!(),
-    }
     let permit = crate::spawngov::agent_permit()?;
-    let mut child = cmd
-        .current_dir(&cwd)
-        .env("PATH", augmented_path())
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to start {provider}: {e}"))?;
+    let mut child = spawn_native_child(&provider, &cwd, &prompt)?;
     let stdout = child.stdout.take().ok_or("provider stdout not captured")?;
     let stderr = child.stderr.take().ok_or("provider stderr not captured")?;
     runs.insert(run_id.clone(), NativeRun {
@@ -480,6 +432,69 @@ pub async fn native_run_start(
         }
     });
     Ok(())
+}
+
+/// Resolve the backend binary and spawn one Designer run child with piped
+/// output. Shared by `native_run_start` and the opt-in live provider test.
+fn spawn_native_child(provider: &str, cwd: &str, prompt: &str) -> Result<Child, String> {
+    let binary = match provider {
+        "claude" | "codex" => crate::binresolve::resolve_bin(provider)
+            .map_err(|e| format!("{provider} is unavailable: {e}"))?,
+        crate::conductors::CODEX_ORCHESTRATOR => {
+            crate::conductors::current_orchestrator_skill(Some(std::path::Path::new(cwd)))
+                .ok_or_else(|| format!("adaptive-orchestrator skill is not installed; see {}", crate::conductors::ORCHESTRATOR_SOURCE))?;
+            crate::binresolve::resolve_bin("codex").map_err(|e| format!("codex is unavailable: {e}"))?
+        }
+        crate::conductors::OPUS_CONDUCTOR => {
+            return Err(crate::conductors::opus_placeholder_detail(crate::conductors::opus_conductor_dir().as_deref()))
+        }
+        _ => return Err(format!("unsupported provider {provider}")),
+    };
+    Command::new(binary)
+        .args(native_run_args(provider, cwd, prompt)?)
+        .current_dir(cwd)
+        .env("PATH", augmented_path())
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to start {provider}: {e}"))
+}
+
+/// Non-interactive CLI arguments for a Designer run. `codex exec` has no
+/// `--ask-for-approval` flag (0.155 rejects it), so the approval policy is
+/// set through a config override, which every exec version accepts.
+fn native_run_args(provider: &str, cwd: &str, prompt: &str) -> Result<Vec<String>, String> {
+    match provider {
+        "claude" => Ok(vec![
+            "--print".into(),
+            "--verbose".into(),
+            "--output-format=stream-json".into(),
+            "--permission-mode=acceptEdits".into(),
+            "--add-dir".into(),
+            cwd.into(),
+            prompt.into(),
+        ]),
+        "codex" | crate::conductors::CODEX_ORCHESTRATOR => {
+            let prompt = if provider == crate::conductors::CODEX_ORCHESTRATOR {
+                crate::conductors::orchestrator_prompt(prompt)
+            } else {
+                prompt.to_string()
+            };
+            Ok(vec![
+                "exec".into(),
+                "--json".into(),
+                "--sandbox=workspace-write".into(),
+                "-c".into(),
+                "approval_policy=\"never\"".into(),
+                "--cd".into(),
+                cwd.into(),
+                prompt,
+            ])
+        }
+        other => Err(format!("unsupported provider {other}")),
+    }
 }
 
 #[tauri::command]
@@ -1442,6 +1457,80 @@ mod tests {
             runs.get_mut(id).unwrap().drained = true;
         }
         assert_eq!(poll_native_completion(id).await.unwrap().unwrap()["status"], "cancelled");
+    }
+
+    #[test]
+    fn codex_exec_args_avoid_removed_approval_flag() {
+        for provider in ["codex", crate::conductors::CODEX_ORCHESTRATOR] {
+            let args = native_run_args(provider, "/ws", "Work on ticket X").unwrap();
+            assert_eq!(&args[..7], ["exec", "--json", "--sandbox=workspace-write", "-c", "approval_policy=\"never\"", "--cd", "/ws"]);
+            assert!(!args.iter().any(|arg| arg.starts_with("--ask-for-approval")));
+            assert!(args.last().unwrap().ends_with("Work on ticket X"));
+        }
+        assert!(native_run_args(crate::conductors::OPUS_CONDUCTOR, "/ws", "x").is_err());
+    }
+
+    /// Opt-in paid provider run: the Designer backend path without the
+    /// webview. Spawn the chosen conductor exactly as `native_run_start`
+    /// does, drain its output, reach `needs_review`, then capture the
+    /// artifact and prove approval binds to that exact revision.
+    ///
+    ///   BS_LIVE_WORKSPACE=<clean git repo> BS_LIVE_TICKET=<id> \
+    ///   [BS_LIVE_PROVIDER=codex-orchestrator] [BS_LIVE_PROMPT=...] \
+    ///   cargo test --manifest-path src-tauri/Cargo.toml live_designer_run -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "spends provider quota; set BS_LIVE_WORKSPACE"]
+    async fn live_designer_run_reaches_review_and_binds_approval() {
+        let Ok(cwd) = std::env::var("BS_LIVE_WORKSPACE") else { return };
+        let ticket = std::env::var("BS_LIVE_TICKET").unwrap_or_else(|_| "live-ticket".into());
+        let provider = std::env::var("BS_LIVE_PROVIDER").unwrap_or_else(|_| crate::conductors::CODEX_ORCHESTRATOR.into());
+        let prompt = std::env::var("BS_LIVE_PROMPT").unwrap_or_else(|_| format!("Work on ticket {ticket}. Run `bd show {ticket}` for the request."));
+        let (workspace, attempt) = ("live-workspace", format!("attempt-{}", std::process::id()));
+        let run_id = format!("{workspace}:{ticket}:{attempt}");
+
+        let mut child = spawn_native_child(&provider, &cwd, &prompt).expect("spawn");
+        let (stdout, stderr) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        let permit = Arc::new(tokio::sync::Semaphore::new(1)).acquire_owned().await.unwrap();
+        NATIVE_RUNS.lock().await.insert(run_id.clone(), NativeRun {
+            child: Some(child), workspace_id: workspace.into(), ticket_id: ticket.clone(),
+            attempt_id: attempt.clone(), cwd: cwd.clone(), provider: provider.clone(),
+            events: VecDeque::new(), next_seq: 1, drained: false, cancel_requested: false,
+            unknown: false, _permit: permit,
+        });
+        let (out, err) = tokio::join!(
+            drain_native_output(stdout, &run_id, None, false),
+            drain_native_output(stderr, &run_id, None, true),
+        );
+        NATIVE_RUNS.lock().await.get_mut(&run_id).unwrap().drained = out.is_ok() && err.is_ok();
+        let terminal = loop {
+            if let Some(event) = poll_native_completion(&run_id).await.unwrap() { break event; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        let snapshot = native_run_snapshot(workspace.into()).await.unwrap().remove(0);
+        for event in snapshot.events.iter().filter(|e| e["kind"] != "output" || e["parsed"]["type"] != "item.updated") {
+            let line = event["line"].as_str().map(|l| l.chars().take(240).collect::<String>());
+            eprintln!("[{}] {}", event["kind"], line.unwrap_or_else(|| event.to_string()));
+        }
+        assert_eq!(terminal["status"], "needs_review", "run did not finish cleanly");
+
+        let root = std::fs::canonicalize(&cwd).unwrap();
+        ensure_native_run_reviewable(workspace, &ticket, &run_id, &attempt, &root).await.expect("reviewable");
+        let args = crate::artifacts::CaptureArgs {
+            workspace_id: workspace.into(), ticket_id: ticket.clone(), run_id: run_id.clone(),
+            attempt_id: attempt.clone(), workspace_path: cwd.clone(),
+        };
+        let revision = crate::artifacts::capture_inner(&args).expect("capture");
+        eprintln!("revision {} files {:?}", revision.revision_id,
+            revision.files.iter().map(|f| format!("{} {}", f.status, f.path)).collect::<Vec<_>>());
+        assert!(!revision.files.is_empty(), "the run changed nothing");
+        // artifact_approve recaptures and requires the same hash; any later
+        // workspace change must invalidate the captured revision.
+        assert_eq!(crate::artifacts::capture_inner(&args).unwrap().revision_hash, revision.revision_hash);
+        let probe = root.join(".bs-live-stale-probe");
+        std::fs::write(&probe, b"stale").unwrap();
+        let stale = crate::artifacts::capture_inner(&args).unwrap().revision_hash;
+        std::fs::remove_file(&probe).unwrap();
+        assert_ne!(stale, revision.revision_hash, "stale approval would not be detected");
     }
 
 }
