@@ -28,6 +28,8 @@ import { clearObservedClaudeSession, observedClaudeSession, useSessionPreference
 import { providerAvailability, providerLabel, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from './state/chatProviders'
 import { reorderWorkspace, useWorkspaceOrder } from './state/workspaceOrder'
 import { dispatchSemanticCommand, getRecipeRuntimeContext, setRecipeRuntimeContext, useRecipeRecording } from './state/recipeIntegration'
+import { requestDestructiveAction } from './state/destructiveActions'
+import { DestructiveActionGuard } from './components/DestructiveActionGuard'
 
 // Code-mkv — per-project terminal strip height. Falls back to the legacy global
 // key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
@@ -459,12 +461,13 @@ export default function App() {
       <BdLiveProvider>
         <WorkspacePicker />
         <CommandPalette repoPath="" />
+        <DestructiveActionGuard />
       </BdLiveProvider>
     )
   }
 
   if (skin === 'designer') {
-    return <BdLiveProvider><DesignerShell /><CommandPalette repoPath={active.path} /><IssueDetail repoPath={active.path} />{pickerOpen && <WorkspacePicker onClose={closePicker} />}</BdLiveProvider>
+    return <BdLiveProvider><DesignerShell /><CommandPalette repoPath={active.path} /><IssueDetail repoPath={active.path} /><DestructiveActionGuard />{pickerOpen && <WorkspacePicker onClose={closePicker} />}</BdLiveProvider>
   }
 
   const activeTerminalHeight = terminalCollapsed ? 24 : terminalHeight
@@ -540,8 +543,17 @@ export default function App() {
         </header>
         <div className="bs-app-chrome">
           <TabBar projects={orderedProjects} activeId={activeId} onSelect={selectWorkspace} onReorder={reorderWorkspace} onOpen={() => setPickerOpen(true)} onClose={id => {
-            setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
-            void closeProject(id)
+            const project = projects.find(candidate => candidate.id === id)
+            if (!project) return
+            requestDestructiveAction({
+              kind: 'workspace',
+              title: `Close ${project.name}?`,
+              detail: 'This closes the workspace tab and stops its terminal and provider sessions.',
+              onConfirm: async () => {
+                setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
+                await closeProject(id)
+              },
+            })
           }} />
         </div>
         <div className="bs-terminal-content" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
@@ -635,6 +647,7 @@ export default function App() {
       <WhichKey />
       <IssueDetail repoPath={active.path} />
       <CommandPalette repoPath={active.path} />
+      <DestructiveActionGuard />
       {pickerOpen && <WorkspacePicker onClose={closePicker} />}
       {import.meta.env.DEV && <DebugOverlay />}
       {chatRequested && !needsConfirm && activeChatProvider === 'claude' && <PermissionModePicker projectId={active.id} />}

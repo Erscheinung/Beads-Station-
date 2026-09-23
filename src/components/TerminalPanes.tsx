@@ -30,6 +30,7 @@ import {
 } from '../state/termPanes'
 import { setFocused } from '../state/vim'
 import { clearObservedProviderSession, observedProviderSession } from '../state/sessionPreferences'
+import { requestDestructiveAction } from '../state/destructiveActions'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
@@ -444,6 +445,15 @@ export function killPty(id: number): void {
 }
 
 export function closeFocusedPane(): void {
+  requestDestructiveAction({
+    kind: 'pane',
+    title: 'Close terminal pane?',
+    detail: 'This stops the focused shell or provider session and removes the pane from this workspace.',
+    onConfirm: closeFocusedPaneNow,
+  })
+}
+
+function closeFocusedPaneNow(): void {
   const { killPtyId, killBridgeId } = closeActivePane()
   if (killPtyId !== null) killPty(killPtyId)
   if (killBridgeId) void invoke('claude_kill', { projectId: killBridgeId }).catch(() => {})

@@ -3,10 +3,11 @@ import { useSyncExternalStore } from 'react'
 export interface SessionPreferences {
   askBeforeResume: boolean
   restoreContextOnLaunch: boolean
+  confirmDestructiveActions: boolean
 }
 
 const STORAGE_KEY = 'beads-station.session-preferences'
-const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true }
+const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true }
 
 function load(): SessionPreferences {
   try {
@@ -14,6 +15,7 @@ function load(): SessionPreferences {
     return {
       askBeforeResume: parsed.askBeforeResume !== false,
       restoreContextOnLaunch: parsed.restoreContextOnLaunch !== false,
+      confirmDestructiveActions: parsed.confirmDestructiveActions !== false,
     }
   } catch {
     return { ...DEFAULTS }
@@ -38,7 +40,7 @@ export function useSessionPreferences(): SessionPreferences {
 
 export function setSessionPreferences(next: Partial<SessionPreferences>): void {
   const updated = { ...state, ...next }
-  if (updated.askBeforeResume === state.askBeforeResume && updated.restoreContextOnLaunch === state.restoreContextOnLaunch) return
+  if (updated.askBeforeResume === state.askBeforeResume && updated.restoreContextOnLaunch === state.restoreContextOnLaunch && updated.confirmDestructiveActions === state.confirmDestructiveActions) return
   state = updated
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* optional */ }
   listeners.forEach(listener => listener())
@@ -47,6 +49,11 @@ export function setSessionPreferences(next: Partial<SessionPreferences>): void {
 /** Synchronous boot-time read used before React mounts the workspace stores. */
 export function shouldRestoreContextOnLaunch(): boolean {
   return state.restoreContextOnLaunch
+}
+
+/** Synchronous read for lifecycle actions that may arrive outside React. */
+export function shouldConfirmDestructiveActions(): boolean {
+  return state.confirmDestructiveActions
 }
 
 export type ObservedProvider = 'claude' | 'codex'

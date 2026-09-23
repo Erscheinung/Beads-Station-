@@ -4,6 +4,7 @@ import { safeListen } from '../lib/listenerRegistry'
 import { flushTerminalSessionScreens } from '../lib/terminalSessions'
 import { flushTermPanePersistence } from '../state/termPanes'
 import { markRendererActive, markRendererBoot, markRendererCleanExit } from '../state/rendererLifecycle'
+import { setSessionPreferences, useSessionPreferences } from '../state/sessionPreferences'
 
 type CloseSource = 'shortcut-window' | 'shortcut-quit' | 'window' | 'menu-quit' | 'system'
 interface CloseRequest { source: CloseSource }
@@ -24,6 +25,8 @@ export function AppCloseGuard() {
   const [scope, setScope] = useState<CloseScope | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [dontAskAgain, setDontAskAgain] = useState(false)
+  const sessionPreferences = useSessionPreferences()
   const requestRef = useRef<CloseRequest | null>(null)
   const priorFocus = useRef<HTMLElement | null>(null)
   requestRef.current = request
@@ -43,6 +46,7 @@ export function AppCloseGuard() {
     setRequest(next)
     setScope(null)
     setError('')
+    setDontAskAgain(false)
     void invoke<CloseScope>('app_close_scope').then(value => setScope(value ?? EMPTY_SCOPE)).catch(() => setScope(EMPTY_SCOPE))
   }, [])
 
@@ -78,6 +82,7 @@ export function AppCloseGuard() {
     requestRef.current = null
     setRequest(null)
     setScope(null)
+    setDontAskAgain(false)
     requestAnimationFrame(() => priorFocus.current?.focus())
   }, [busy])
 
@@ -85,6 +90,7 @@ export function AppCloseGuard() {
     if (busy) return
     setBusy(true)
     setError('')
+    if (dontAskAgain) setSessionPreferences({ confirmDestructiveActions: false })
     // Persist one coherent snapshot before native process ownership is released.
     flushTerminalSessionScreens()
     flushTermPanePersistence()
@@ -96,7 +102,11 @@ export function AppCloseGuard() {
       setError(String(reason))
       setBusy(false)
     }
-  }, [busy])
+  }, [busy, dontAskAgain])
+
+  useEffect(() => {
+    if (request && !sessionPreferences.confirmDestructiveActions && !busy) void stopAndClose()
+  }, [request, sessionPreferences.confirmDestructiveActions, busy, stopAndClose])
 
   useEffect(() => {
     if (!request) return
@@ -123,6 +133,10 @@ export function AppCloseGuard() {
         : <p>This stops {current.ptyCount} terminal{current.ptyCount === 1 ? '' : 's'}, {current.providerCount} provider session{current.providerCount === 1 ? '' : 's'}, and {current.runCount} active run{current.runCount === 1 ? '' : 's'} owned by this app.</p>}
       <p>Workspace, pane layout, selected context and bounded screen history are saved. Reopening restores saved context only; it does not preserve a live process or start a model turn.</p>
       {error && <p role="alert">Could not close: {error}</p>}
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0', color: 'var(--bs-fg-muted)', fontSize: 12 }}>
+        <input type="checkbox" checked={dontAskAgain} onChange={event => setDontAskAgain(event.target.checked)} />
+        Don’t ask again for destructive actions
+      </label>
       <div className="bs-modal-actions">
         <button autoFocus type="button" className="bs-modal-btn bs-modal-btn--ghost" disabled={busy} onClick={() => void cancel()}>Cancel</button>
         <button type="button" className="bs-modal-btn bs-modal-btn--primary" disabled={busy || scope === null} onClick={() => void stopAndClose()}>{busy ? 'Stopping…' : 'Close and stop sessions'}</button>

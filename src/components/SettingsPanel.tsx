@@ -16,7 +16,7 @@ import { resetUiCustomization, setUiCustomization, UI_SCALE_MAX, UI_SCALE_MIN, U
 import { RecipeSettings } from './RecipeSettings'
 import appPackage from '../../package.json'
 
-const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station' }
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents confirm confirmation destructive close', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station' }
 const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions', 'Recipes', 'About'] as const
 const TERMINAL_PANE_COMMAND_IDS = new Set([
   'fullscreen',
@@ -233,6 +233,7 @@ export function SettingsPanel() {
             ? <p className="bs-settings__note" role="status">Checking supported local chat providers…</p>
             : <p className="bs-settings__note">Unavailable providers stay visible so a missing CLI is clear; they cannot be selected until installed.</p>}
           <label className="bs-settings__row"><span>Ask before resuming Claude<small>When starting chat, offer a choice for a previously observed Claude session. Turn off to resume it directly.</small></span><input type="checkbox" checked={session.askBeforeResume} onChange={e => setSessionPreferences({ askBeforeResume: e.target.checked })} /></label>
+          <label className="bs-settings__row"><span>Confirm destructive actions<small>Ask before closing panes, workspaces, or the app. You can also choose “Don’t ask again” on a confirmation.</small></span><input aria-label="Confirm destructive actions" type="checkbox" checked={session.confirmDestructiveActions} onChange={e => setSessionPreferences({ confirmDestructiveActions: e.target.checked })} /></label>
           <p className="bs-settings__note">Opening a folder does not start an agent. A saved conversation is not proof of a running process; a session removed by Claude may no longer be resumable.</p>
         </>}
         {section === 'Recipes' && <RecipeSettings />}
