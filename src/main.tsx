@@ -24,6 +24,10 @@ async function mount() {
       </InvokeErrorBoundary>
     </React.StrictMode>,
   );
+  // Native file drops need the Tauri webview; the browser harness has none.
+  if (!import.meta.env.VITE_LIVE_MOCK) {
+    void import("./lib/fileDrop").then(m => m.installTerminalFileDrop()).catch(() => {});
+  }
 }
 
 // R12: browser-mode live-verify. When VITE_LIVE_MOCK is set, install the

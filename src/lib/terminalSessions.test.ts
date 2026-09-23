@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mock = vi.hoisted(() => ({
   invoke: vi.fn(), listen: vi.fn(), released: vi.fn(), write: vi.fn(), refresh: vi.fn(),
   clearTextureAtlas: vi.fn(), disposed: vi.fn(), focus: vi.fn(), fit: vi.fn(),
-  scrollToBottom: vi.fn(), scrollToLine: vi.fn(), markerDispose: vi.fn(),
-  onScroll: null as null | (() => void), onWriteParsed: null as null | (() => void),
+  scrollToBottom: vi.fn(), scrollToLine: vi.fn(), markerDispose: vi.fn(), paste: vi.fn(),
+  onScroll: null as null | (() => void), onWriteParsed: null as null | (() => void), onData: null as null | ((data: string) => void),
   themeListeners: new Set<() => void>(),
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
@@ -20,10 +20,11 @@ vi.mock('xterm', () => ({ Terminal: class {
   loadAddon() {} open() {} focus = mock.focus
   attachCustomKeyEventHandler() {}
   write = mock.write; refresh = mock.refresh; clearTextureAtlas = mock.clearTextureAtlas; dispose = mock.disposed
-  onData() { return { dispose() {} } }
+  onData(handler: (data: string) => void) { mock.onData = handler; return { dispose() {} } }
   onScroll(handler: () => void) { mock.onScroll = handler; return { dispose() {} } }
   onWriteParsed(handler: () => void) { mock.onWriteParsed = handler; return { dispose() {} } }
   scrollToBottom = mock.scrollToBottom
+  paste = mock.paste
   scrollToLine = mock.scrollToLine
   registerMarker(offset = 0) {
     const buffer = this.buffer.active
@@ -33,7 +34,7 @@ vi.mock('xterm', () => ({ Terminal: class {
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit = mock.fit } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
-import { disposeTerminalSession, getTerminalSession, SgrColorNormalizer } from './terminalSessions'
+import { disposeTerminalSession, getTerminalSession, SgrColorNormalizer, shellQuote, terminalSessionForNode } from './terminalSessions'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -41,6 +42,11 @@ beforeEach(() => {
   mock.invoke.mockResolvedValue(7)
 })
 afterEach(() => { disposeTerminalSession('pane'); resetTerminalAppearance(); mock.themeListeners.clear(); document.body.innerHTML = ''; vi.unstubAllGlobals() })
+
+function userScroll(session: { element: HTMLElement }) {
+  session.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
+  mock.onScroll?.()
+}
 
 function visibleHost(width = 900, height = 400): HTMLDivElement {
   const host = document.body.appendChild(document.createElement('div'))
@@ -142,7 +148,7 @@ describe('terminal session ownership', () => {
     await session.ready
     const buffer = session.terminal.buffer.active as unknown as { type: 'normal'; viewportY: number; baseY: number; cursorY: number }
     Object.assign(buffer, { viewportY: 40, baseY: 100, cursorY: 10 })
-    mock.onScroll?.()
+    userScroll(session)
     mock.fit.mockImplementationOnce(() => {
       Object.assign(buffer, { viewportY: 80, baseY: 120 })
     })
@@ -159,7 +165,7 @@ describe('terminal session ownership', () => {
     await session.ready
     const terminal = session.terminal as unknown as { buffer: { active: { type: 'normal' | 'alternate'; viewportY: number; baseY: number; cursorY: number } } }
     Object.assign(terminal.buffer.active, { type: 'normal', viewportY: 100, baseY: 100, cursorY: 5 })
-    mock.onScroll?.()
+    userScroll(session)
     mock.fit.mockImplementationOnce(() => Object.assign(terminal.buffer.active, { viewportY: 100, baseY: 120 }))
     session.resize(host)
     expect(mock.scrollToBottom).toHaveBeenCalledTimes(1)
@@ -170,6 +176,45 @@ describe('terminal session ownership', () => {
     session.resize(host)
     expect(mock.scrollToBottom).not.toHaveBeenCalled()
     expect(mock.scrollToLine).not.toHaveBeenCalled()
+  })
+  it('keeps a history reader in place when output (not the user) scrolls to the bottom', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const buffer = session.terminal.buffer.active as unknown as { viewportY: number; baseY: number; cursorY: number }
+    Object.assign(buffer, { viewportY: 40, baseY: 100, cursorY: 10 })
+    userScroll(session)
+    vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 5000)
+
+    // A TUI clears scrollback and reprints: xterm reports a scroll that lands
+    // on the live bottom without any user gesture.
+    Object.assign(buffer, { viewportY: 130, baseY: 130 })
+    mock.onScroll?.()
+    mock.onWriteParsed?.()
+
+    expect(mock.scrollToBottom).not.toHaveBeenCalled()
+    expect(mock.scrollToLine).toHaveBeenLastCalledWith(40)
+    expect((await session.snapshot()).viewport.followOutput).toBe(false)
+  })
+  it('returns to following live output when the user types or scrolls back down', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const buffer = session.terminal.buffer.active as unknown as { viewportY: number; baseY: number; cursorY: number }
+    Object.assign(buffer, { viewportY: 40, baseY: 100, cursorY: 10 })
+    userScroll(session)
+    expect((await session.snapshot()).viewport.followOutput).toBe(false)
+
+    mock.onData?.('x')
+    expect((await session.snapshot()).viewport.followOutput).toBe(true)
+
+    Object.assign(buffer, { viewportY: 40, baseY: 100 })
+    userScroll(session)
+    Object.assign(buffer, { viewportY: 100, baseY: 100 })
+    userScroll(session)
+    expect((await session.snapshot()).viewport.followOutput).toBe(true)
   })
   it('does not steal focus from a dialog or another editable', async () => {
     const session = getTerminalSession('pane', '/repo', vi.fn())
@@ -251,4 +296,23 @@ it('updates cursor and bounded scrollback in a detached terminal without respawn
   expect(session.terminal.options).toMatchObject({ scrollback: 5000, fontSize: 13 })
   expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_spawn')).toHaveLength(1)
   resetTerminalAppearance()
+})
+
+describe('dropped file paths', () => {
+  it('quotes only paths the shell would split or expand', () => {
+    expect(shellQuote('/Users/me/src/app.ts')).toBe('/Users/me/src/app.ts')
+    expect(shellQuote('/Users/me/My Files/a b.png')).toBe("'/Users/me/My Files/a b.png'")
+    expect(shellQuote("/tmp/it's $HOME")).toBe("'/tmp/it'\\''s $HOME'")
+  })
+  it('pastes quoted paths into the session under the drop point without executing them', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const child = session.element.appendChild(document.createElement('canvas'))
+    expect(terminalSessionForNode(child)).toBe(session)
+    expect(session.pastePaths(['/a/b.txt', '/c d/e.png'])).toBe(true)
+    expect(mock.paste).toHaveBeenCalledWith("/a/b.txt '/c d/e.png' ")
+    expect(terminalSessionForNode(document.body)).toBeNull()
+  })
 })

@@ -626,3 +626,6 @@ body {
   display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 8px;
   background: var(--bs-red); color: var(--bs-bg-dark); font-size: 10px; font-weight: 600;
 }
+
+/* Code-da0.7 — a terminal pane under a native file drag. */
+.bs-terminal-drop-target { outline: 2px dashed var(--bs-blue); outline-offset: -2px; }

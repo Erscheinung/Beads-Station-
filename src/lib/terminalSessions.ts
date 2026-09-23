@@ -165,6 +165,12 @@ export class TerminalSession {
   private repaintFrame: number | null = null
   private attachedHost: HTMLElement | null = null
   private restoringViewport = false
+  // Follow/read intent changes only on user gestures. Output-driven scroll
+  // events (scrollback trimming, a TUI clearing scrollback with ESC[3J and
+  // reprinting its transcript) must not silently re-enable follow-bottom while
+  // the user is reading history.
+  private userScrollUntil = 0
+  private pointerScrolling = false
   private viewport: ViewportState = { buffer: 'normal', followOutput: true, marker: null, fallbackLine: 0 }
   private screenTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -183,15 +189,19 @@ export class TerminalSession {
     this.applyAppearance()
     const onData = this.terminal.onData(data => {
       if (this.phase !== 'running' || this.closed) return
+      // xterm's scrollOnUserInput snaps typing back to the live prompt; adopt
+      // that as the new intent so the next write does not scroll away again.
+      if (this.terminal.options.scrollOnUserInput !== false) this.followLiveOutput()
       this.input = this.input.then(() => {
         if (!this.closed && this.id !== null) return invoke('pty_write', { id: this.id, data })
       }).catch(error => this.fail(error))
     })
     this.releases.push(() => onData.dispose())
     const onScroll = this.terminal.onScroll(() => {
-      if (!this.restoringViewport) this.captureViewport()
+      if (!this.restoringViewport && this.userIsScrolling()) this.captureViewport()
     })
     this.releases.push(() => onScroll.dispose())
+    this.trackUserScrollIntent()
     const onBufferChange = this.terminal.buffer.onBufferChange(() => this.captureViewport())
     this.releases.push(() => onBufferChange.dispose())
     // Output can advance baseY while a user is reading history. Restore the
@@ -215,6 +225,42 @@ export class TerminalSession {
       this.requestNativeRedraw()
     }))
     this.ready = this.start(cwd, onSpawn)
+  }
+
+  private trackUserScrollIntent() {
+    const extend = () => { this.userScrollUntil = performance.now() + 400 }
+    const onKey = (event: KeyboardEvent) => {
+      if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key) && (event.shiftKey || event.metaKey)) extend()
+    }
+    const onPointerDown = () => { this.pointerScrolling = true }
+    const onPointerUp = () => {
+      if (!this.pointerScrolling) return
+      this.pointerScrolling = false
+      extend()
+    }
+    const options = { capture: true, passive: true }
+    this.element.addEventListener('wheel', extend, options)
+    this.element.addEventListener('touchmove', extend, options)
+    this.element.addEventListener('keydown', onKey, true)
+    this.element.addEventListener('pointerdown', onPointerDown, options)
+    window.addEventListener('pointerup', onPointerUp, true)
+    this.releases.push(() => {
+      this.element.removeEventListener('wheel', extend, options)
+      this.element.removeEventListener('touchmove', extend, options)
+      this.element.removeEventListener('keydown', onKey, true)
+      this.element.removeEventListener('pointerdown', onPointerDown, options)
+      window.removeEventListener('pointerup', onPointerUp, true)
+    })
+  }
+
+  private userIsScrolling() {
+    return this.pointerScrolling || performance.now() < this.userScrollUntil
+  }
+
+  private followLiveOutput() {
+    if (this.viewport.followOutput) return
+    this.disposeViewportMarker()
+    this.viewport = { buffer: this.terminal.buffer.active.type, followOutput: true, marker: null, fallbackLine: 0 }
   }
 
   private disposeViewportMarker() {
@@ -358,7 +404,6 @@ export class TerminalSession {
   }
   detach(host: HTMLElement) {
     if (this.element.parentElement === host) {
-      this.captureViewport()
       this.attachedHost = null
       // Do not let the xterm screen leave the document between React hosts.
       // Keeping it in a transparent, aria-hidden parking host avoids the
@@ -426,7 +471,6 @@ export class TerminalSession {
     if (this.closed || !host || host !== this.attachedHost || this.element.parentElement !== host || !host.isConnected) return
     const bounds = host.getBoundingClientRect()
     if (bounds.width <= 1 || bounds.height <= 1) return
-    this.captureViewport()
     try { this.fit.fit() } catch { return }
     this.restoreViewport()
     const size = `${this.terminal.cols}:${this.terminal.rows}`
@@ -443,6 +487,13 @@ export class TerminalSession {
       if (!this.element.contains(active) && (active.matches('input, textarea, select') || (active as HTMLElement).isContentEditable)) return false
     }
     this.terminal.focus()
+    return true
+  }
+  /** Insert dropped file paths as shell-quoted arguments, like macOS terminals. */
+  pastePaths(paths: string[]) {
+    if (this.closed || this.phase !== 'running' || paths.length === 0) return false
+    this.terminal.paste(`${paths.map(shellQuote).join(' ')} `)
+    this.focus()
     return true
   }
   async snapshot(): Promise<TerminalLifecycleSnapshot> {
@@ -499,6 +550,17 @@ export function getTerminalSession(
   let session = sessions.get(paneId)
   if (!session) { session = new TerminalSession(paneId, cwd, onSpawn, onScreen); sessions.set(paneId, session) }
   return session
+}
+/** The live session whose xterm screen contains `node`, if any. */
+export function terminalSessionForNode(node: Node): TerminalSession | null {
+  for (const session of sessions.values()) {
+    if (session.element.contains(node)) return session
+  }
+  return null
+}
+/** POSIX-quote a path only when the shell would otherwise split or expand it. */
+export function shellQuote(path: string): string {
+  return /^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`
 }
 export function flushTerminalSessionScreens() {
   for (const session of sessions.values()) session.checkpointScreen()
