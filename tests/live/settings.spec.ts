@@ -149,6 +149,7 @@ test('visible close and unsplit keep surviving terminal sessions', async ({ page
   await expect.poll(async () => (await calls('pty_spawn')).length).toBe(3)
   await page.getByRole('button', { name: 'Zoom pane', exact: true }).click()
   await page.getByRole('button', { name: 'Close pane', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Continue', exact: true }).click()
   await expect(page.locator('[data-terminal-pane]')).toHaveCount(2)
   await expect(page.locator('[data-terminal-pane]').first()).toBeVisible()
   await expect.poll(async () => (await calls('pty_kill')).length).toBe(1)

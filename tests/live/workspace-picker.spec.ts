@@ -23,6 +23,7 @@ test('open, close and reload preserves only explicitly opened workspaces', async
   await page.getByRole('option', { name: /Nexus.*\/tmp\/nexus/ }).click()
   await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveCount(2)
   await page.getByRole('button', { name: 'Close workspace Beads-Station' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Continue', exact: true }).click()
   await page.reload()
   await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveCount(1)
   await expect(page.locator('.bs-tabstrip .bs-tab')).toHaveText('Nexus')

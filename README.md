@@ -2,9 +2,15 @@
 
 A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
-> **Early preview — v0.1.0.** The Developer workspace is usable for local evaluation. The Designer workspace is a visual prototype only and is not yet a working end-to-end request, run, preview, or approval flow. Upcoming bug fixes and feature add-ons in v0.1.x!
+> **Early preview — v0.1.4.** The Developer workspace is usable for local evaluation. Designer supports local artifact revision review, but the complete provider-to-approval workflow remains unverified.
 
 ## Preview
+
+### v0.1.4 packaged About
+
+![Beads Station v0.1.4 About](docs/images/releases/v0.1.4/about.png)
+
+The following workspace screenshots are retained from v0.1.0.
 
 ### Developer workspace — Fahrenheit theme
 
@@ -18,11 +24,22 @@ A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agent
 
 The Designer screenshot demonstrates the intended information architecture and visual direction, including graph cards that expand for wrapped titles while preserving spacing and connector alignment. Its controls and workflow should not be treated as production-ready behavior.
 
-## Install the v0.1.3 preview
+## Install the v0.1.4 preview
 
-The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.3_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.4_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
 
-Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.3 release notes](docs/releases/v0.1.3.md) for the verified feature list, known limitations, test checklist, and future plans.
+Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.4 release notes](docs/releases/v0.1.4.md) for the verified feature list, known limitations, test checklist, and future plans.
+
+## v0.1.4 fixes
+
+- About Settings displays the actual application version.
+- Pane, workspace, and app closure use a shared confirmation preference, reversible in Settings → Sessions.
+- Settings, keybindings, and semantic recipes are saved in native app data across app replacement.
+- Accepting the native folder chooser immediately opens the workspace.
+- Directional tile selection transfers terminal input focus.
+- Chat frames are deduplicated when live output overlaps scrollback replay.
+
+Terminal scroll jumps during streaming or workspace/tab switching remain under investigation. Automatic updates are future work; endpoint selection must accommodate both release remotes. See the [fix record](docs/POST-0.1.3-FIXES.md).
 
 ## Current foundation
 

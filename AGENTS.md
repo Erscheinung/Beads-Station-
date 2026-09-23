@@ -5,9 +5,10 @@
 The user authorized installation of released v0.1.3 and implementation of six
 bounded fixes, with focused checks and a checkpoint commit per completed item.
 See [the active fix record](docs/POST-0.1.3-FIXES.md) and Beads epic `Code-t3w`.
+User subsequently requested v0.1.4 release, README update, push/publication,
+no further subagents, and author email kc1.408596@gmail.com for every session commit.
 Auto-update is future-only; its release endpoint design must accommodate the
-user's two remotes (only `origin` is configured in this checkout). No push or
-new release is requested. Preserve local configuration and existing sessions.
+user's two remotes (only `origin` is configured in this checkout). v0.1.4 publication is authorized. Preserve local configuration and existing sessions.
 The orchestration no-review contract applies; workers own focused validation.
 
 ## Latest handoff — 2026-09-20, Designer artifact review slice

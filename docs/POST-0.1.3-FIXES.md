@@ -1,7 +1,7 @@
 # Post-v0.1.3 fixes — 2026-09-23
 
 User requested installation, implementation, limited focused tests, and a commit
-at each completed checkpoint. Tracking: `Code-t3w`. No push or new release.
+at each completed checkpoint. Tracking: `Code-t3w`. The user subsequently authorized v0.1.4 packaging, README updates, push, and publication. All session commits use kc1.408596@gmail.com.
 
 ## Installation
 
@@ -23,13 +23,13 @@ repair packaging in a future higher patch, without overwriting v0.1.3.
 
 | Item | Bead | Acceptance | Status |
 | --- | --- | --- | --- |
-| About version | `Code-t3w.1` | Display actual application version | Implemented `9af832a` |
+| About version | `Code-t3w.1` | Display actual application version | Implemented `1af1765` |
 | Automatic updates | `Code-t3w.2` | Plan two-remote release endpoints, verified update and safe restart | Future only |
-| Destructive confirmations | `Code-t3w.3` | Confirm pane close; reversible do-not-ask preference in Settings; consistent lifecycle actions | Implemented `6660d7f` |
-| Durable local config | `Code-t3w.4` | Keybindings, settings, semantic recordings and recipes survive DMG replacement; safe migration | Implemented `b8b5d3a`; real upgrade gate pending |
-| Finder Load | `Code-t3w.5` | Accepting the native chooser immediately opens the selected workspace | Implemented `20faa86` |
-| Tile input focus | `Code-t3w.6` | Directional selection transfers real cursor/keyboard input while retaining PTY identity | Implemented `e38a507` |
-| Scroll ownership | `Code-t3w.7` | Navigation retains scroll; streaming respects user scrolling above output; investigate repeated text | Partial `1c27bf7`; terminal diagnosis underway |
+| Destructive confirmations | `Code-t3w.3` | Confirm pane close; reversible do-not-ask preference in Settings; consistent lifecycle actions | Implemented `f6b08b2` |
+| Durable local config | `Code-t3w.4` | Keybindings, settings, semantic recordings and recipes survive DMG replacement; safe migration | Implemented `2453f9e`; real upgrade gate pending |
+| Finder Load | `Code-t3w.5` | Accepting the native chooser immediately opens the selected workspace | Implemented `f7372e2` |
+| Tile input focus | `Code-t3w.6` | Directional selection transfers real cursor/keyboard input while retaining PTY identity | Implemented `01dadad` |
+| Scroll ownership | `Code-t3w.7` | Navigation retains scroll; streaming respects user scrolling above output; investigate repeated text | Partial `93a2d8f`; terminal diagnosis underway |
 
 ## Future updater constraints
 
@@ -47,16 +47,16 @@ part of this request's implementation scope.
 The configured implementation worker owns these source changes and validation;
 the primary did not independently review worker code. All six initial source
 checkpoints are committed. Native v0.1.3 launch is installation evidence, not
-verification of subsequent source fixes. No new release, push, or provider call.
+verification of subsequent source fixes. v0.1.4 release preparation is authorized; no provider call.
 
 | Commit | Result | Focused worker evidence |
 | --- | --- | --- |
-| `9af832a` | About Settings reads actual application version | SettingsPanel 7/7 |
-| `6660d7f` | Shared confirmations for pane/workspace/app close | destructiveActions + AppCloseGuard 5/5 |
-| `b8b5d3a` | Versioned native preference store and browser migration | durableUserConfig 2/2 |
-| `20faa86` | Native folder acceptance opens project directly | WorkspacePicker 7/7 |
-| `e38a507` | Directional selection enters insert mode and focuses retained input | termPanes 25/25 |
-| `1c27bf7` | Sequence identities deduplicate overlapping live/replayed Claude/Codex chat frames | ClaudeChatViewport 4/4 |
+| `1af1765` | About Settings reads actual application version | SettingsPanel 7/7 |
+| `f6b08b2` | Shared confirmations for pane/workspace/app close | destructiveActions + AppCloseGuard 5/5 |
+| `2453f9e` | Versioned native preference store and browser migration | durableUserConfig 2/2 |
+| `f7372e2` | Native folder acceptance opens project directly | WorkspacePicker 7/7 |
+| `01dadad` | Directional selection enters insert mode and focuses retained input | termPanes 25/25 |
+| `93a2d8f` | Sequence identities deduplicate overlapping live/replayed Claude/Codex chat frames | ClaudeChatViewport 4/4 |
 
 Worker also reported TypeScript, production build, Rust 116/116, and
 `git diff --check` passing. The broad Rust run exceeded the preferred focused
@@ -83,9 +83,22 @@ at **Settings → Sessions → Confirm destructive actions**.
 ### Scroll diagnosis still in progress
 
 A confirmed app-owned chat duplication race occurs when a live frame arrives
-while scrollback is loading and appears again in replay. Commit `1c27bf7` stamps
+while scrollback is loading and appears again in replay. Commit `93a2d8f` stamps
 Claude/Codex frames with sequence identities and deduplicates those deliveries.
 It does not change terminal scrolling. Existing terminal code attempts to retain
 viewport anchors across attach/write/resize, but that alone does not disprove the
 reported terminal jumps. The terminal portion of `Code-t3w.7` remains in progress
 for controlled streaming/navigation reproduction; no provider fault is asserted.
+The worker was stopped at the user’s request before that follow-up diagnosis,
+and release preparation continues directly without subagents.
+
+## v0.1.4 release checkpoint
+
+User authorized publication and stopped further subagents. Session authors were
+corrected to kc1.408596@gmail.com without changing public history.
+Release build and native About smoke passed; the final app created its native
+preference file after adding the missing Tauri store permission. Explicit ad-hoc
+signing before DMG creation repairs the v0.1.3 resource-signature defect; strict
+verification passed on the mounted v0.1.4 copy. Screenshot is from the final build.
+Focused browser run: 23/25, then both legacy close tests updated for confirmation
+and passed 2/2. No full rerun claimed. Terminal scroll remains open.
