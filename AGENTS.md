@@ -1,5 +1,22 @@
 # Beads Station — agent handoff
 
+## Active work — 2026-09-23, Designer conductor run and v0.1.5
+
+User decision: finish the Designer end-to-end run first, then cut v0.1.5 by hand
+(`Code-9ro` CI later). `codex exec` 0.155 rejects `--ask-for-approval`, so every
+Codex/orchestrator Designer run died at spawn; fixed with `-c approval_policy="never"`
+and a unit-pinned `native_run_args`/`spawn_native_child` (`Code-am5.6`). One
+authorized real `codex-orchestrator` run through the opt-in Rust test
+`live_designer_run_reaches_review_and_binds_approval` reached `needs_review` and
+proved capture, recapture and stale detection (see `docs/releases/v0.1.5.md`). The
+agent closed its own ticket, so the Designer prompt now forbids that. Follow-ups:
+`Code-am5.7` (.beads files in artifacts), `Code-am5.8` (worker thread visibility).
+Release bundles are now ad-hoc signed by config (`Code-t3w.9`). This session could
+not script or screenshot the packaged app (no Accessibility/Screen Recording, and
+the user runs Claude inside the installed app — never replace or quit it), so the
+WKWebView click-through and exact-build screenshots are the user's hands-on steps.
+`Code-am5.2` is closed per the v0.1.3 notes but reads open in beads; reconcile it.
+
 ## Active work — 2026-09-23, repository hygiene and Todoist 0.1.x pass
 
 Epic `Code-da0`. Identity is now machine-local (gitignored `CLAUDE.local.md`);

@@ -99,7 +99,7 @@ backend in the request panel:
 | Backend | Status |
 | --- | --- |
 | Claude / Codex direct | Working via native CLI login |
-| `codex-orchestrator` | Wired (`src-tauri/src/conductors.rs`): `codex exec` with an adaptive-orchestrator preamble; enabled when `codex` and the skill (workspace `.agents/skills/…` or `~/.codex/skills/…`) exist. Real provider run not yet exercised. |
+| `codex-orchestrator` | Working (`src-tauri/src/conductors.rs`): `codex exec` with an adaptive-orchestrator preamble; enabled when `codex` and the skill (workspace `.agents/skills/…` or `~/.codex/skills/…`) exist. One real run verified 2026-09-23 via the opt-in `live_designer_run_reaches_review_and_binds_approval` Rust test (needs_review → capture → stale detection). Packaged WKWebView click-through still unexercised. |
 | `opus-conductor` | **Placeholder.** Detection only via `BS_OPUS_CONDUCTOR_DIR`; never launches. The Opus conductor lives in a private repo on the second machine — wire its launch contract in `conductors.rs` + `native_run_start` there. |
 
 The older interval conductor (`conductor.rs`, Claude pulses, herdr bridge)
@@ -109,7 +109,7 @@ packaged app) is the top product priority.
 
 ## Todoist reconciliation — "Test 0.1.3 and release 0.1.4"
 
-Status as of 2026-09-23. "Done" = implemented with automated evidence; items
+Status as of 2026-09-23 (v0.1.5 draft). "Done" = implemented with automated evidence; items
 marked *native check* still need a hands-on packaged-app test before ticking.
 
 | Todoist item | Status | Evidence / bead |
@@ -128,12 +128,12 @@ marked *native check* still need a hands-on packaged-app test before ticking.
 | Repeated text while scrolling; scroll-up snaps to bottom | Snap fixed (user-intent follow); repeats come from the provider TUI reprinting after clearing scrollback. *Native check with streaming Claude/Codex* | `Code-da0.6`, `Code-t3w.7` |
 | Can't drag and drop files | Done (paste quoted paths into the pane under the drop), *native Finder check* | `Code-da0.7` |
 | Designer View → resizable elements | Done (nav + agents columns) | `Code-da0.8` |
-| Designer View / conductor | Codex orchestrator + Opus placeholder wired; end-to-end packaged run open | `Code-da0.5`, `Code-am5`, `Code-yfb` |
+| Designer View / conductor | Codex orchestrator real run verified at backend level (v0.1.5 fixed `codex exec` flag, `Code-am5.6`); packaged click-through is a *native check*; follow-ups `Code-am5.7` (.beads in artifacts), `Code-am5.8` (worker visibility) | `Code-da0.5`, `Code-am5`, `Code-yfb` |
 | Terminal sessions don't persist / resume without tokens | Open (saved-layout restore only) | A3 `Code-6un.3` |
 | LazyVim colors look different | Open | `Code-0cp.4` |
 | Claude/Codex chat view redesign | Open (plan on second machine) | `Code-am5.5` |
 | Auto-update like CMUX | Future, plan only | `Code-t3w.2` |
-| Continuous DMG release + feedback | Open | `Code-9ro` |
+| Continuous DMG release + feedback | Open. Decision 2026-09-23: finish the Designer end-to-end run first, then ship v0.1.5 by hand (done as a draft pending screenshots); CI workflow after | `Code-9ro` |
 | Svelte migration | Future — see below | `Code-cuh` |
 | Metrics/latencies for Rust comparison | Open | `Code-2mx` |
 | Bundle beads with app? | Decision open | `Code-u6h` |
@@ -151,6 +151,13 @@ Keep the Tauri IPC contract, xterm session ownership (`src/lib/terminalSessions.
 and the Vitest + Playwright mock-IPC harness working surface by surface. Start
 with a written assessment (bundle/render cost, xterm integration, test
 portability). Not a release prerequisite; start only on explicit go-ahead.
+
+## Session constraints
+
+The user often runs Claude Code inside the installed `/Applications/Beads Station.app`.
+Never install over, quit or relaunch it, and never trigger macOS permission prompts
+(System Events scripting, screen capture): put packaged-app checks in a hands-on
+checklist instead. Run only the tests relevant to the change; full gates once per release.
 
 ## Handoff
 
