@@ -201,9 +201,17 @@ fn event_frame(value: &Value) -> Option<(Value, Option<&'static str>)> {
     }
 }
 
-async fn record_event(project_id: &str, event: Value, window: &Window) {
+async fn record_event(project_id: &str, mut event: Value, window: &Window) {
     let mut scrollback = SCROLLBACK.lock().await;
     let ring = scrollback.entry(project_id.to_string()).or_default();
+    let next_seq = ring
+        .last()
+        .and_then(|previous| previous.get("_bs_seq"))
+        .and_then(Value::as_u64)
+        .map_or(0, |previous| previous.saturating_add(1));
+    if let Some(object) = event.as_object_mut() {
+        object.insert("_bs_seq".into(), json!(next_seq));
+    }
     if ring.len() >= SCROLLBACK_CAP {
         ring.remove(0);
     }

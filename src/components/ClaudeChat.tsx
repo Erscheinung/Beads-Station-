@@ -155,7 +155,39 @@ export interface ChatViewMemory {
 }
 
 const CHAT_VIEW_CAP = 64
+const FRAME_CAP = 500
 const chatViews = new Map<string, ChatViewMemory>()
+
+/**
+ * Reject a second delivery of the same provider frame while retaining frames
+ * that do not carry an app-owned sequence. The listener is installed before
+ * the scrollback replay request, so a frame can arrive through both paths.
+ * Keep this small and bounded: it is a delivery guard, not another history
+ * buffer.
+ */
+export class StreamFrameDeduper {
+  private readonly seen = new Set<number>()
+
+  constructor(private readonly maxEntries = 1000) {}
+
+  accept(frame: unknown): boolean {
+    if (!frame || typeof frame !== 'object') return true
+    const sequence = (frame as { _bs_seq?: unknown })._bs_seq
+    if (!Number.isInteger(sequence)) return true
+    const value = sequence as number
+    if (this.seen.has(value)) return false
+    this.seen.add(value)
+    if (this.seen.size > this.maxEntries) {
+      const oldest = this.seen.values().next().value
+      if (typeof oldest === 'number') this.seen.delete(oldest)
+    }
+    return true
+  }
+
+  clear(): void {
+    this.seen.clear()
+  }
+}
 
 function chatView(key: string): ChatViewMemory {
   const existing = chatViews.get(key)
@@ -256,6 +288,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
   // a stale snapshot. This is the same trick useVimNav uses for vim state.
   const framesRef = useRef<Frame[]>([])
   framesRef.current = frames
+  const seenStreamSequences = useMemo(() => new StreamFrameDeduper(FRAME_CAP * 2), [chatProvider, bridge])
   const approvalsRef = useRef<Record<string, ApprovalStatus>>({})
   approvalsRef.current = approvalStates
 
@@ -269,8 +302,16 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
   // during frame bursts. We now decide the trim against a ref mirror of the
   // current frames (framesRef, kept in sync every render), do the setState side
   // effects OUTSIDE the updater, and hand setFrames a plain value.
-  const FRAME_CAP = 500
-  const appendFrame = (next: Frame) => {
+  const markStreamFrame = (next: Frame): boolean => {
+    // The listener is registered before the scrollback replay request. A
+    // frame emitted during that request can therefore arrive once live and
+    // once in the replay response. Native bridges stamp parsed events with a
+    // per-session sequence so this boundary can discard that app-owned
+    // duplicate without guessing from message text.
+    return seenStreamSequences.accept(next)
+  }
+  const appendFrame = (next: Frame, alreadyMarked = false) => {
+    if (!alreadyMarked && !markStreamFrame(next)) return false
     const merged = [...framesRef.current, next]
     if (merged.length > FRAME_CAP) {
       const dropped = merged.length - FRAME_CAP
@@ -289,10 +330,11 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
         for (const k of Object.keys(s)) if (live.has(k)) kept[k] = s[k]
         return kept
       })
-      return
+      return true
     }
     framesRef.current = merged
     setFrames(merged)
+    return true
   }
 
   useEffect(() => {
@@ -304,6 +346,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
       // (startup diagnostic, initial stderr, session-id) are lost to the race.
       await safeListen<Frame>(`${chatProvider}_event:${chanId(bridge)}`, e => {
         const frame = e.payload
+        if (!markStreamFrame(frame)) return
         // Session is alive — reset the respawn counter.
         respawnAttemptsRef.current = 0
         // Always feed the usage accumulator; it ignores frames it can't use.
@@ -315,7 +358,7 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
           setStatus(s => (s === 'failed' ? s : 'frame'))
           return
         }
-        appendFrame(frame)
+        appendFrame(frame, true)
         setStatus(s => (s === 'failed' ? s : 'frame'))
       }, signal)
       await safeListen<string>(`${chatProvider}_event_raw:${chanId(bridge)}`, e => {
@@ -368,8 +411,9 @@ export function ClaudeChat({ projectId, cwd, permissionMode, bridgeId, active, p
         const buffered = await invoke<Frame[]>(command('scrollback'), { projectId: bridge })
         if (!signal.aborted && buffered.length > 0) {
           for (const frame of buffered) {
+            if (!markStreamFrame(frame)) continue
             accumulateUsage(bridge, frame)
-            if (!isHookFrame(frame)) appendFrame(frame)
+            if (!isHookFrame(frame)) appendFrame(frame, true)
           }
           setStatus(s => (s === 'pending' ? 'frame' : s))
         }

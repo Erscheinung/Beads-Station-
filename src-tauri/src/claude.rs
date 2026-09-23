@@ -705,7 +705,7 @@ pub async fn claude_start(
                             continue;
                         }
                         match serde_json::from_str::<Value>(trimmed) {
-                            Ok(value) => {
+                            Ok(mut value) => {
                                 // Phase 6: peek at top-level "type" and
                                 // dispatch a status event BEFORE handing
                                 // the value off to .emit() (which moves it).
@@ -739,6 +739,14 @@ pub async fn claude_start(
                                 {
                                     let mut sb = SCROLLBACK.lock().await;
                                     let ring = sb.entry(pid.clone()).or_default();
+                                    let next_seq = ring
+                                        .back()
+                                        .and_then(|previous| previous.get("_bs_seq"))
+                                        .and_then(Value::as_u64)
+                                        .map_or(0, |previous| previous.saturating_add(1));
+                                    if let Some(object) = value.as_object_mut() {
+                                        object.insert("_bs_seq".into(), json!(next_seq));
+                                    }
                                     if ring.len() >= SCROLLBACK_CAP {
                                         ring.pop_front();
                                     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { captureChatViewport, restoreChatViewport, type ChatViewMemory } from './ClaudeChat'
+import { captureChatViewport, restoreChatViewport, StreamFrameDeduper, type ChatViewMemory } from './ClaudeChat'
 
 function memory(): ChatViewMemory {
   return {
@@ -20,6 +20,18 @@ function dimensions(element: HTMLElement, values: Record<string, number>) {
 }
 
 describe('ClaudeChat viewport memory', () => {
+  it('drops the replay copy when a frame already arrived live', () => {
+    const deduper = new StreamFrameDeduper(4)
+    const frame = { _bs_seq: 12, type: 'assistant', message: { content: [] } }
+
+    expect(deduper.accept(frame)).toBe(true)
+    expect(deduper.accept({ ...frame })).toBe(false)
+    expect(deduper.accept({ _bs_seq: 13, type: 'result' })).toBe(true)
+    // Unstamped diagnostics remain visible; only the provider-owned sequence
+    // is used as an identity because message text can legitimately repeat.
+    expect(deduper.accept({ _kind: 'stderr', line: 'same text' })).toBe(true)
+  })
+
   it('keeps a history reader on the same message when layout above it changes', () => {
     const scroll = document.createElement('div')
     const first = scroll.appendChild(document.createElement('div'))
