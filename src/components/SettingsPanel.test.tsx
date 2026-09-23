@@ -14,6 +14,7 @@ import { SettingsPanel } from './SettingsPanel'
 import { closeSettings, openSettings } from '../state/settings'
 import { getBinding, resetBindings } from '../state/commands'
 import { resetUiCustomization } from '../state/uiCustomization'
+import appPackage from '../../package.json'
 
 function installDialogMethods(): void {
   if (!HTMLDialogElement.prototype.showModal) {
@@ -163,5 +164,24 @@ describe('SettingsPanel interface customization', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset interface customization' }))
     expect(screen.getByRole('slider', { name: 'Interface scale' })).toHaveValue('100')
     expect(screen.getByRole('combobox', { name: 'Interface density' })).toHaveValue('comfortable')
+  })
+})
+
+describe('SettingsPanel about page', () => {
+  beforeEach(() => {
+    act(() => closeSettings())
+  })
+
+  afterEach(() => {
+    act(() => closeSettings())
+  })
+
+  it('shows the version from application package metadata', () => {
+    installDialogMethods()
+    act(() => openSettings())
+    render(<SettingsPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'About' }))
+
+    expect(screen.getByTestId('app-version')).toHaveTextContent(`v${appPackage.version}`)
   })
 })

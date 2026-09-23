@@ -14,9 +14,10 @@ import { openSettings } from '../state/settings'
 import { providerAvailability, providerLabel, setInteractiveChatProvider, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from '../state/chatProviders'
 import { resetUiCustomization, setUiCustomization, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, useUiCustomization } from '../state/uiCustomization'
 import { RecipeSettings } from './RecipeSettings'
+import appPackage from '../../package.json'
 
-const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents', Recipes: 'recording replay interaction recipe steps binding import export undo' }
-const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions', 'Recipes'] as const
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station' }
+const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions', 'Recipes', 'About'] as const
 const TERMINAL_PANE_COMMAND_IDS = new Set([
   'fullscreen',
   'focusLeft',
@@ -235,6 +236,14 @@ export function SettingsPanel() {
           <p className="bs-settings__note">Opening a folder does not start an agent. A saved conversation is not proof of a running process; a session removed by Claude may no longer be resumable.</p>
         </>}
         {section === 'Recipes' && <RecipeSettings />}
+        {section === 'About' && <>
+          <p className="bs-settings__intro">Beads Station is a terminal-first workspace for local development.</p>
+          <dl className="bs-settings__about">
+            <div><dt>Version</dt><dd data-testid="app-version">v{appPackage.version}</dd></div>
+            <div><dt>Build</dt><dd>Preview</dd></div>
+          </dl>
+          <p className="bs-settings__note">This version is read from the application package metadata used to build the frontend.</p>
+        </>}
       </main>
     </div>
   </dialog>, document.body)
