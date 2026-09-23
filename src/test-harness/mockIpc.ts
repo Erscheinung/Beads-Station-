@@ -78,9 +78,9 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
         message: 'Beads initialized in the selected workspace.',
       }
 
-    // Code-9d8 — Gateway spend aggregate. A live value so the CostMeter's
-    // right-aligned `day/mo` row renders in the harness. The real command reads
-    // a cached Bearer token and hits gateway.example.com.
+    // Code-9d8 — optional gateway spend aggregate. A live value so the
+    // CostMeter's right-aligned `day/mo` row renders in the harness. The real
+    // command reads a cached Bearer token and calls BS_GATEWAY_SPEND_URL.
     case 'gateway_spending':
       return {
         available: true,

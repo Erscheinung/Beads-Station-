@@ -1,7 +1,7 @@
 # Post-v0.1.3 fixes — 2026-09-23
 
 User requested installation, implementation, limited focused tests, and a commit
-at each completed checkpoint. Tracking: `Code-t3w`. The user subsequently authorized v0.1.4 packaging, README updates, push, and publication. All session commits use kc1.408596@gmail.com.
+at each completed checkpoint. Tracking: `Code-t3w`. The user subsequently authorized v0.1.4 packaging, README updates, push, and publication. 
 
 ## Installation
 
@@ -94,8 +94,8 @@ and release preparation continues directly without subagents.
 
 ## v0.1.4 release checkpoint
 
-User authorized publication and stopped further subagents. Session authors were
-corrected to kc1.408596@gmail.com without changing public history.
+User authorized publication and stopped further subagents. Commit authorship was
+later normalized by the 2026-09-23 history rewrite.
 Release build and native About smoke passed; the final app created its native
 preference file after adding the missing Tauri store permission. Explicit ad-hoc
 signing before DMG creation repairs the v0.1.3 resource-signature defect; strict

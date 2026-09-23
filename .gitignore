@@ -22,8 +22,11 @@ playwright-report
 .env.*
 !.env.example
 
-# Local Codex operating instructions (machine/identity-specific; never commit).
+# Machine/identity-specific agent instructions (never commit).
 .codex-git-policy.md
+CLAUDE.local.md
+AGENTS.local.md
+.claude/settings.local.json
 
 # Editor directories and files
 .vscode/*
@@ -35,3 +38,6 @@ playwright-report
 *.njsproj
 *.sln
 *.sw?
+
+# Built installers belong in GitHub Releases, never in git history.
+*.dmg

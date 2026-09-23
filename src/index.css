@@ -228,7 +228,7 @@ body {
  * input form. JetBrains Mono throughout; labels muted, values full-fg. */
 .bs-cost-meter         { min-height: 22px; padding: 2px 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--bs-border); background: var(--bs-bg-elev); font-size: 11px; color: var(--bs-fg-muted); font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; }
 .bs-cost-meter strong  { color: var(--bs-fg); font-weight: 500; }
-/* Code-9d8 — Gateway daily/monthly EUR aggregate, pushed to the right of the
+/* Code-9d8 — optional gateway daily/monthly EUR aggregate, pushed to the right of the
  * per-session USD meter. Its own 12px gap keeps the two sub-values readable. */
 .bs-cost-meter-aggregate { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 

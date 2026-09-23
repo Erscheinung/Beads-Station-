@@ -156,7 +156,7 @@ Do not start another paid run solely to generate a cancellation race.
 5. Test expired auth, denied tools, offline server, pagination duplicates, rate limits,
    changed schemas, malicious request instructions and unknown write outcome using
    fixtures. Real GitHub/Figma/Jira account checks are separate user-selected tests.
-   No automatic external posting. Internal work/work follows prompt 14 in its own
+   No automatic external posting. Internal work integration follows prompt 14 in its own
    environment and is not a prerequisite for the public release.
 
 ## Performance and release evidence

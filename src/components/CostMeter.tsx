@@ -13,12 +13,12 @@
 // flags U+2300-23FF, U+2600-27BF, U+1F000-1FAFF; U+2191 sits below all of
 // those).
 //
-// Code-9d8: the right-aligned `day X/limit · mo Y/limit` group is the work
-// Gateway daily/monthly EUR spend aggregate (the same numbers the
-// Gateway popover / gateway-spending statusline show). It comes from the
-// `gateway_spending` Tauri command (reads the cached Bearer token, hits
-// gateway.example.com). It is omitted entirely when unavailable (no valid
-// token, offline) so the per-session USD meter on the left always stands alone.
+// Code-9d8: the right-aligned `day X/limit · mo Y/limit` group is the optional
+// LLM gateway daily/monthly EUR spend aggregate. It comes from the
+// `gateway_spending` Tauri command (reads the cached Bearer token named by
+// BS_GATEWAY_SPEND_TOKEN_FILE and calls BS_GATEWAY_SPEND_URL). It is omitted
+// entirely when unconfigured or unavailable (no valid token, offline) so the
+// per-session USD meter on the left always stands alone.
 
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
@@ -37,7 +37,7 @@ interface GatewaySpend {
   plan: string
 }
 
-// Gateway refreshes its own caps/costs on a ~3600s server interval, so a
+// Gateways typically refresh caps/costs on a ~3600s server interval, so a
 // tight poll would be wasted work. Refetch on mount and every 5 minutes; the
 // numbers move slowly. Shared across CostMeter instances would be ideal, but a
 // per-pane poll every 5m is cheap enough and keeps this component self-contained.
@@ -102,7 +102,7 @@ export function CostMeter({ projectId }: CostMeterProps) {
       {spend?.available && (
         <span
           className="bs-cost-meter-aggregate"
-          title={`LLM gateway spend${spend.plan ? ` (${spend.plan})` : ''}`}
+          title={`Gateway spend${spend.plan ? ` (${spend.plan})` : ''}`}
         >
           <span>
             day <strong>{formatEur(spend.dailyEur)}</strong>/{formatEur(spend.dailyLimitEur)}€

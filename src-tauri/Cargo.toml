@@ -40,9 +40,9 @@ ignore = "0.4"
 # local-timezone Local::now (the daily filename + HH:MM stamp must be wall-clock
 # local, not UTC); default-features off drops the unused oldtime/serde weight.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-# Code-9d8: minimal blocking HTTPS client for the LLM gateway spend API
-# (gateway.example.com). rustls avoids an OpenSSL system dep; native-certs
-# uses the macOS trust store so the work-internal cert chain validates.
+# Code-9d8: minimal blocking HTTPS client for the optional gateway spend API
+# (BS_GATEWAY_SPEND_URL). rustls avoids an OpenSSL system dep; native-certs
+# uses the macOS trust store so corporate-internal cert chains validate.
 ureq = { version = "2", default-features = false, features = ["tls", "native-certs", "json"] }
 
 [target.'cfg(unix)'.dependencies]

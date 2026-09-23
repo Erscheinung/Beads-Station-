@@ -119,7 +119,7 @@ pub fn load_dotenv() -> HashMap<String, String> {
 /// Push each (k, v) into std::env via set_var so child processes spawned later
 /// inherit them. An already-present environment variable is NOT overwritten:
 /// the live process environment wins over the `.env` file. This matters when
-/// the app inherited a correct value (e.g. a Gateway `ANTHROPIC_AUTH_TOKEN`
+/// the app inherited a correct value (e.g. a gateway `ANTHROPIC_AUTH_TOKEN`
 /// + `ANTHROPIC_BASE_URL=.../anthropic/`) — a stale repo `.env` must not clobber
 /// it and point `claude` at a dead endpoint. `.env` only fills what the
 /// environment is missing (the launchd-empty-PATH case). Returns the keys
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn install_does_not_clobber_existing_env() {
-        // A live env var (e.g. a Gateway ANTHROPIC_AUTH_TOKEN) must survive a
+        // A live env var (e.g. a gateway ANTHROPIC_AUTH_TOKEN) must survive a
         // stale .env — the .env only fills what's missing.
         let present = "BS_ENVTEST_PRESENT";
         let missing = "BS_ENVTEST_MISSING";
