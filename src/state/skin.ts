@@ -13,6 +13,7 @@
 // mirror for tests).
 
 import { useSyncExternalStore } from 'react'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 export type Skin = 'terminal' | 'designer'
 
@@ -77,6 +78,7 @@ export function setSkin(s: Skin): void {
   state = s
   try {
     localStorage.setItem(STORAGE_KEY, s)
+    persistDurableUserConfigKey(STORAGE_KEY)
   } catch {
     /* noop */
   }

@@ -1,3 +1,5 @@
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
+
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[]
 export type JsonObject = { [key: string]: JsonValue }
@@ -466,6 +468,7 @@ export function createRecipeStore<Commands extends Record<string, JsonObject>>(
     if (!parsed.ok) return parsed
     try {
       storage?.setItem(storageKey, JSON.stringify(parsed.value))
+      persistDurableUserConfigKey(storageKey)
     } catch (error) {
       return failure(errorMessage(error, 'Recipe storage could not be written.'))
     }

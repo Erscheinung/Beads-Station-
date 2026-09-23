@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 const KEY = 'beads-station.terminal-appearance'
 export const TERMINAL_FONTS = ['JetBrains Mono', 'Menlo', 'Monaco', 'monospace']
 export interface TerminalAppearance {
@@ -35,6 +36,7 @@ export function useTerminalAppearance() { return useSyncExternalStore(subscribeT
 export function setTerminalAppearance(next: Partial<TerminalAppearance>) {
   state = validated(next, state)
   try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(KEY)
   listeners.forEach(l => l())
 }
 export function resetTerminalAppearance() { setTerminalAppearance(DEFAULT_TERMINAL_APPEARANCE) }

@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 /** Providers with a first-party adapter in this build. Keep this union narrow. */
 export type InteractiveChatProvider = 'claude' | 'codex'
@@ -37,6 +38,7 @@ export function setInteractiveChatProvider(next: InteractiveChatProvider): void 
   if (!isProvider(next) || next === provider) return
   provider = next
   try { localStorage.setItem(PROVIDER_KEY, provider) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(PROVIDER_KEY)
   providerListeners.forEach(listener => listener())
 }
 

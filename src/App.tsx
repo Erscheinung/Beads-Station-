@@ -30,6 +30,7 @@ import { reorderWorkspace, useWorkspaceOrder } from './state/workspaceOrder'
 import { dispatchSemanticCommand, getRecipeRuntimeContext, setRecipeRuntimeContext, useRecipeRecording } from './state/recipeIntegration'
 import { requestDestructiveAction } from './state/destructiveActions'
 import { DestructiveActionGuard } from './components/DestructiveActionGuard'
+import { persistDurableUserConfigKey } from './lib/durableUserConfig'
 
 // Code-mkv — per-project terminal strip height. Falls back to the legacy global
 // key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
@@ -296,7 +297,9 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    localStorage.setItem('beads-station.sidebarWidth', String(sidebarWidth))
+    const key = 'beads-station.sidebarWidth'
+    localStorage.setItem(key, String(sidebarWidth))
+    persistDurableUserConfigKey(key)
   }, [sidebarWidth])
 
   // Code-mkv — on project switch, load that project's persisted strip height.
@@ -311,6 +314,8 @@ export default function App() {
     if (!active?.id || terminalHeightOwner !== active.id) return
     localStorage.setItem(`beads-station.terminalHeight.${active.id}`, String(terminalHeight))
     localStorage.setItem('beads-station.terminalHeight', String(terminalHeight))
+    persistDurableUserConfigKey(`beads-station.terminalHeight.${active.id}`)
+    persistDurableUserConfigKey('beads-station.terminalHeight')
   }, [terminalHeight, active?.id, terminalHeightOwner])
 
   const startSidebarResize = useCallback((e: React.MouseEvent) => {

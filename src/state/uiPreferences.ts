@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 export type BeadsView = 'terminal-only' | 'explorer' | 'board' | 'both'
 export interface UiPreferences {
@@ -25,7 +26,7 @@ function load(): UiPreferences {
     }
   } catch { return { ...DEFAULTS } }
 }
-function emit() { try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* non-browser */ }; listeners.forEach(l => l()) }
+function emit() { try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* non-browser */ }; persistDurableUserConfigKey(KEY); listeners.forEach(l => l()) }
 export function useUiPreferences() { return useSyncExternalStore(l => { listeners.add(l); return () => listeners.delete(l) }, () => state, () => state) }
 export function setUiPreferences(next: Partial<UiPreferences>) { state = { ...state, ...next }; emit() }
 // Selecting a view that includes the Explorer is also an explicit request to

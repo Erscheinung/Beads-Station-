@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from 'react'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 const KEY = 'beads-station.workspace-order.v1'
 
@@ -20,6 +21,7 @@ const listeners = new Set<() => void>()
 
 function persist(): void {
   try { localStorage.setItem(KEY, JSON.stringify(state.ids)) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(KEY)
 }
 
 function same(a: string[], b: string[]): boolean {
@@ -89,6 +91,6 @@ export function useWorkspaceOrder(ids: string[]): string[] {
 export function __resetWorkspaceOrderForTest(): void {
   state = { ids: [] }
   try { localStorage.removeItem(KEY) } catch { /* optional */ }
+  persistDurableUserConfigKey(KEY)
   listeners.forEach(listener => listener())
 }
-

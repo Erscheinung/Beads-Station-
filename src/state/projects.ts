@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { safeInvoke } from '../lib/invokeErrorBoundary'
 import { migrateProjectSurface, removeProjectSurface, setActiveProject as activateSurface } from './termPanes'
 import { shouldRestoreContextOnLaunch } from './sessionPreferences'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 export interface Project {
   id: string
@@ -66,6 +67,7 @@ function persistSelection() {
   try {
     localStorage.setItem(WORKSPACES_KEY, JSON.stringify({ openIds: state.openIds, activeId: state.activeId }))
     localStorage.removeItem(LEGACY_ACTIVE_KEY)
+    persistDurableUserConfigKey(WORKSPACES_KEY)
   } catch { /* private browsing / quota: the current session still works */ }
 }
 function readRecentIds(): string[] {
@@ -76,6 +78,7 @@ function readRecentIds(): string[] {
 }
 function persistRecentIds(ids: string[]) {
   try { localStorage.setItem(RECENT_WORKSPACES_KEY, JSON.stringify(ids.slice(0, 20))) } catch { /* optional preference */ }
+  persistDurableUserConfigKey(RECENT_WORKSPACES_KEY)
 }
 function rememberRecent(id: string) {
   const recentIds = [id, ...state.recentIds.filter(existing => existing !== id)].slice(0, 20)

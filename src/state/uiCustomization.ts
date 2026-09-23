@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 export type UiDensity = 'comfortable' | 'compact'
 
@@ -70,6 +71,7 @@ export function setUiCustomization(next: Partial<UiCustomization>): void {
   state = validated(next, state)
   applyDocumentCustomization(state)
   try { localStorage.setItem(UI_CUSTOMIZATION_KEY, JSON.stringify(state)) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(UI_CUSTOMIZATION_KEY)
   listeners.forEach(listener => listener())
 }
 

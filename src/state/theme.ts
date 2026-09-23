@@ -3,6 +3,7 @@ import { type ThemePalette, applyPaletteToCSS } from '../lib/themeImport'
 import { BUNDLED_THEMES, DEFAULT_THEME_ID } from '../themes/index'
 
 import { getSkin, subscribeSkin, type Skin } from './skin'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 export type Theme = 'dark' | 'light'
 
@@ -112,6 +113,7 @@ export function setThemePalette(id: string, skin: Skin = getSkin()): void {
   if (!valid(id)) return
   viewThemes = { ...viewThemes, [skin]: id }
   try { localStorage.setItem(VIEW_KEY, JSON.stringify(viewThemes)) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(VIEW_KEY)
   applyCurrentView()
 }
 
@@ -126,6 +128,8 @@ function applyCurrentView(): void {
     // Keep legacy readers compatible; view-themes is authoritative on reload.
     localStorage.setItem(PALETTE_KEY, paletteId)
     localStorage.setItem(STORAGE_KEY, state)
+    persistDurableUserConfigKey(PALETTE_KEY)
+    persistDurableUserConfigKey(STORAGE_KEY)
   } catch { /* optional storage */ }
   try { applyPaletteToCSS(BUNDLED_THEMES.find(t => t.name === paletteId)!) } catch { /* non-browser */ }
   emit()

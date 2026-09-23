@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import { openPalette } from './palette'
 import { openSettings } from './settings'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 export const COMMANDS = [
   { id: 'palette', label: 'Command palette', binding: 'Mod+K' },
@@ -142,12 +143,14 @@ export function setBinding(id: string, binding: string): string | null {
   if (error) return error
   bindings = { ...bindings, [id]: binding }
   try { localStorage.setItem(KEY, JSON.stringify(bindings)) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(KEY)
   listeners.forEach(l => l())
   return null
 }
 export function resetBindings() {
   bindings = { ...defaults }
   try { localStorage.removeItem(KEY) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(KEY)
   listeners.forEach(l => l())
 }
 export function matchedCommand(e: KeyboardEvent): CommandId | undefined {
@@ -177,6 +180,7 @@ export function setRecipeBinding(recipeId: string, label: string, binding: strin
   if (error) return error
   recipeBindings = { ...recipeBindings, [recipeId]: { label, binding } }
   try { localStorage.setItem(RECIPE_KEY, JSON.stringify(recipeBindings)) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(RECIPE_KEY)
   listeners.forEach(l => l())
   return null
 }
@@ -187,5 +191,6 @@ export function clearRecipeBinding(recipeId: string): void {
   delete next[recipeId]
   recipeBindings = next
   try { localStorage.setItem(RECIPE_KEY, JSON.stringify(recipeBindings)) } catch { /* optional storage */ }
+  persistDurableUserConfigKey(RECIPE_KEY)
   listeners.forEach(l => l())
 }

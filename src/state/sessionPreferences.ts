@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 
 export interface SessionPreferences {
   askBeforeResume: boolean
@@ -43,6 +44,7 @@ export function setSessionPreferences(next: Partial<SessionPreferences>): void {
   if (updated.askBeforeResume === state.askBeforeResume && updated.restoreContextOnLaunch === state.restoreContextOnLaunch && updated.confirmDestructiveActions === state.confirmDestructiveActions) return
   state = updated
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* optional */ }
+  persistDurableUserConfigKey(STORAGE_KEY)
   listeners.forEach(listener => listener())
 }
 

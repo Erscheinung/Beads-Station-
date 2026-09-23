@@ -4,11 +4,18 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/600.css";
 import "./index.css";
 import "@vscode/codicons/dist/codicon.css";
-import App from "./App";
-import { InvokeErrorBoundary } from "./lib/invokeErrorBoundary";
-import { AppCloseGuard } from "./components/AppCloseGuard";
+import { hydrateDurableUserConfig } from "./lib/durableUserConfig";
 
-function mount() {
+async function mount() {
+  // Hydrate the native app-data cache before importing stateful React modules.
+  // Their initial snapshots then see the same preferences after a DMG upgrade,
+  // even when WebKit assigned the installed app a fresh localStorage origin.
+  await hydrateDurableUserConfig()
+  const [{ default: App }, { InvokeErrorBoundary }, { AppCloseGuard }] = await Promise.all([
+    import("./App"),
+    import("./lib/invokeErrorBoundary"),
+    import("./components/AppCloseGuard"),
+  ])
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <InvokeErrorBoundary>
@@ -26,8 +33,8 @@ function mount() {
 if (import.meta.env.VITE_LIVE_MOCK) {
   import("./test-harness/boot").then(m => {
     m.installMockIpc();
-    mount();
+    void mount();
   });
 } else {
-  mount();
+  void mount();
 }
