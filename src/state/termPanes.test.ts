@@ -314,7 +314,9 @@ describe('termPanes tiling directions (Code-0cp.10.2)', () => {
     expect(root.kind).toBe('split')
     if (root.kind !== 'split') return
     const [left, right] = leavesOf(root)
+    setInsert(false)
     focusPaneDirection('left')
+    expect(getState()?.insert).toBe(true)
     focusPaneDirection('right')
 
     let disposed: string | undefined

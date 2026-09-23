@@ -954,7 +954,13 @@ export function focusPaneDirection(direction: PaneDirection): void {
     up: 'k',
     down: 'j',
   }
+  const before = activeTab(state).activePaneId
   moveFocus(vimDirection[direction])
+  // Directional shortcuts are application-level focus commands. Once a
+  // neighboring pane is selected, enter its input mode so Terminal's
+  // pane-owned effect focuses the retained xterm session (or ClaudeChat's
+  // scoped input) instead of leaving only the highlight on the old cursor.
+  if (activeTab(state).activePaneId !== before) setInsert(true)
 }
 
 function splitMatchesDirection(split: Split, direction: PaneDirection): boolean {
