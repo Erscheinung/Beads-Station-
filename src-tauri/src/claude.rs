@@ -292,7 +292,7 @@ pub(crate) async fn ensure_native_run_reviewable(
     Ok(())
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeProviderAvailability {
     provider: String,
@@ -302,8 +302,8 @@ pub struct NativeProviderAvailability {
 }
 
 #[tauri::command]
-pub fn native_provider_status() -> Vec<NativeProviderAvailability> {
-    ["claude", "codex"]
+pub fn native_provider_status(cwd: Option<String>) -> Vec<NativeProviderAvailability> {
+    let mut providers: Vec<NativeProviderAvailability> = ["claude", "codex"]
         .into_iter()
         .map(|provider| match crate::binresolve::resolve_bin(provider) {
             Ok(path) => NativeProviderAvailability {
@@ -319,7 +319,39 @@ pub fn native_provider_status() -> Vec<NativeProviderAvailability> {
                 detail: error,
             },
         })
-        .collect()
+        .collect();
+
+    // Code-da0.5 — conductor backends layered on the provider CLIs.
+    let codex = providers.iter().find(|p| p.provider == "codex").cloned();
+    let skill = crate::conductors::current_orchestrator_skill(cwd.as_deref().map(std::path::Path::new));
+    providers.push(match (codex, skill) {
+        (Some(codex), Some(skill)) if codex.available => NativeProviderAvailability {
+            provider: crate::conductors::CODEX_ORCHESTRATOR.into(),
+            available: true,
+            executable: codex.executable,
+            detail: format!("Sol plans, Luna workers implement; skill at {}", skill.display()),
+        },
+        (Some(codex), _) if !codex.available => NativeProviderAvailability {
+            provider: crate::conductors::CODEX_ORCHESTRATOR.into(),
+            available: false,
+            executable: None,
+            detail: format!("Requires Codex: {}", codex.detail),
+        },
+        _ => NativeProviderAvailability {
+            provider: crate::conductors::CODEX_ORCHESTRATOR.into(),
+            available: false,
+            executable: None,
+            detail: format!("Install the adaptive-orchestrator skill from {}", crate::conductors::ORCHESTRATOR_SOURCE),
+        },
+    });
+    let opus = crate::conductors::opus_conductor_dir();
+    providers.push(NativeProviderAvailability {
+        provider: crate::conductors::OPUS_CONDUCTOR.into(),
+        available: false,
+        executable: opus.as_ref().map(|dir| dir.display().to_string()),
+        detail: crate::conductors::opus_placeholder_detail(opus.as_deref()),
+    });
+    providers
 }
 
 #[tauri::command]
@@ -354,6 +386,14 @@ pub async fn native_run_start(
     let binary = match provider.as_str() {
         "claude" | "codex" => crate::binresolve::resolve_bin(&provider)
             .map_err(|e| format!("{provider} is unavailable: {e}"))?,
+        crate::conductors::CODEX_ORCHESTRATOR => {
+            crate::conductors::current_orchestrator_skill(Some(std::path::Path::new(&cwd)))
+                .ok_or_else(|| format!("adaptive-orchestrator skill is not installed; see {}", crate::conductors::ORCHESTRATOR_SOURCE))?;
+            crate::binresolve::resolve_bin("codex").map_err(|e| format!("codex is unavailable: {e}"))?
+        }
+        crate::conductors::OPUS_CONDUCTOR => {
+            return Err(crate::conductors::opus_placeholder_detail(crate::conductors::opus_conductor_dir().as_deref()))
+        }
         _ => return Err(format!("unsupported provider {provider}")),
     };
     let mut cmd = Command::new(binary);
@@ -367,14 +407,19 @@ pub async fn native_run_start(
                 .arg(&cwd)
                 .arg(&prompt);
         }
-        "codex" => {
+        "codex" | crate::conductors::CODEX_ORCHESTRATOR => {
+            let prompt = if provider == crate::conductors::CODEX_ORCHESTRATOR {
+                crate::conductors::orchestrator_prompt(&prompt)
+            } else {
+                prompt.clone()
+            };
             cmd.arg("exec")
                 .arg("--json")
                 .arg("--sandbox=workspace-write")
                 .arg("--ask-for-approval=never")
                 .arg("--cd")
                 .arg(&cwd)
-                .arg(&prompt);
+                .arg(prompt);
         }
         _ => unreachable!(),
     }

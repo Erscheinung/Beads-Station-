@@ -35,6 +35,14 @@ const NAV_ITEMS: { id: NavItem; label: string }[] = [
   { id: 'timeline', label: 'Timeline' },
 ]
 
+// Code-da0.5 — direct provider CLIs and conductor backends for ticket runs.
+const RUN_OPTIONS: { value: NativeProvider; label: string }[] = [
+  { value: 'claude', label: 'Claude (native login)' },
+  { value: 'codex', label: 'Codex (native login)' },
+  { value: 'codex-orchestrator', label: 'Codex orchestrator (Sol + Luna)' },
+  { value: 'opus-conductor', label: 'Opus conductor (placeholder)' },
+]
+
 const TIER_META = {
   everyday: { model: 'standard routing', effort: 'Provider decides model and effort', heavy: 'Switch to Heavy to request more capable routing for difficult work.' },
   heavy:    { model: 'heavy routing', effort: 'Provider decides model and effort', heavy: 'Heavy is a routing preference, not a claim about the model that ran.' },
@@ -331,13 +339,10 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
   ].filter(Boolean).join('\n\n'), [issue])
 
   useEffect(() => {
-    invoke<ProviderAvailability[]>('native_provider_status').then(value => setProviders(Array.isArray(value) ? value : [])).catch(error => {
-      setProviders([
-        { provider: 'claude', available: false, detail: String(error) },
-        { provider: 'codex', available: false, detail: String(error) },
-      ])
+    invoke<ProviderAvailability[]>('native_provider_status', { cwd: project?.path ?? null }).then(value => setProviders(Array.isArray(value) ? value : [])).catch(error => {
+      setProviders(RUN_OPTIONS.map(option => ({ provider: option.value, available: false, detail: String(error) })))
     })
-  }, [])
+  }, [project?.path])
 
   const start = async (revisionFeedback?: string) => {
     if (!project || availability?.available !== true || status === 'starting' || status === 'running' || status === 'unknown') return
@@ -396,8 +401,10 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
       <div style={styles.providerRow}>
         <label htmlFor="designer-provider">Run with</label>
         <select id="designer-provider" disabled={status === 'running' || status === 'starting'} value={status === 'running' || status === 'starting' ? run.provider : provider} onChange={e => setProvider(e.target.value as NativeProvider)} style={styles.providerSelect}>
-          <option value="claude">Claude (native login)</option>
-          <option value="codex">Codex (native login)</option>
+          {RUN_OPTIONS.map(option => {
+            const known = providers.find(p => p.provider === option.value)
+            return <option key={option.value} value={option.value} disabled={known ? !known.available : false}>{option.label}</option>
+          })}
         </select>
         <span style={styles.requestMeta}>{availability?.detail ?? 'Checking installation…'}</span>
         <span style={styles.requestMeta}>Effective model and usage: unknown until reported by the CLI.</span>

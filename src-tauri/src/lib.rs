@@ -11,6 +11,7 @@ mod binresolve;
 mod claude;
 mod codex;
 mod conductor;
+mod conductors;
 mod daily;
 mod envloader;
 mod fs;

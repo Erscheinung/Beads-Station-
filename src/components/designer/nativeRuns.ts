@@ -3,7 +3,12 @@ import { invoke } from '@tauri-apps/api/core'
 import { safeListen } from '../../lib/listenerRegistry'
 import { chanId } from '../../lib/eventChannel'
 
-export type NativeProvider = 'claude' | 'codex'
+/**
+ * Direct provider CLIs plus Code-da0.5 conductor backends. `codex-orchestrator`
+ * runs Codex through the adaptive Sol/Luna orchestrator skill;
+ * `opus-conductor` is a detection-only placeholder that never starts.
+ */
+export type NativeProvider = 'claude' | 'codex' | 'codex-orchestrator' | 'opus-conductor'
 export type NativeRunStatus = 'idle' | 'starting' | 'running' | 'needs_review' | 'failed' | 'cancelled' | 'unknown'
 export interface NativeRunState {
   key: string

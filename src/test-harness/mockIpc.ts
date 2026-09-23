@@ -195,6 +195,8 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return [
         { provider: 'claude', available: true, executable: '/mock/claude', detail: 'Installed; login is managed by the native CLI' },
         { provider: 'codex', available: true, executable: '/mock/codex', detail: 'Installed; login is managed by the native CLI' },
+        { provider: 'codex-orchestrator', available: true, executable: '/mock/codex', detail: 'Sol plans, Luna workers implement; skill at /mock/.codex/skills/adaptive-orchestrator/SKILL.md' },
+        { provider: 'opus-conductor', available: false, executable: null, detail: 'Placeholder: set BS_OPUS_CONDUCTOR_DIR to a local Opus conductor checkout' },
       ]
     case 'codex_chat_start':
     case 'codex_chat_send':
