@@ -1,5 +1,17 @@
 # Beads Station — agent handoff
 
+## Active work — 2026-09-23, repository hygiene and Todoist 0.1.x pass
+
+Epic `Code-da0`. Identity is now machine-local (gitignored `CLAUDE.local.md`);
+employer/machine references were scrubbed from files, beads data and — with the
+user's explicit authorization — rewritten git history (all authors normalized,
+branches and tags force-pushed). Implemented: user-intent terminal scroll
+anchoring (`Code-da0.6`), native file drop into terminals (`Code-da0.7`),
+resizable Designer columns (`Code-da0.8`), and Designer conductor backends —
+Codex adaptive orchestrator plus an Opus placeholder (`Code-da0.5`). The
+Todoist reconciliation table and the future Svelte migration task live in
+`CLAUDE.md`. Native packaged checks for these remain open.
+
 ## Active work — 2026-09-23, post-v0.1.3 fixes
 
 The user authorized installation of released v0.1.3 and implementation of six
