@@ -114,5 +114,6 @@ describe('WorkspacePicker A4 finder', () => {
     mocks.browseForFolder.mockResolvedValueOnce('/tmp/a folder')
     fireEvent.click(screen.getByRole('button', { name: 'Browse for a workspace folder' }))
     await waitFor(() => expect(entry).toHaveValue('/tmp/a folder'))
+    await waitFor(() => expect(mocks.openFolder).toHaveBeenCalledWith('/tmp/a folder'))
   })
 })

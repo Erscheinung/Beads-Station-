@@ -195,6 +195,10 @@ export function WorkspacePicker({ onClose }: { onClose?: () => void }) {
       setScope('known')
       setEntry(path)
       setHighlightedIndex(0)
+      // Finder's Load/Open result is already an explicit user choice. Open it
+      // immediately instead of requiring a second click on the picker action.
+      await openFolder(path)
+      onClose?.()
     }
   })
   const browseScope = () => void run(async () => {
