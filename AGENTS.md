@@ -1,5 +1,15 @@
 # Beads Station — agent handoff
 
+## Active work — 2026-09-23, post-v0.1.3 fixes
+
+The user authorized installation of released v0.1.3 and implementation of six
+bounded fixes, with focused checks and a checkpoint commit per completed item.
+See [the active fix record](docs/POST-0.1.3-FIXES.md) and Beads epic `Code-t3w`.
+Auto-update is future-only; its release endpoint design must accommodate the
+user's two remotes (only `origin` is configured in this checkout). No push or
+new release is requested. Preserve local configuration and existing sessions.
+The orchestration no-review contract applies; workers own focused validation.
+
 ## Latest handoff — 2026-09-20, Designer artifact review slice
 
 Roadmap B3 artifact/revision work is implemented under `Code-am5.2`; the bead is
