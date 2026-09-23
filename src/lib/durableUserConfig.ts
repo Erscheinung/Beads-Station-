@@ -31,6 +31,7 @@ const DURABLE_EXACT_KEYS = new Set([
   'beads-station.interactive-chat-provider',
   'beads-station.sidebarWidth',
   'beads-station.terminalHeight',
+  'beads-station.designer-layout.v1',
 ])
 
 const DURABLE_PREFIXES = ['beads-station.terminalHeight.']

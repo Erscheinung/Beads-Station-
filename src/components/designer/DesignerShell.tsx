@@ -8,6 +8,8 @@ import { ConductorControl } from './ConductorControl'
 import { ActiveAgents } from './ActiveAgents'
 import { Timeline } from './Timeline'
 import { DesignerEmptyState } from './DesignerEmptyState'
+import { ColumnResizer } from './ColumnResizer'
+import { loadDesignerLayout, saveDesignerLayout, type DesignerLayout } from './designerLayout'
 import { useProjects } from '../../state/projects'
 import { setSkin } from '../../state/skin'
 import { conductorSetDefaultTier } from '../../lib/conductorBridge'
@@ -42,6 +44,17 @@ export function DesignerShell() {
   const [tier, setTier] = useState<Tier>('everyday')
   const [nav, setNav]   = useState<NavItem>('requests')
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
+  const [layout, setLayout] = useState<DesignerLayout>(loadDesignerLayout)
+  const resizeColumn = useCallback((side: keyof DesignerLayout, width: number) => {
+    setLayout(current => (current[side] === width ? current : { ...current, [side]: width }))
+  }, [])
+  const commitColumn = useCallback((side: keyof DesignerLayout, width: number) => {
+    setLayout(current => {
+      const next = { ...current, [side]: width }
+      saveDesignerLayout(next)
+      return next
+    })
+  }, [])
 
   // Code-9z4 — gate the whole shell on project availability. Without this every
   // right-panel surface independently renders "No project selected." on a fresh
@@ -106,7 +119,7 @@ export function DesignerShell() {
       </header>
 
       {/* ── Body: sidebar + main + right ── */}
-      <div style={styles.body}>
+      <div style={{ ...styles.body, gridTemplateColumns: `${layout.left}px 1fr ${layout.right}px` }}>
         {/* Left sidebar */}
         <aside style={styles.sidebar}>
           <nav style={styles.nav}>
@@ -133,6 +146,25 @@ export function DesignerShell() {
             <p style={styles.tierCardHint}>{meta.heavy}</p>
           </div>
         </aside>
+
+        <div style={{ ...styles.resizerSlot, left: layout.left - 3 }}>
+          <ColumnResizer
+            side="left"
+            width={layout.left}
+            label="Resize navigation column"
+            onResize={width => resizeColumn('left', width)}
+            onCommit={width => commitColumn('left', width)}
+          />
+        </div>
+        <div style={{ ...styles.resizerSlot, right: layout.right - 3 }}>
+          <ColumnResizer
+            side="right"
+            width={layout.right}
+            label="Resize gates and agents panel"
+            onResize={width => resizeColumn('right', width)}
+            onCommit={width => commitColumn('right', width)}
+          />
+        </div>
 
         {/* Center — main view */}
         <main style={styles.main}>
@@ -494,6 +526,14 @@ const styles: Record<string, React.CSSProperties> = {
     gridTemplateColumns: '220px 1fr 280px',
     minHeight: 0,
     overflow: 'hidden',
+    position: 'relative',
+  },
+  resizerSlot: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    width: 6,
+    zIndex: 5,
   },
   sidebar: {
     background: 'var(--bs-bg)',

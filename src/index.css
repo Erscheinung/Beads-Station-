@@ -629,3 +629,8 @@ body {
 
 /* Code-da0.7 — a terminal pane under a native file drag. */
 .bs-terminal-drop-target { outline: 2px dashed var(--bs-blue); outline-offset: -2px; }
+
+/* Code-da0.8 — Designer column resizers: invisible 6px hit area over the
+ * existing 1px column border; highlight on hover, drag or keyboard focus. */
+.bs-designer-resizer { width: 100%; height: 100%; cursor: col-resize; background: transparent; transition: background 120ms ease; }
+.bs-designer-resizer:hover, .bs-designer-resizer:focus-visible { background: color-mix(in srgb, var(--bs-orange, var(--bs-blue)) 45%, transparent); outline: none; }
