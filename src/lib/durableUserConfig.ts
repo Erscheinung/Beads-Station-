@@ -25,6 +25,8 @@ const DURABLE_EXACT_KEYS = new Set([
   'beads-station.recipe-bindings.v1',
   'beads-station.recipes.v1',
   'beads-station.session-preferences',
+  'beads-station.notification-preferences',
+  'beads-station.update-preferences',
   'beads-station.workspace-order.v1',
   'beads-station.workspaces.v2',
   'beads-station.workspaceRecents.v1',

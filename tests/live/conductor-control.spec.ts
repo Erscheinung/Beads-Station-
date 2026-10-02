@@ -1,4 +1,4 @@
-import { test, expect } from './helpers'
+import { test, expect, emitUntil } from './helpers'
 
 // Code-9ud — Intelligent Conductor control + live footer live-verify.
 // Boots the Designer skin (?ui=designer) in browser-mock mode. conductor_start
@@ -41,17 +41,14 @@ test('Start fires conductor_start with the repo path and dry-run', async ({ page
 
 test('a conductor_status event drives the footer + card to awake', async ({ page }) => {
   await bootDesigner(page)
-  await page.evaluate(() =>
-    (window as any).__bsMockEmit('conductor_status', {
-      state: 'awake',
-      bead_id: 'Code-xyz',
-      detail: 'advancing molecule step',
-      last_pulse_ms: null,
-      interval_secs: 1200,
-      repo_path: '/tmp/beads-station',
-    }),
-  )
-  await expect(page.getByText('Conductor awake · Code-xyz').first()).toBeVisible()
+  await emitUntil(page, [['conductor_status', {
+    state: 'awake',
+    bead_id: 'Code-xyz',
+    detail: 'advancing molecule step',
+    last_pulse_ms: null,
+    interval_secs: 1200,
+    repo_path: '/tmp/beads-station',
+  }]], () => expect(page.getByText('Conductor awake · Code-xyz').first()).toBeVisible({ timeout: 500 }))
   await expect(page.getByText('advancing molecule step')).toBeVisible()
   // Now running -> the toggle becomes Stop.
   await expect(page.getByRole('button', { name: 'Stop' })).toBeVisible()
@@ -60,16 +57,14 @@ test('a conductor_status event drives the footer + card to awake', async ({ page
 test('Stop fires conductor_stop; a stopped status returns the footer to stopped', async ({ page }) => {
   await bootDesigner(page)
   // Bring it up first so the toggle shows Stop.
-  await page.evaluate(() =>
-    (window as any).__bsMockEmit('conductor_status', {
-      state: 'awake',
-      bead_id: 'Code-xyz',
-      detail: null,
-      last_pulse_ms: null,
-      interval_secs: 1200,
-      repo_path: '/tmp/beads-station',
-    }),
-  )
+  await emitUntil(page, [['conductor_status', {
+    state: 'awake',
+    bead_id: 'Code-xyz',
+    detail: null,
+    last_pulse_ms: null,
+    interval_secs: 1200,
+    repo_path: '/tmp/beads-station',
+  }]], () => expect(page.getByRole('button', { name: 'Stop' })).toBeVisible({ timeout: 500 }))
   await page.getByRole('button', { name: 'Stop' }).click()
   await expect
     .poll(async () => {

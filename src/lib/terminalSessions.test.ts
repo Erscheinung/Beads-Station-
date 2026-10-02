@@ -4,21 +4,28 @@ const mock = vi.hoisted(() => ({
   clearTextureAtlas: vi.fn(), disposed: vi.fn(), focus: vi.fn(), fit: vi.fn(),
   scrollToBottom: vi.fn(), scrollToLine: vi.fn(), markerDispose: vi.fn(), paste: vi.fn(),
   onScroll: null as null | (() => void), onWriteParsed: null as null | (() => void), onData: null as null | ((data: string) => void),
+  onBell: null as null | (() => void), keyHandler: null as null | ((event: KeyboardEvent) => boolean),
+  osc: new Map<number, (data: string) => boolean>(), scrollToTop: vi.fn(), notifyPane: vi.fn(), setPaneAgentCli: vi.fn(),
   themeListeners: new Set<() => void>(),
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
 vi.mock('../state/theme', () => ({ getActivePalette: () => null, subscribeTheme: (listener: () => void) => { mock.themeListeners.add(listener); return () => mock.themeListeners.delete(listener) } }))
+vi.mock('../state/paneNotifications', () => ({ notifyPane: mock.notifyPane }))
+vi.mock('../state/termPanes', () => ({ setPaneAgentCli: mock.setPaneAgentCli }))
 vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
   buffer = {
-    active: { type: 'normal', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24 },
+    active: { type: 'normal', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24, getLine: () => ({ translateToString: () => '' }) },
     normal: { type: 'normal', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24 },
     alternate: { type: 'alternate', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24 },
     onBufferChange() { return { dispose() {} } },
   }
   loadAddon() {} open() {} focus = mock.focus
-  attachCustomKeyEventHandler() {}
+  attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { mock.keyHandler = handler }
+  onBell(handler: () => void) { mock.onBell = handler; return { dispose() {} } }
+  parser = { registerOscHandler(ident: number, handler: (data: string) => boolean) { mock.osc.set(ident, handler); return { dispose() {} } } }
+  scrollToTop = mock.scrollToTop
   write = mock.write; refresh = mock.refresh; clearTextureAtlas = mock.clearTextureAtlas; dispose = mock.disposed
   onData(handler: (data: string) => void) { mock.onData = handler; return { dispose() {} } }
   onScroll(handler: () => void) { mock.onScroll = handler; return { dispose() {} } }
@@ -34,14 +41,14 @@ vi.mock('xterm', () => ({ Terminal: class {
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit = mock.fit } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
-import { disposeTerminalSession, getTerminalSession, SgrColorNormalizer, shellQuote, terminalSessionForNode } from './terminalSessions'
+import { disposeTerminalSession, getTerminalSession, oscNotificationText, runInTerminalSession, SgrColorNormalizer, shellQuote, terminalFontStack, terminalSessionForNode } from './terminalSessions'
 
 beforeEach(() => {
   vi.clearAllMocks()
   mock.listen.mockResolvedValue(mock.released)
   mock.invoke.mockResolvedValue(7)
 })
-afterEach(() => { disposeTerminalSession('pane'); resetTerminalAppearance(); mock.themeListeners.clear(); document.body.innerHTML = ''; vi.unstubAllGlobals() })
+afterEach(() => { vi.useRealTimers(); disposeTerminalSession('pane'); resetTerminalAppearance(); mock.themeListeners.clear(); document.body.innerHTML = ''; vi.unstubAllGlobals() })
 
 function userScroll(session: { element: HTMLElement }) {
   session.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
@@ -314,5 +321,138 @@ describe('dropped file paths', () => {
     expect(session.pastePaths(['/a/b.txt', '/c d/e.png'])).toBe(true)
     expect(mock.paste).toHaveBeenCalledWith("/a/b.txt '/c d/e.png' ")
     expect(terminalSessionForNode(document.body)).toBeNull()
+  })
+})
+
+describe('native resize coalescing', () => {
+  it('sends one native resize for a burst of layout changes, with the settled size', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    vi.useFakeTimers()
+    mock.invoke.mockClear()
+    for (const cols of [90, 95, 101, 110]) {
+      Object.assign(session.terminal, { cols, rows: 30 })
+      session.resize(host)
+    }
+    expect(mock.invoke).not.toHaveBeenCalledWith('pty_resize', expect.anything())
+    vi.advanceTimersByTime(200)
+    expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_resize')).toEqual([['pty_resize', { id: 7, cols: 110, rows: 30 }]])
+    // Settling back on the size the shell already has sends nothing.
+    session.resize(host)
+    vi.advanceTimersByTime(200)
+    expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_resize')).toHaveLength(1)
+  })
+})
+
+describe('pane notification sources', () => {
+  it('reads OSC 9, 99 and 777 notification text and ignores progress reports', () => {
+    expect(oscNotificationText(9, 'Build finished')).toBe('Build finished')
+    expect(oscNotificationText(9, '4;1;50')).toBeNull()
+    expect(oscNotificationText(777, 'notify;Claude Code;Waiting for your input')).toBe('Claude Code: Waiting for your input')
+    expect(oscNotificationText(777, 'precmd;x')).toBeNull()
+    expect(oscNotificationText(99, 'i=1:d=0;Tests passed')).toBe('Tests passed')
+    expect(oscNotificationText(99, 'i=1:p=body;All green')).toBe('All green')
+    expect(oscNotificationText(99, 'i=1:p=close;')).toBeNull()
+  })
+  it('notifies its pane on a bell or an OSC notification', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    mock.onBell?.()
+    expect(mock.notifyPane).toHaveBeenLastCalledWith('pane', 'bell')
+    expect(mock.osc.get(9)?.('Deploy done')).toBe(true)
+    expect(mock.notifyPane).toHaveBeenLastCalledWith('pane', 'osc', 'Deploy done')
+    expect(mock.osc.get(9)?.('4;0')).toBe(false)
+    expect(mock.notifyPane).toHaveBeenCalledTimes(2)
+  })
+  it('reports sustained output that goes quiet, but not a short burst or typing echo', async () => {
+    let now = 10_000
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    vi.useFakeTimers()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    const output = mock.listen.mock.calls[0][1] as (event: { payload: { id: number; data: string } }) => void
+    const emit = (advance: number) => { now += advance; vi.advanceTimersByTime(advance); output({ payload: { id: 7, data: 'x' } }) }
+
+    // A two-second burst is not "work".
+    emit(0); emit(1000); emit(1000)
+    now += 4000; vi.advanceTimersByTime(4000)
+    expect(mock.notifyPane).not.toHaveBeenCalled()
+
+    // Echo of the user's own typing is ignored however long it lasts.
+    for (let index = 0; index < 8; index += 1) { mock.onData?.('a'); emit(100); now += 900; vi.advanceTimersByTime(900) }
+    now += 4000; vi.advanceTimersByTime(4000)
+    expect(mock.notifyPane).not.toHaveBeenCalled()
+
+    // Five seconds of continuous output followed by silence is.
+    emit(0); for (let index = 0; index < 5; index += 1) emit(1000)
+    now += 2000; vi.advanceTimersByTime(2000)
+    expect(mock.notifyPane).not.toHaveBeenCalled()
+    now += 1500; vi.advanceTimersByTime(1500)
+    expect(mock.notifyPane).toHaveBeenCalledExactlyOnceWith('pane', 'quiet')
+  })
+})
+
+describe('terminal keys and fonts', () => {
+  const press = (init: KeyboardEventInit) => new KeyboardEvent('keydown', { cancelable: true, ...init })
+  it('sends macOS editing chords once, on keydown, and lets the setting turn them off', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    mock.invoke.mockClear()
+    const event = press({ key: 'ArrowLeft', metaKey: true })
+    expect(mock.keyHandler?.(event)).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+    expect(mock.keyHandler?.(new KeyboardEvent('keyup', { key: 'ArrowLeft', metaKey: true }))).toBe(false)
+    await vi.waitFor(() => expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_write')).toEqual([['pty_write', { id: 7, data: '\u0001' }]]))
+
+    expect(mock.keyHandler?.(press({ key: 'ArrowUp', metaKey: true }))).toBe(false)
+    expect(mock.scrollToTop).toHaveBeenCalledTimes(1)
+    expect(mock.keyHandler?.(press({ key: 'a' }))).toBe(true)
+
+    setTerminalAppearance({ macEditingKeys: false })
+    expect(mock.keyHandler?.(press({ key: 'ArrowLeft', metaKey: true }))).toBe(true)
+  })
+  it('keeps app shortcuts ahead of terminal chords', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    mock.invoke.mockClear()
+    // Mod+Alt+ArrowLeft is "Focus terminal pane left".
+    expect(mock.keyHandler?.(press({ key: 'ArrowLeft', metaKey: true, altKey: true }))).toBe(false)
+    expect(mock.invoke).not.toHaveBeenCalledWith('pty_write', expect.anything())
+  })
+  it('puts the bundled Nerd Font behind every terminal font choice', async () => {
+    expect(terminalFontStack('Menlo')).toBe("Menlo, 'JetBrainsMono Nerd Font', monospace")
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    expect(session.terminal.options.fontFamily).toBe("'JetBrains Mono', 'JetBrainsMono Nerd Font', monospace")
+    setTerminalAppearance({ fontFamily: 'monospace' })
+    expect(session.terminal.options.fontFamily).toBe("monospace, 'JetBrainsMono Nerd Font', monospace")
+  })
+})
+
+describe('agent CLI resume support', () => {
+  it('records the foreground agent CLI at each screen checkpoint', async () => {
+    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? 'claude' : 7)
+    const session = getTerminalSession('pane', '/repo', vi.fn(), vi.fn())
+    await session.ready
+    session.checkpointScreen()
+    await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', 'claude'))
+    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? null : 7)
+    session.checkpointScreen()
+    await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', null))
+  })
+  it('types a requested startup command only after the shell has printed', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    vi.useFakeTimers()
+    mock.invoke.mockClear()
+    runInTerminalSession('pane', 'claude --continue')
+    vi.advanceTimersByTime(2000)
+    expect(mock.invoke).not.toHaveBeenCalledWith('pty_write', expect.anything())
+    mock.listen.mock.calls[0][1]({ payload: { id: 7, data: 'prompt % ' } })
+    vi.advanceTimersByTime(500)
+    await vi.runAllTimersAsync()
+    expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_write')).toEqual([['pty_write', { id: 7, data: 'claude --continue\r' }]])
   })
 })

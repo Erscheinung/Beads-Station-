@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('../state/vim', () => ({ setFocused: mocks.setFocused }))
-vi.mock('../state/claudeStatus', () => ({ useClaudeStatus: () => 'idle' }))
+vi.mock('../state/claudeStatus', () => ({ useClaudeStatus: () => 'idle', getClaudeStatus: () => 'idle', subscribeClaudeStatus: () => () => {} }))
 vi.mock('./Terminal', () => ({
   Terminal: ({ paneId }: { paneId: string }) => <div data-terminal-pane={paneId} />,
 }))
@@ -24,6 +24,7 @@ import {
   restoreProjects,
   setActiveProject,
   splitActive,
+  takePaneStartupCommand,
 } from '../state/termPanes'
 
 describe('TerminalPanes tab accessibility', () => {
@@ -94,5 +95,43 @@ describe('TerminalPanes tab accessibility', () => {
     expect(screen.getByText(/No live process is attached and no model turn was started/)).toBeInTheDocument()
     expect(mocks.ClaudeChat).not.toHaveBeenCalled()
     expect(mocks.invoke.mock.calls.some(([command]) => command === 'claude_start' || command === 'codex_chat_start' || command === 'codex_chat_send')).toBe(false)
+  })
+
+  it('offers to resume an agent CLI in a restored shell, and runs it only when asked', () => {
+    restoreProjects(JSON.stringify({
+      v: 2,
+      projects: {
+        'restore-cli': {
+          tabs: [{
+            id: 'tab910',
+            activePaneId: 'pane911',
+            root: {
+              kind: 'split', splitId: 'split912', dir: 'v', ratio: 0.5,
+              a: { kind: 'leaf', paneId: 'pane911', ptyId: 4, cwd: '/tmp/restore', agentCli: 'codex', savedScreen: { lines: ['codex> hi'], cols: 80, rows: 24, buffer: 'normal', cursorX: 0, cursorY: 0, capturedAt: 1 } },
+              b: { kind: 'leaf', paneId: 'pane913', ptyId: 5, cwd: '/tmp/restore' },
+            },
+          }],
+          activeTabId: 'tab910',
+          insert: false,
+        },
+      },
+    }))
+    setActiveProject('restore-cli', '/tmp/restore')
+
+    render(<TerminalPanes termFocused />)
+
+    // Restoring starts nothing: both panes are inert saved screens.
+    expect(screen.getAllByText(/previous shell is stopped/)).toHaveLength(2)
+    expect(document.querySelector('[data-terminal-pane]')).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Start new shell' })).toHaveLength(2)
+    const resume = screen.getByRole('button', { name: 'Start shell and resume Codex' })
+    expect(screen.getByText('codex resume --last')).toBeInTheDocument()
+
+    act(() => fireEvent.click(resume))
+
+    expect(document.querySelector('[data-terminal-pane="pane911"]')).not.toBeNull()
+    expect(document.querySelector('[data-terminal-pane="pane913"]')).toBeNull()
+    expect(takePaneStartupCommand('pane911')).toBe('codex resume --last')
+    expect(takePaneStartupCommand('pane913')).toBeNull()
   })
 })

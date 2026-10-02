@@ -36,6 +36,9 @@ export interface Leaf {
   restored?: boolean
   /** Bounded display-only evidence. It is never replayed as shell input. */
   savedScreen?: SavedTerminalScreen
+  /** Agent CLI last seen in this shell's foreground. Only used to offer an
+   *  explicit resume on a restored pane; nothing is launched from it. */
+  agentCli?: AgentCli
   /**
    * RV2 — additive agent-pane payload. Absent/undefined => legacy shell leaf.
    * Present => this leaf hosts a Claude agent session (ClaudeChat) instead of
@@ -64,6 +67,16 @@ export interface Leaf {
   fileNav?: {
     rootPath: string
   }
+}
+
+export type AgentCli = 'claude' | 'codex'
+
+/** Shell command that reopens the most recent conversation for this folder.
+ *  Resuming loads the local transcript; no model turn starts until a prompt
+ *  is sent. */
+export const AGENT_CLI_RESUME: Record<AgentCli, { label: string; command: string }> = {
+  claude: { label: 'Claude', command: 'claude --continue' },
+  codex: { label: 'Codex', command: 'codex resume --last' },
 }
 
 export interface SavedTerminalScreen {
@@ -379,6 +392,12 @@ export function setActiveProject(projectId: string, cwd: string): void {
   activeProjectId = projectId
   state = next
   _lastCwd = cwd
+  if (_pendingReveal) {
+    const paneId = _pendingReveal
+    _pendingReveal = null
+    const tab = state.tabs.find(candidate => findLeaf(candidate.root, paneId))
+    if (tab) state = { ...replaceTab(state, tab.id, { ...tab, activePaneId: paneId }), activeTabId: tab.id, insert: true }
+  }
   emit()
 }
 
@@ -458,6 +477,78 @@ function getSnapshot(): TermPanesState {
 
 export function useTermPanes(): TermPanesState {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+/** Non-React subscription for stores that derive from the pane tree. */
+export function subscribeTermPanes(listener: () => void): () => void {
+  return subscribe(listener)
+}
+
+export interface PaneLocation {
+  projectId: string
+  tabId: string
+  /** True when this is the selected pane of the visible tab of the visible workspace. */
+  active: boolean
+  agentBridgeId: string | null
+}
+
+function eachSurface(visit: (projectId: string, surface: TermPanesState) => boolean | void): void {
+  if (visit(activeProjectId, state)) return
+  for (const [projectId, surface] of PROJECTS) {
+    if (projectId === activeProjectId) continue
+    if (visit(projectId, surface)) return
+  }
+}
+
+/** Find a pane in any workspace's surface, including hidden ones. */
+export function locatePane(paneId: string): PaneLocation | null {
+  let found: PaneLocation | null = null
+  eachSurface((projectId, surface) => {
+    for (const tab of surface.tabs) {
+      const leaf = findLeaf(tab.root, paneId)
+      if (!leaf) continue
+      found = {
+        projectId,
+        tabId: tab.id,
+        active: projectId === activeProjectId && tab.id === surface.activeTabId && tab.activePaneId === paneId,
+        agentBridgeId: leaf.agent?.bridgeId ?? null,
+      }
+      return true
+    }
+  })
+  return found
+}
+
+/** The pane hosting an agent bridge, in any workspace. */
+export function paneForAgentBridge(bridgeId: string): string | null {
+  let paneId: string | null = null
+  eachSurface((_projectId, surface) => {
+    for (const tab of surface.tabs) {
+      const leaf = leavesOf(tab.root).find(candidate => candidate.agent?.bridgeId === bridgeId)
+      if (leaf) { paneId = leaf.paneId; return true }
+    }
+  })
+  return paneId
+}
+
+let _pendingReveal: string | null = null
+
+/**
+ * Select a pane's tab and focus it. When the pane belongs to another
+ * workspace the selection is applied on the next setActiveProject, and that
+ * workspace's id is returned so the caller can activate it.
+ */
+export function revealPane(paneId: string): string | null {
+  const location = locatePane(paneId)
+  if (!location) return null
+  if (location.projectId !== activeProjectId) {
+    _pendingReveal = paneId
+    return location.projectId
+  }
+  const tab = state.tabs.find(candidate => candidate.id === location.tabId)!
+  state = { ...replaceTab(state, tab.id, { ...tab, activePaneId: paneId }), activeTabId: tab.id, insert: true }
+  emit()
+  return null
 }
 
 // Code-aod — reconcile-slice signature (see computeSig / _sig above). Returns a
@@ -657,13 +748,50 @@ export function updatePaneScreen(paneId: string, savedScreen: SavedTerminalScree
   if (state !== before) emit()
 }
 
-/** Explicit user intent converts an inert restored pane into a new attachment attempt. */
-export function activateRestoredPane(paneId: string): void {
+/** Record which agent CLI, if any, owns the foreground of a shell pane. */
+export function setPaneAgentCli(paneId: string, agentCli: AgentCli | null): void {
+  const update = (source: TermPanesState): TermPanesState => {
+    const tab = source.tabs.find(candidate => findLeaf(candidate.root, paneId))
+    if (!tab) return source
+    const leaf = findLeaf(tab.root, paneId)!
+    if ((leaf.agentCli ?? null) === agentCli) return source
+    return replaceTab(source, tab.id, {
+      ...tab,
+      root: mapLeaf(tab.root, paneId, existing => ({ ...existing, agentCli: agentCli ?? undefined })),
+    })
+  }
+  const before = state
+  state = update(state)
+  if (state !== before) { emit(); return }
+  for (const [projectId, project] of PROJECTS) {
+    if (projectId === activeProjectId) continue
+    const next = update(project)
+    if (next !== project) { PROJECTS.set(projectId, next); schedulePersist(); return }
+  }
+}
+
+const startupCommands = new Map<string, string>()
+
+/** The command a freshly started shell should run once, if the user asked for one. */
+export function takePaneStartupCommand(paneId: string): string | null {
+  const command = startupCommands.get(paneId) ?? null
+  startupCommands.delete(paneId)
+  return command
+}
+
+/**
+ * Explicit user intent converts an inert restored pane into a new attachment
+ * attempt. With `resumeAgentCli` the new shell also reopens the agent CLI that
+ * was running there; that choice is part of the same explicit action.
+ */
+export function activateRestoredPane(paneId: string, options: { resumeAgentCli?: boolean } = {}): void {
   const tab = state.tabs.find(candidate => findLeaf(candidate.root, paneId))
   if (!tab) return
+  const leaf = findLeaf(tab.root, paneId)
+  if (options.resumeAgentCli && leaf?.agentCli) startupCommands.set(paneId, AGENT_CLI_RESUME[leaf.agentCli].command)
   state = replaceTab(state, tab.id, {
     ...tab,
-    root: mapLeaf(tab.root, paneId, leaf => ({ ...leaf, restored: undefined })),
+    root: mapLeaf(tab.root, paneId, existing => ({ ...existing, restored: undefined })),
   })
   emit()
 }

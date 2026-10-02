@@ -105,8 +105,7 @@ test('the pane tree is restored per project across a reload', async ({ page }) =
   await page.waitForFunction(() => !!(window as any).__bsTerm)
 
   // The restored surface has the same pane count (tree rehydrated, not reset).
-  const after = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
-  expect(after).toBe(before)
+  await expect.poll(() => page.evaluate(() => (window as any).__bsTerm?.paneCount)).toBe(before)
 })
 
 // ── Code-6k4: reload-restore soak ────────────────────────────────────────────
@@ -172,8 +171,9 @@ test('reload-restore soak: paneCount + ratio stable across 20 cycles, no orphan 
     await page.waitForFunction(() => (window as any).__bsMockReady === true)
     await page.waitForFunction(() => !!(window as any).__bsTerm)
 
-    const paneCount = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
-    expect(paneCount, `cycle ${i + 1}: paneCount`).toBe(expectedPaneCount)
+    // The mirror starts at one pane and reaches the restored count once the
+    // workspace surface is activated, so wait for it rather than sampling once.
+    await expect.poll(() => page.evaluate(() => (window as any).__bsTerm?.paneCount), { message: `cycle ${i + 1}: paneCount` }).toBe(expectedPaneCount)
 
     const ratio = await readPersistedRatio(page)
     expect(ratio, `cycle ${i + 1}: ratio present`).not.toBeNull()

@@ -58,4 +58,20 @@ describe('command bindings', () => {
     expect(getBinding('initializeBeads')).toBe('')
     expect(setBinding('workspaceNext', 'Mod+K')).toContain('Command palette')
   })
+
+  it('keeps a user shortcut when an update adds a command with the same default', async () => {
+    // Saved by an older version: no entry for the newer notificationJump command.
+    localStorage.setItem('beads-station.command-bindings.v1', JSON.stringify({ palette: 'Mod+K', workspace: 'Mod+Shift+U' }))
+    localStorage.setItem('beads-station.recipe-bindings.v1', JSON.stringify({ r1: { label: 'Review', binding: 'Mod+Shift+Y' } }))
+    vi.resetModules()
+    const upgraded = await import('./commands')
+    expect(upgraded.getBinding('workspace')).toBe('Mod+Shift+U')
+    expect(upgraded.getBinding('notificationJump')).toBe('')
+    expect(upgraded.matchedCommand(new KeyboardEvent('keydown', { key: 'U', metaKey: true, shiftKey: true }))).toBe('workspace')
+    expect(upgraded.getRecipeBinding('r1')).toBe('Mod+Shift+Y')
+    localStorage.clear()
+    vi.resetModules()
+    const fresh = await import('./commands')
+    expect(fresh.getBinding('notificationJump')).toBe('Mod+Shift+U')
+  })
 })

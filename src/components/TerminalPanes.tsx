@@ -21,6 +21,8 @@ import {
   registerPty,
   updatePaneScreen,
   activateRestoredPane,
+  takePaneStartupCommand,
+  AGENT_CLI_RESUME,
   focusPane,
   setInsert,
   setRatio,
@@ -31,9 +33,33 @@ import {
 import { setFocused } from '../state/vim'
 import { clearObservedProviderSession, observedProviderSession } from '../state/sessionPreferences'
 import { requestDestructiveAction } from '../state/destructiveActions'
+import { clearPaneNotification, usePaneNotifications, type PaneNotification } from '../state/paneNotifications'
+import { runInTerminalSession } from '../lib/terminalSessions'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
+  const command = takePaneStartupCommand(paneId)
+  if (command) runInTerminalSession(paneId, command)
+}
+
+
+/** The pane's waiting mark: what happened, and a way to dismiss it without focusing. */
+function PaneNotificationChip({ notification }: { notification: PaneNotification }) {
+  // The ring is its own layer: xterm's screen covers any border or shadow
+  // drawn on the pane wrapper itself.
+  return <>
+    <div className="bs-pane-notification-ring" aria-hidden />
+    <button
+      className="bs-pane-notification"
+      data-pane-notification={notification.paneId}
+      title="Dismiss notification"
+      onMouseDown={event => event.stopPropagation()}
+      onClick={() => clearPaneNotification(notification.paneId)}
+    >
+      <span className="bs-pane-notification__dot" aria-hidden />
+      <span className="bs-pane-notification__text">{notification.message}</span>
+    </button>
+  </>
 }
 
 function onScreen(paneId: string, screen: Parameters<typeof updatePaneScreen>[1]) {
@@ -48,8 +74,16 @@ function RestoredShell({ leaf }: { leaf: Leaf }) {
     <pre aria-label="Saved terminal screen" style={{ flex: 1, minHeight: 0, overflow: 'auto', margin: 0, padding: 10, color: 'var(--bs-fg-muted)', whiteSpace: 'pre-wrap', font: 'inherit' }}>
       {leaf.savedScreen?.lines.join('\n') || 'No terminal screen was captured before the app stopped.'}
     </pre>
-    <div style={{ padding: 8, borderTop: '1px solid var(--bs-border)' }}>
+    <div style={{ padding: 8, borderTop: '1px solid var(--bs-border)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
       <button onClick={() => activateRestoredPane(leaf.paneId)}>Start new shell</button>
+      {leaf.agentCli && <>
+        <button onClick={() => activateRestoredPane(leaf.paneId, { resumeAgentCli: true })} title={`Starts a shell and runs: ${AGENT_CLI_RESUME[leaf.agentCli].command}`}>
+          Start shell and resume {AGENT_CLI_RESUME[leaf.agentCli].label}
+        </button>
+        <span style={{ color: 'var(--bs-fg-muted)', fontSize: 11 }}>
+          Runs <code>{AGENT_CLI_RESUME[leaf.agentCli].command}</code>. Reopening a conversation uses no tokens until you send a message.
+        </span>
+      </>}
     </div>
   </div>
 }
@@ -57,6 +91,7 @@ function RestoredShell({ leaf }: { leaf: Leaf }) {
 interface RenderCtx {
   activePaneId: string
   termFocused: boolean
+  notifications: ReadonlyMap<string, PaneNotification>
   insert: boolean
   /** when set, this paneId fills the region; all others are hidden. */
   zoomed: string | null
@@ -79,12 +114,14 @@ function PaneLeaf({
   const isActive = paneId === ctx.activePaneId
   const isZoomed = ctx.zoomed === paneId
   const hiddenByZoom = ctx.zoomed !== null && !isZoomed
+  const notification = ctx.notifications.get(paneId)
   return (
     <div
       onMouseDown={() => {
         focusPane(paneId)
         setFocused('terminal')
         setInsert(true)
+        clearPaneNotification(paneId)
       }}
       style={{
         width: '100%',
@@ -103,6 +140,7 @@ function PaneLeaf({
         boxShadow: isActive && ctx.termFocused ? 'inset 0 0 0 1px var(--bs-blue)' : undefined,
       }}
     >
+      {notification && <PaneNotificationChip notification={notification} />}
       {leaf.restored ? <RestoredShell leaf={leaf} /> : <Terminal
         paneId={paneId}
         cwd={leaf.cwd}
@@ -136,9 +174,11 @@ function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
   const isZoomed = ctx.zoomed === leaf.paneId
   const hiddenByZoom = ctx.zoomed !== null && !isZoomed
   const status = useClaudeStatus(a.bridgeId)
+  const notification = ctx.notifications.get(leaf.paneId)
   return (
     <div
       onMouseDown={() => {
+        clearPaneNotification(leaf.paneId)
         // RV2 — focus the pane, but DON'T force insert here. If the click lands
         // on the input, its onFocus sets insert=true (real focus == insert). If
         // it lands on the header/body, we stay in pane-op mode so leader/C-w
@@ -162,6 +202,7 @@ function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
         boxShadow: isActive && ctx.termFocused ? 'inset 0 0 0 1px var(--bs-blue)' : undefined,
       }}
     >
+      {notification && <PaneNotificationChip notification={notification} />}
       {/* Pane header — status at a glance (req 5), keyed by bridgeId so two
           same-project panes show independent dots. */}
       <div style={{
@@ -337,11 +378,13 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
   const draggedTab = useRef<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
   const zoomed = useZoom()
+  const notifications = usePaneNotifications()
   const tab = tabs.find(t => t.id === activeTabId) ?? tabs[0]
   const visibleZoom = leavesOf(tab.root).some(l => l.paneId === zoomed) ? zoomed : null
   const ctx: RenderCtx = {
     activePaneId: tab.activePaneId,
     termFocused,
+    notifications,
     insert,
     zoomed: visibleZoom,
     viewEpoch: `${tab.id}:${visibleZoom ?? ''}:${fullscreen}`,
@@ -374,7 +417,8 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
           {tabs.map((t, i) => {
             const activeLeaf = leavesOf(t.root).find(l => l.paneId === t.activePaneId)
             const kind = activeLeaf?.agent ? 'agent' : activeLeaf?.fileNav ? 'files' : 'shell'
-            const name = `Terminal tab ${i + 1}: ${kind}`
+            const waiting = leavesOf(t.root).filter(l => notifications.has(l.paneId)).length
+            const name = `Terminal tab ${i + 1}: ${kind}${waiting ? `, ${waiting} waiting` : ''}`
             const selected = t.id === activeTabId
             return (
               <button
@@ -430,6 +474,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
                 }}
               >
                 {i + 1} · {kind}
+                {waiting > 0 && <span className="bs-notification-dot" data-tab-notification={t.id} aria-hidden />}
               </button>
             )
           })}

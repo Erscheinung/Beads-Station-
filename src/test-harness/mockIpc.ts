@@ -95,6 +95,13 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
     case 'pty_spawn':
       return 1
 
+    // Release check: a spec sets window.__bsMockUpdate to describe the
+    // "latest release"; without it the check reports no result.
+    case 'app_check_update':
+      return (window as unknown as { __bsMockUpdate?: unknown }).__bsMockUpdate ?? null
+    case 'app_download_update':
+      return { path: '~/Downloads/Beads.Station_9.9.9_aarch64.dmg', checksumVerified: true }
+
     // --- RV3-B file-nav (Code-8ro): a small deterministic tree + file preview
     //     so a filenav pane renders real rows instead of an empty pane. ---
     case 'list_dir': {

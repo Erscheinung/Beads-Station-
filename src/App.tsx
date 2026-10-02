@@ -31,6 +31,7 @@ import { dispatchSemanticCommand, getRecipeRuntimeContext, setRecipeRuntimeConte
 import { requestDestructiveAction } from './state/destructiveActions'
 import { DestructiveActionGuard } from './components/DestructiveActionGuard'
 import { persistDurableUserConfigKey } from './lib/durableUserConfig'
+import { checkForUpdatesOnLaunch, useAppUpdate } from './state/appUpdate'
 
 // Code-mkv — per-project terminal strip height. Falls back to the legacy global
 // key, then 280. Clamped to the same 80..700 range the drag/hotkeys enforce.
@@ -246,6 +247,20 @@ export default function App() {
     window.addEventListener('workspace:open', onOpen)
     return () => window.removeEventListener('workspace:open', onOpen)
   }, [])
+
+  // A pane notification can belong to another workspace; showing it activates
+  // that workspace first. The pane store applies the tab/pane selection.
+  useEffect(() => {
+    const onActivate = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+      if (id && projects.some(project => project.id === id)) setActive(id)
+    }
+    window.addEventListener('workspace:activate', onActivate)
+    return () => window.removeEventListener('workspace:activate', onActivate)
+  }, [projects, setActive])
+
+  const appUpdate = useAppUpdate()
+  useEffect(() => { checkForUpdatesOnLaunch() }, [])
 
   // Sidebar collapse toggle (leader-b, dispatched by the vim keymap) + width
   // persistence. Drag-resize is handled inline on the divider (startResize).
@@ -545,6 +560,11 @@ export default function App() {
             })}
           >{chatRequested ? `${providerLabel(activeChatProvider)} chat running` : `Start ${providerLabel(interactiveChatProvider)} chat`}</button>
           <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
+          {(appUpdate.status === 'available' || appUpdate.status === 'downloaded') && (
+            <button className="bs-toolbar__update" onClick={() => { openSettings(); window.dispatchEvent(new Event('settings:show-about')) }} title="A newer release is available">
+              Update {appUpdate.info.latest}
+            </button>
+          )}
         </header>
         <div className="bs-app-chrome">
           <TabBar projects={orderedProjects} activeId={activeId} onSelect={selectWorkspace} onReorder={reorderWorkspace} onOpen={() => setPickerOpen(true)} onClose={id => {

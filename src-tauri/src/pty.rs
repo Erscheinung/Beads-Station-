@@ -232,6 +232,56 @@ pub async fn pty_snapshot(id: u32) -> Result<PtySnapshot, String> {
     })
 }
 
+/// Name the agent CLI in a command line, without exposing the command itself.
+fn classify_agent_cli(argv: &[String]) -> Option<&'static str> {
+    // `claude` is a native binary or sets its own title; `codex` is usually
+    // `node …/bin/codex` wrapping a native binary. Look at the program and its
+    // first argument only, so a path later in the arguments cannot match.
+    argv.iter().take(2).find_map(|arg| {
+        let name = arg.rsplit('/').next().unwrap_or(arg);
+        if name == "claude" || arg.contains("/claude-code/") {
+            Some("claude")
+        } else if name == "codex" || name.starts_with("codex-") || name == "codex.js" {
+            Some("codex")
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(unix)]
+fn foreground_argv(master: &dyn MasterPty) -> Option<Vec<String>> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(u32::try_from(master.process_group_leader()?).ok()?);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+    );
+    let process = system.process(pid)?;
+    Some(
+        process
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect(),
+    )
+}
+#[cfg(not(unix))]
+fn foreground_argv(_master: &dyn MasterPty) -> Option<Vec<String>> {
+    None
+}
+
+/// Which agent CLI ("claude" or "codex"), if any, owns this terminal's
+/// foreground. Used only to offer an explicit resume after a restart.
+#[tauri::command]
+pub async fn pty_foreground(id: u32) -> Result<Option<&'static str>, String> {
+    let handle = handle(id)?;
+    let master = handle.master.lock().map_err(|e| e.to_string())?;
+    Ok(foreground_argv(master.as_ref()).and_then(|argv| classify_agent_cli(&argv)))
+}
+
 #[tauri::command]
 pub async fn pty_kill(id: u32) -> Result<(), String> {
     let handle = PTYS.lock().map_err(|e| e.to_string())?.remove(&id);
@@ -277,6 +327,40 @@ mod tests {
         assert_eq!(cmd.get_env("LANG").and_then(|v| v.to_str()), Some("en_US.UTF-8"));
         assert_eq!(cmd.get_env("TERM").and_then(|v| v.to_str()), Some("xterm-256color"));
         assert_eq!(cmd.get_env("COLORTERM").and_then(|v| v.to_str()), Some("truecolor"));
+    }
+
+    #[test]
+    fn classifies_agent_clis_from_the_program_and_first_argument_only() {
+        let argv = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();
+        assert_eq!(classify_agent_cli(&argv(&["claude", "--continue"])), Some("claude"));
+        assert_eq!(classify_agent_cli(&argv(&["/opt/homebrew/bin/claude"])), Some("claude"));
+        assert_eq!(classify_agent_cli(&argv(&["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"])), Some("claude"));
+        assert_eq!(classify_agent_cli(&argv(&["node", "/opt/homebrew/bin/codex", "resume"])), Some("codex"));
+        assert_eq!(classify_agent_cli(&argv(&["codex-aarch64-apple-darwin"])), Some("codex"));
+        assert_eq!(classify_agent_cli(&argv(&["-zsh"])), None);
+        assert_eq!(classify_agent_cli(&argv(&["vim", "notes", "claude"])), None);
+        assert_eq!(classify_agent_cli(&[]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn foreground_of_a_live_pty_is_inspectable_and_a_plain_command_is_not_an_agent() {
+        let pair = native_pty_system()
+            .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new("/bin/sleep");
+        cmd.arg("5");
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn");
+        drop(pair.slave);
+        let argv = (0..50).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            foreground_argv(pair.master.as_ref()).filter(|argv| !argv.is_empty())
+        });
+        let _ = child.kill();
+        let _ = child.wait();
+        let argv = argv.expect("foreground process command line");
+        assert!(argv[0].ends_with("sleep"), "{argv:?}");
+        assert_eq!(classify_agent_cli(&argv), None);
     }
 
     #[test]

@@ -29,6 +29,7 @@ export function AppCloseGuard() {
   const sessionPreferences = useSessionPreferences()
   const requestRef = useRef<CloseRequest | null>(null)
   const priorFocus = useRef<HTMLElement | null>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
   requestRef.current = request
 
   useEffect(() => {
@@ -110,15 +111,32 @@ export function AppCloseGuard() {
 
   useEffect(() => {
     if (!request) return
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.isComposing || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        void cancel()
+        return
+      }
+      // Enter confirms once the affected sessions are known; a focused Cancel
+      // button keeps its own Enter behavior.
+      if (event.key !== 'Enter' || scope === null) return
+      const target = event.target instanceof HTMLElement ? event.target : null
+      if (target?.closest('[data-dialog-cancel]')) return
       event.preventDefault()
       event.stopPropagation()
-      void cancel()
+      void stopAndClose()
     }
-    window.addEventListener('keydown', onEscape, true)
-    return () => window.removeEventListener('keydown', onEscape, true)
-  }, [request, cancel])
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [request, cancel, scope, stopAndClose])
+
+  // The confirming button is disabled until the scope loads, so autofocus
+  // alone would leave the dialog without a focused control.
+  useEffect(() => {
+    if (request && scope !== null) confirmRef.current?.focus()
+  }, [request, scope])
 
   if (!request) return null
   const current = scope ?? EMPTY_SCOPE
@@ -138,8 +156,8 @@ export function AppCloseGuard() {
         Don’t ask again for destructive actions
       </label>
       <div className="bs-modal-actions">
-        <button autoFocus type="button" className="bs-modal-btn bs-modal-btn--ghost" disabled={busy} onClick={() => void cancel()}>Cancel</button>
-        <button type="button" className="bs-modal-btn bs-modal-btn--primary" disabled={busy || scope === null} onClick={() => void stopAndClose()}>{busy ? 'Stopping…' : 'Close and stop sessions'}</button>
+        <button data-dialog-cancel type="button" className="bs-modal-btn bs-modal-btn--ghost" disabled={busy} onClick={() => void cancel()}>Cancel <kbd aria-hidden>Esc</kbd></button>
+        <button ref={confirmRef} type="button" className="bs-modal-btn bs-modal-btn--primary" disabled={busy || scope === null} onClick={() => void stopAndClose()}>{busy ? 'Stopping…' : <>Close and stop sessions <kbd aria-hidden>↵</kbd></>}</button>
       </div>
     </div>
   </div>

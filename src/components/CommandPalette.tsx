@@ -15,6 +15,8 @@ import { newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, mov
 import { initializeBeads } from '../lib/beadsInit'
 import { setFocused } from '../state/vim'
 import { dispatchSemanticCommand } from '../state/recipeIntegration'
+import { clearAllPaneNotifications, jumpToLatestPaneNotification } from '../state/paneNotifications'
+import { checkForUpdates } from '../state/appUpdate'
 import './CommandPalette.css'
 
 // Phase 9 (Code-ky4.9) — cmdk command palette. Opens on Cmd/Ctrl+K or leader-k
@@ -177,6 +179,9 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'resizeRight': setSkin('terminal'); setFocused('terminal'); resizePane('right'); break
       case 'resizeUp': setSkin('terminal'); setFocused('terminal'); resizePane('up'); break
       case 'resizeDown': setSkin('terminal'); setFocused('terminal'); resizePane('down'); break
+      case 'notificationJump': jumpToLatestPaneNotification(); break
+      case 'notificationsClear': clearAllPaneNotifications(); break
+      case 'checkForUpdates': openSettings(); window.dispatchEvent(new Event('settings:show-about')); void checkForUpdates(); break
       case 'agent': onAction('agent:spawn'); break
       case 'files': onAction('filenav:spawn'); break
       case 'expand': case 'collapse': window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: id === 'expand' ? 'expandAll' : 'collapseAll' } })); break

@@ -33,6 +33,9 @@ export const COMMANDS = [
   { id: 'resizeRight', label: 'Resize terminal split right', binding: 'Mod+Alt+Shift+ArrowRight', repo: true },
   { id: 'resizeUp', label: 'Resize terminal split up', binding: 'Mod+Alt+Shift+ArrowUp', repo: true },
   { id: 'resizeDown', label: 'Resize terminal split down', binding: 'Mod+Alt+Shift+ArrowDown', repo: true },
+  { id: 'notificationJump', label: 'Jump to latest pane notification', binding: 'Mod+Shift+U' },
+  { id: 'notificationsClear', label: 'Clear pane notifications' },
+  { id: 'checkForUpdates', label: 'Check for updates' },
   { id: 'agent', label: 'New Claude agent pane', repo: true },
   { id: 'files', label: 'Open files explorer', repo: true },
   { id: 'expand', label: 'Expand all beads', repo: true },
@@ -99,9 +102,21 @@ const RECIPE_KEY = 'beads-station.recipe-bindings.v1'
 const defaults: Record<string, string> = Object.fromEntries(COMMANDS.map(c => [c.id, ('binding' in c ? c.binding : '') || '']))
 let bindings = { ...defaults }
 let recipeBindings: Record<string, { label: string; binding: string }> = {}
+// Commands with no saved entry are new since the user last changed a shortcut.
+const unsavedIds = new Set(Object.keys(defaults))
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || '{}')
-  for (const id of Object.keys(defaults)) if (typeof saved[id] === 'string') bindings[id] = saved[id]
+  for (const id of Object.keys(defaults)) {
+    if (typeof saved[id] !== 'string') continue
+    bindings[id] = saved[id]
+    unsavedIds.delete(id)
+  }
+  // A command added by an update must not take a shortcut the user already
+  // assigned: the new default yields, never the user's choice.
+  if (unsavedIds.size < Object.keys(defaults).length) {
+    const chosen = new Set(Object.keys(defaults).filter(id => !unsavedIds.has(id)).map(id => bindings[id]))
+    for (const id of unsavedIds) if (bindings[id] && chosen.has(bindings[id])) bindings[id] = ''
+  }
   for (const id of Object.keys(defaults)) if (bindingError(id, bindings[id])) bindings[id] = ''
 } catch { /* optional storage */ }
 try {
@@ -113,6 +128,9 @@ try {
       }
     }
   }
+  // The same rule for recipe shortcuts recorded before a command existed.
+  const recipeChosen = new Set(Object.values(recipeBindings).map(value => value.binding))
+  for (const id of unsavedIds) if (bindings[id] && recipeChosen.has(bindings[id])) bindings[id] = ''
 } catch { /* optional storage */ }
 const listeners = new Set<() => void>()
 export function useCommandBindings() {

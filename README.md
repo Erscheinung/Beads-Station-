@@ -2,7 +2,7 @@
 
 A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
-> **Early preview — v0.1.4.** The Developer workspace is usable for local evaluation. Designer supports local artifact revision review, but the complete provider-to-approval workflow remains unverified.
+> **Early preview — v0.1.5.** The Developer workspace is usable for local evaluation. Designer supports local artifact revision review, but the complete provider-to-approval workflow remains unverified.
 
 ## Preview
 
@@ -24,11 +24,22 @@ The following workspace screenshots are retained from v0.1.0.
 
 The Designer screenshot demonstrates the intended information architecture and visual direction, including graph cards that expand for wrapped titles while preserving spacing and connector alignment. Its controls and workflow should not be treated as production-ready behavior.
 
-## Install the v0.1.4 preview
+## Install the v0.1.5 preview
 
-The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.4_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.5_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
 
-Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.4 release notes](docs/releases/v0.1.4.md) for the verified feature list, known limitations, test checklist, and future plans.
+Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.5 release notes](docs/releases/v0.1.5.md) for the verified feature list, known limitations, test checklist, and future plans.
+
+## v0.1.5 changes
+
+- Pane notifications: a ring on the pane, dots on its terminal and workspace tabs and a Dock count when a background terminal or agent finishes or needs you, with optional auto-switch.
+- macOS editing shortcuts in terminals (Cmd+arrows, Cmd+Backspace, Shift+Enter) and bundled Nerd Font icons.
+- Enter confirms and Escape cancels the close-pane, close-workspace and close-app dialogs.
+- Settings → About checks for a newer release and can download its DMG; it does not replace the app for you.
+- A restored terminal that had Claude Code or Codex running offers to resume it.
+- Designer runs can go through Claude, Codex, or the Codex orchestrator conductor.
+
+None of this has been exercised in the packaged app yet; the [release notes](docs/releases/v0.1.5.md) carry the hands-on checklist.
 
 ## v0.1.4 fixes
 
@@ -39,7 +50,7 @@ Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional 
 - Directional tile selection transfers terminal input focus.
 - Chat frames are deduplicated when live output overlaps scrollback replay.
 
-Terminal scroll jumps during streaming or workspace/tab switching remain under investigation. Automatic updates are future work; endpoint selection must accommodate both release remotes. See the [fix record](docs/POST-0.1.3-FIXES.md).
+See the [fix record](docs/POST-0.1.3-FIXES.md).
 
 ## Current foundation
 

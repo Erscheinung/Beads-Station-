@@ -50,6 +50,17 @@ export async function emit(page: Page, channel: string, payload: unknown): Promi
   )
 }
 
+/**
+ * Fire an event until the app shows it reacted. Listeners attach
+ * asynchronously after mount, so one emit right after boot can be lost.
+ */
+export async function emitUntil(page: Page, events: Array<[channel: string, payload: unknown]>, reacted: () => Promise<void>): Promise<void> {
+  await expect(async () => {
+    for (const [channel, payload] of events) await emit(page, channel, payload)
+    await reacted()
+  }).toPass({ timeout: 10_000 })
+}
+
 /** The ordered log of invokes the app made (recorded by the mock). */
 export async function invokeLog(
   page: Page,

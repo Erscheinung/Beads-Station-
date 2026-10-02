@@ -15,9 +15,24 @@ import { providerAvailability, providerLabel, setInteractiveChatProvider, useInt
 import { resetUiCustomization, setUiCustomization, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, useUiCustomization } from '../state/uiCustomization'
 import { RecipeSettings } from './RecipeSettings'
 import appPackage from '../../package.json'
+import { setNotificationPreferences, useNotificationPreferences } from '../state/notificationPreferences'
+import { clearAllPaneNotifications, usePaneNotifications } from '../state/paneNotifications'
+import { checkForUpdates, downloadUpdate, setCheckForUpdatesOnLaunch, useAppUpdate, useCheckForUpdatesOnLaunch, type UpdateState } from '../state/appUpdate'
 
-const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents confirm confirmation destructive close', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station' }
-const sections = ['General', 'Appearance', 'Terminal', 'Keyboard shortcuts', 'Sessions', 'Recipes', 'About'] as const
+function updateSummary(update: UpdateState): string {
+  switch (update.status) {
+    case 'idle': return 'Not checked yet'
+    case 'checking': return 'Checking…'
+    case 'current': return update.info.latest ? `Up to date (latest release is ${update.info.latest})` : 'No published release found'
+    case 'available': return `${update.info.latest} is available`
+    case 'downloading': return `Downloading ${update.info.latest}…`
+    case 'downloaded': return `${update.info.latest} downloaded and opened in Finder`
+    case 'error': return 'Could not check'
+  }
+}
+
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close nerd icons editing shortcuts command arrow option click shift enter', Notifications: 'pane notification ring bell done finished waiting attention auto switch dock badge quiet', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents confirm confirmation destructive close', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station update download check' }
+const sections = ['General', 'Appearance', 'Terminal', 'Notifications', 'Keyboard shortcuts', 'Sessions', 'Recipes', 'About'] as const
 const TERMINAL_PANE_COMMAND_IDS = new Set([
   'fullscreen',
   'focusLeft',
@@ -47,6 +62,10 @@ export function SettingsPanel() {
   const providerStatuses = useNativeProviderAvailability()
   const appearance = useTerminalAppearance()
   const customization = useUiCustomization()
+  const notificationPrefs = useNotificationPreferences()
+  const waitingPanes = usePaneNotifications().size
+  const update = useAppUpdate()
+  const checkOnLaunch = useCheckForUpdatesOnLaunch()
   const visibleCommands = COMMANDS.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
   const terminalPaneCommands = visibleCommands.filter(c => TERMINAL_PANE_COMMAND_IDS.has(c.id))
   const otherCommands = visibleCommands.filter(c => !TERMINAL_PANE_COMMAND_IDS.has(c.id))
@@ -132,8 +151,13 @@ export function SettingsPanel() {
   }, [])
   useEffect(() => {
     const onOpenRecipes = () => setSection('Recipes')
+    const onShowAbout = () => setSection('About')
     window.addEventListener('recipes:open', onOpenRecipes)
-    return () => window.removeEventListener('recipes:open', onOpenRecipes)
+    window.addEventListener('settings:show-about', onShowAbout)
+    return () => {
+      window.removeEventListener('recipes:open', onOpenRecipes)
+      window.removeEventListener('settings:show-about', onShowAbout)
+    }
   }, [])
   useEffect(() => {
     if (open) { setThemeView(getSkin()); dialog.current?.showModal(); return () => { dialog.current?.close() } }
@@ -183,7 +207,7 @@ export function SettingsPanel() {
         </>}
         {(section === 'Appearance' || section === 'Terminal') && <>
           {section === 'Terminal' && <p className="bs-settings__intro">Changes apply to existing shells in both views. Applications such as Neovim can override the cursor.</p>}
-          <label className="bs-settings__row"><span>Terminal font</span><select value={appearance.fontFamily} onChange={e => setTerminalAppearance({ fontFamily: e.target.value })}>{TERMINAL_FONTS.map(f => <option key={f}>{f}</option>)}</select></label>
+          <label className="bs-settings__row"><span>Terminal font<small>Nerd Font icons (LazyVim, prompts, file trees) are bundled and work with every choice.</small></span><select value={appearance.fontFamily} onChange={e => setTerminalAppearance({ fontFamily: e.target.value })}>{TERMINAL_FONTS.map(f => <option key={f}>{f}</option>)}</select></label>
           <label className="bs-settings__row"><span>Font size</span><input aria-label="Font size" type="number" min="10" max="24" value={appearance.fontSize} onChange={e => { const n = Number(e.target.value); if (n >= 10 && n <= 24) setTerminalAppearance({ fontSize: n }) }} /></label>
           <label className="bs-settings__row"><span>Line height</span><input aria-label="Line height" type="number" min="1" max="1.8" step="0.1" value={appearance.lineHeight} onChange={e => { const n = Number(e.target.value); if (n >= 1 && n <= 1.8) setTerminalAppearance({ lineHeight: n }) }} /></label>
         </>}
@@ -191,8 +215,18 @@ export function SettingsPanel() {
           <label className="bs-settings__row"><span>Cursor shape</span><select aria-label="Cursor shape" value={appearance.cursorStyle} onChange={e => setTerminalAppearance({ cursorStyle: e.target.value as 'block' | 'bar' | 'underline' })}><option value="block">Block</option><option value="bar">Bar</option><option value="underline">Underline</option></select></label>
           <label className="bs-settings__row"><span>Blink cursor</span><input aria-label="Blink cursor" type="checkbox" checked={appearance.cursorBlink} onChange={e => setTerminalAppearance({ cursorBlink: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>Scrollback lines<small>More history uses more memory per terminal. Reducing this trims older output.</small></span><input aria-label="Scrollback lines" type="number" min="100" max="50000" step="100" value={appearance.scrollback} onChange={e => setTerminalAppearance({ scrollback: Number(e.target.value) })} /></label>
+          <label className="bs-settings__row"><span>macOS editing shortcuts<small>Cmd+Left/Right moves to line start/end, Cmd+Backspace deletes to line start, Cmd+Delete to line end, Option+Delete deletes the next word, Cmd+Up/Down scrolls to top/bottom, Shift+Enter adds a newline in Claude and Codex prompts. Option+Left/Right, Option+Backspace and Option-click to move the cursor always work. App shortcuts win when both match.</small></span><input aria-label="macOS editing shortcuts" type="checkbox" checked={appearance.macEditingKeys} onChange={e => setTerminalAppearance({ macEditingKeys: e.target.checked })} /></label>
           <p className="bs-settings__note">Unsplit to tabs keeps every session running. Close pane stops the selected shell or agent. Zoom temporarily fills the terminal area with one pane.</p>
           <button onClick={resetTerminalAppearance}>Restore terminal defaults</button>
+        </>}
+        {section === 'Notifications' && <>
+          <p className="bs-settings__intro">A pane that finishes or needs you gets a yellow ring, and its terminal tab and workspace tab get a dot, until you focus it.</p>
+          <label className="bs-settings__row"><span>Pane notifications<small>Triggered by the terminal bell, by OSC 9 / 99 / 777 notification sequences, and by an agent pane finishing a turn.</small></span><input aria-label="Pane notifications" type="checkbox" checked={notificationPrefs.enabled} onChange={e => setNotificationPreferences({ enabled: e.target.checked })} /></label>
+          <label className="bs-settings__row"><span>Notify when a background terminal goes quiet<small>Marks a pane you are not looking at when it stops printing after at least four seconds of continuous output. This is how Claude Code, Codex and long builds are noticed without any setup; turn it off if a chatty process causes false alarms.</small></span><input aria-label="Notify when a background terminal goes quiet" type="checkbox" disabled={!notificationPrefs.enabled} checked={notificationPrefs.notifyOnQuiet} onChange={e => setNotificationPreferences({ notifyOnQuiet: e.target.checked })} /></label>
+          <label className="bs-settings__row"><span>Switch to the pane that notified<small>Opens its workspace and tab and focuses it. Waits until you have stopped typing and no dialog is open, so keystrokes never land in the wrong pane.</small></span><input aria-label="Switch to the pane that notified" type="checkbox" disabled={!notificationPrefs.enabled} checked={notificationPrefs.autoSwitch} onChange={e => setNotificationPreferences({ autoSwitch: e.target.checked })} /></label>
+          <label className="bs-settings__row"><span>Show the count on the Dock icon</span><input aria-label="Show the count on the Dock icon" type="checkbox" disabled={!notificationPrefs.enabled} checked={notificationPrefs.dockBadge} onChange={e => setNotificationPreferences({ dockBadge: e.target.checked })} /></label>
+          <p className="bs-settings__note">{waitingPanes === 0 ? 'No panes are waiting.' : `${waitingPanes} pane${waitingPanes === 1 ? ' is' : 's are'} waiting.`} Jump to the latest one with {shortcutLabel(bindings.notificationJump) || 'the command palette'}.</p>
+          <button disabled={waitingPanes === 0} onClick={clearAllPaneNotifications}>Clear pane notifications</button>
         </>}
         {section === 'Keyboard shortcuts' && <>
           <p className="bs-settings__intro">Choose Change beside any action, then press a more comfortable Command or Control shortcut. Leader chords are fixed and listed by context below.</p>
@@ -242,7 +276,15 @@ export function SettingsPanel() {
           <dl className="bs-settings__about">
             <div><dt>Version</dt><dd data-testid="app-version">v{appPackage.version}</dd></div>
             <div><dt>Build</dt><dd>Preview</dd></div>
+            <div><dt>Updates</dt><dd data-testid="update-status" role="status">{updateSummary(update)}</dd></div>
           </dl>
+          {update.status === 'error' && <p role="alert">{update.message}</p>}
+          {update.status === 'downloaded' && <p className="bs-settings__note">Saved to {update.path}{update.checksumVerified ? ' (SHA-256 verified)' : ' (no published checksum to verify)'}. Quit Beads Station after saving your work, then drag the new app into Applications. Settings and shortcuts are kept.</p>}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button disabled={update.status === 'checking' || update.status === 'downloading'} onClick={() => void checkForUpdates()}>Check for updates</button>
+            {(update.status === 'available' || (update.status === 'error' && update.info?.newer)) && update.info?.asset && <button onClick={() => void downloadUpdate()}>Download {update.info.latest}</button>}
+          </div>
+          <label className="bs-settings__row"><span>Check for updates when the app starts<small>Reads this project’s GitHub releases once per launch. While the repository is private this uses your own <code>gh</code> CLI login. Nothing is installed automatically.</small></span><input aria-label="Check for updates when the app starts" type="checkbox" checked={checkOnLaunch} onChange={e => setCheckForUpdatesOnLaunch(e.target.checked)} /></label>
           <p className="bs-settings__note">This version is read from the application package metadata used to build the frontend.</p>
         </>}
       </main>

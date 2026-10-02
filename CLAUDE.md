@@ -109,7 +109,7 @@ packaged app) is the top product priority.
 
 ## Todoist reconciliation — "Test 0.1.3 and release 0.1.4"
 
-Status as of 2026-09-23 (v0.1.5 draft). "Done" = implemented with automated evidence; items
+Status as of 2026-10-02 (v0.1.5 published). "Done" = implemented with automated evidence; items
 marked *native check* still need a hands-on packaged-app test before ticking.
 
 | Todoist item | Status | Evidence / bead |
@@ -125,15 +125,20 @@ marked *native check* still need a hands-on packaged-app test before ticking.
 | Record custom named interaction + keybinding | Done, *native check* | A7 `Code-6un.7` |
 | Bottom part vanishes in terminal | Fixed in source, *native check* | A1 |
 | Switching tabs scrolls chat to top / loses cursor | Chat dedup + focus fixed; *native check* | `Code-t3w.6`, `Code-t3w.7` |
-| Repeated text while scrolling; scroll-up snaps to bottom | Snap fixed (user-intent follow); repeats come from the provider TUI reprinting after clearing scrollback. *Native check with streaming Claude/Codex* | `Code-da0.6`, `Code-t3w.7` |
+| Repeated text while scrolling; scroll-up snaps to bottom | Snap fixed (user-intent follow). Repeats come from the provider TUI reprinting on every resize signal; v0.1.5 sends one native resize per settled size instead of one per layout callback. *Native check with streaming Claude/Codex* | `Code-da0.6`, `Code-t3w.7`, `Code-xni.6` |
 | Can't drag and drop files | Done (paste quoted paths into the pane under the drop), *native Finder check* | `Code-da0.7` |
 | Designer View → resizable elements | Done (nav + agents columns) | `Code-da0.8` |
 | Designer View / conductor | Codex orchestrator real run verified at backend level (v0.1.5 fixed `codex exec` flag, `Code-am5.6`); packaged click-through is a *native check*; follow-ups `Code-am5.7` (.beads in artifacts), `Code-am5.8` (worker visibility) | `Code-da0.5`, `Code-am5`, `Code-yfb` |
-| Terminal sessions don't persist / resume without tokens | Open (saved-layout restore only) | A3 `Code-6un.3` |
+| Terminal sessions don't persist / resume without tokens | Partly: a restored shell pane that had Claude/Codex in the foreground offers an explicit "Start shell and resume" (`claude --continue` / `codex resume --last`). Never automatic (launch-on-intent rule). Live process survival still open; exact per-pane session id is `Code-6un.3.1` | A3 `Code-6un.3`, `Code-xni.7` |
 | LazyVim colors look different | Open | `Code-0cp.4` |
 | Claude/Codex chat view redesign | Open (plan on second machine) | `Code-am5.5` |
-| Auto-update like CMUX | Future, plan only | `Code-t3w.2` |
-| Continuous DMG release + feedback | Open. Decision 2026-09-23: finish the Designer end-to-end run first, then ship v0.1.5 by hand (done as a draft pending screenshots); CI workflow after | `Code-9ro` |
+| Auto-update like CMUX | Partly done in v0.1.5: release check (GitHub API, then the user's `gh` login while the repo is private), download + SHA-256 verify + open DMG. Replacing the running app is future work (needs Developer ID signing). *Native check* | `Code-xni.5`, `Code-t3w.2` |
+| Notification in panes when done, optional auto-switch | Done in v0.1.5 (bell, OSC 9/99/777, agent turn end, quiet-after-work heuristic; ring, tab dots, Dock badge, `Cmd+Shift+U`). *Native check*. Follow-ups: system notifications `Code-my5`, panel `Code-s8b`, hook-based signals `Code-270` | `Code-xni.1` |
+| Terminal shortcuts (Cmd-arrow, option-click, …) | Done in v0.1.5, *native check* | `Code-xni.2` |
+| LazyVim icons / JetBrains Nerd Font default | Done in v0.1.5 (font bundled; WKWebView cannot see user fonts). *Native check* | `Code-xni.3` |
+| Enter confirms destructive dialogs | Done in v0.1.5 | `Code-xni.4` |
+| Embedded browser | Decision open | `Code-470` |
+| Continuous DMG release + feedback | Open. v0.1.5 was built and published by hand on 2026-10-02 with browser-harness screenshots (the build session cannot capture the screen); CI workflow after | `Code-9ro` |
 | Svelte migration | Future — see below | `Code-cuh` |
 | Metrics/latencies for Rust comparison | Open | `Code-2mx` |
 | Bundle beads with app? | Decision open | `Code-u6h` |

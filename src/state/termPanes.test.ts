@@ -36,6 +36,12 @@ import {
   moveActiveTab,
   terminalTabIds,
   activeTerminalTabId,
+  locatePane,
+  revealPane,
+  paneForAgentBridge,
+  setPaneAgentCli,
+  activateRestoredPane,
+  takePaneStartupCommand,
 } from './termPanes'
 
 // The store is a module singleton. Reset it to a known shape before each
@@ -446,5 +452,67 @@ describe('unsplit session ownership', () => {
     closeActivePane()
     expect(getZoom()).toBeNull()
     expect(leavesOf(activeTabRoot())).toHaveLength(2)
+  })
+})
+
+describe('pane lookup, reveal and agent CLI resume', () => {
+  it('locates a pane in any workspace and reveals it across tabs and workspaces', () => {
+    setActiveProject('locate-a', '/repo/a')
+    splitActive('v')
+    const [first, second] = leavesOf(activeTabRoot()).map(leaf => leaf.paneId)
+    const firstTab = activeTerminalTabId()
+    expect(locatePane(second)).toEqual({ projectId: 'locate-a', tabId: firstTab, active: true, agentBridgeId: null })
+    expect(locatePane(first)?.active).toBe(false)
+    expect(locatePane('missing')).toBeNull()
+
+    newTab()
+    expect(revealPane(first)).toBeNull()
+    expect(activeTerminalTabId()).toBe(firstTab)
+    expect(locatePane(first)?.active).toBe(true)
+
+    setActiveProject('locate-b', '/repo/b')
+    expect(locatePane(second)).toMatchObject({ projectId: 'locate-a', active: false })
+    expect(revealPane(second)).toBe('locate-a')
+    setActiveProject('locate-a', '/repo/a')
+    expect(locatePane(second)?.active).toBe(true)
+  })
+  it('finds the pane hosting an agent bridge', () => {
+    setActiveProject('locate-agent', '/repo/agent')
+    spawnAgent('locate-agent', '/repo/agent', 'session-1')
+    const bridge = allAgentBridges().at(-1)!
+    const paneId = paneForAgentBridge(bridge)!
+    expect(locatePane(paneId)?.agentBridgeId).toBe(bridge)
+    expect(paneForAgentBridge('no-such-bridge')).toBeNull()
+  })
+  it('keeps the observed agent CLI across a restart and resumes it only on request', () => {
+    setActiveProject('resume-a', '/repo/resume')
+    const paneId = leavesOf(activeTabRoot())[0].paneId
+    setPaneAgentCli(paneId, 'claude')
+    const before = termPanesSignature()
+    setPaneAgentCli(paneId, 'claude')
+    expect(termPanesSignature()).toBe(before)
+
+    const saved = JSON.parse(serializeProjects()) as { projects: Record<string, unknown> }
+    setActiveProject('resume-b', '/repo/other')
+    restoreProjects(JSON.stringify({ v: 2, projects: { 'resume-restored': saved.projects['resume-a'] } }))
+    setActiveProject('resume-restored', '/repo/resume')
+    const restored = leavesOf(activeTabRoot())[0]
+    expect(restored).toMatchObject({ restored: true, agentCli: 'claude', ptyId: null })
+
+    // A plain start never queues a command.
+    activateRestoredPane(restored.paneId)
+    expect(takePaneStartupCommand(restored.paneId)).toBeNull()
+
+    setActiveProject('resume-b', '/repo/other')
+    restoreProjects(JSON.stringify({ v: 2, projects: { 'resume-restored-2': saved.projects['resume-a'] } }))
+    setActiveProject('resume-restored-2', '/repo/resume')
+    const again = leavesOf(activeTabRoot())[0]
+    activateRestoredPane(again.paneId, { resumeAgentCli: true })
+    expect(leavesOf(activeTabRoot())[0].restored).toBeUndefined()
+    expect(takePaneStartupCommand(again.paneId)).toBe('claude --continue')
+    expect(takePaneStartupCommand(again.paneId)).toBeNull()
+
+    setPaneAgentCli(again.paneId, null)
+    expect(leavesOf(activeTabRoot())[0].agentCli).toBeUndefined()
   })
 })

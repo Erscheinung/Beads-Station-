@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Project } from '../state/projects'
 import { useClaudeStatus, type ClaudeStatus } from '../state/claudeStatus'
+import { notifiedWorkspaceIds, usePaneNotifications } from '../state/paneNotifications'
 
 interface TabBarProps {
   projects: Project[]
@@ -50,6 +51,9 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
   const draggedId = useRef<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
+  // A workspace is marked while one of its panes is waiting. The visible
+  // workspace shows the pane's own ring instead.
+  const waitingWorkspaces = notifiedWorkspaceIds(usePaneNotifications())
 
   useEffect(() => {
     if (!activeId) return
@@ -181,6 +185,7 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
               }}
             />
             <TabStatusDot projectId={p.id} />
+            {!active && waitingWorkspaces.has(p.id) && <span className="bs-notification-dot" data-workspace-notification={p.id} role="img" aria-label="a pane is waiting" />}
           </button>
           {onClose && <button onClick={() => onClose(p.id)} aria-label={`Close workspace ${p.name}`} title="Close workspace and stop its terminals" style={{ border: 0, background: 'transparent', color: 'var(--bs-fg-muted)', padding: '0 8px', cursor: 'pointer' }}><span className="codicon codicon-close" aria-hidden /></button>}
           </div>

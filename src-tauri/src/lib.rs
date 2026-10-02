@@ -22,6 +22,7 @@ mod sense;
 mod spawngov;
 mod spending;
 mod telemetry;
+mod update;
 mod watcher;
 
 use tauri::Manager;
@@ -179,6 +180,7 @@ pub fn run() {
             projects::projects_open,
             projects::projects_set_roots,
             projects::projects_set_claude_session,
+            pty::pty_foreground,
             pty::pty_kill,
             pty::pty_resize,
             pty::pty_snapshot,
@@ -201,6 +203,8 @@ pub fn run() {
             artifacts::artifact_review,
             artifacts::artifact_verify,
             artifacts::artifact_approve,
+            update::app_check_update,
+            update::app_download_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

@@ -9,10 +9,13 @@ export interface TerminalAppearance {
   cursorStyle: 'block' | 'bar' | 'underline'
   cursorBlink: boolean
   scrollback: number
+  /** Cmd+arrows, Cmd+Backspace, Shift+Enter and friends act as in macOS terminals. */
+  macEditingKeys: boolean
 }
 export const DEFAULT_TERMINAL_APPEARANCE: TerminalAppearance = {
   fontFamily: 'JetBrains Mono', fontSize: 13, lineHeight: 1.2,
   cursorStyle: 'block', cursorBlink: true, scrollback: 3000,
+  macEditingKeys: true,
 }
 function validated(next: Partial<TerminalAppearance>, base: TerminalAppearance): TerminalAppearance {
   const result = { ...base }
@@ -22,6 +25,7 @@ function validated(next: Partial<TerminalAppearance>, base: TerminalAppearance):
   if (['block', 'bar', 'underline'].includes(next.cursorStyle!)) result.cursorStyle = next.cursorStyle!
   if (typeof next.cursorBlink === 'boolean') result.cursorBlink = next.cursorBlink
   if (typeof next.scrollback === 'number' && Number.isInteger(next.scrollback) && next.scrollback >= 100 && next.scrollback <= 50000) result.scrollback = next.scrollback
+  if (typeof next.macEditingKeys === 'boolean') result.macEditingKeys = next.macEditingKeys
   return result
 }
 let state = { ...DEFAULT_TERMINAL_APPEARANCE }

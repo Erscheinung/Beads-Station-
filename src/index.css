@@ -634,3 +634,22 @@ body {
  * existing 1px column border; highlight on hover, drag or keyboard focus. */
 .bs-designer-resizer { width: 100%; height: 100%; cursor: col-resize; background: transparent; transition: background 120ms ease; }
 .bs-designer-resizer:hover, .bs-designer-resizer:focus-visible { background: color-mix(in srgb, var(--bs-orange, var(--bs-blue)) 45%, transparent); outline: none; }
+
+/* Pane notifications: a ring on the waiting pane, a dot on its tabs. */
+.bs-notification-dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--bs-yellow); flex-shrink: 0; vertical-align: middle; }
+.bs-pane-notification-ring { position: absolute; inset: 0; z-index: 7; border: 2px solid var(--bs-yellow); pointer-events: none; }
+.bs-pane-notification { position: absolute; top: 6px; right: 8px; z-index: 7; display: flex; align-items: center; gap: 6px; max-width: min(60%, 360px); padding: 2px 8px; border: 1px solid var(--bs-yellow); background: var(--bs-bg-float); color: var(--bs-fg); font-family: inherit; font-size: 11px; cursor: pointer; }
+.bs-pane-notification__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--bs-yellow); flex-shrink: 0; }
+.bs-pane-notification__text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bs-toolbar__update { color: var(--bs-green); border-color: var(--bs-green); }
+.bs-modal-btn kbd { margin-left: 6px; opacity: 0.7; font-size: 10px; }
+
+/* Icon glyphs for terminal panes. WKWebView cannot see fonts installed in
+   ~/Library/Fonts, so the Nerd Font ships with the app (see assets/fonts). */
+@font-face {
+  font-family: 'JetBrainsMono Nerd Font';
+  src: url('./assets/fonts/JetBrainsMonoNerdFont-Regular.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

@@ -8,6 +8,9 @@ import { safeListen as listen } from './listenerRegistry'
 import { getActivePalette, subscribeTheme } from '../state/theme'
 import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/terminalAppearance'
 import { matchedCommand } from '../state/commands'
+import { notifyPane } from '../state/paneNotifications'
+import { setPaneAgentCli, type AgentCli } from '../state/termPanes'
+import { macTerminalKeyAction } from './terminalKeys'
 
 type Phase = 'starting' | 'running' | 'exited' | 'error'
 
@@ -51,6 +54,47 @@ export interface PersistedTerminalScreen {
 }
 
 const ESC = '\u001b'
+
+// Bundled Nerd Font: WKWebView does not expose user-installed fonts, so icon
+// glyphs (LazyVim, starship, eza) need a font shipped with the app. It sits
+// after the chosen family and only supplies glyphs that family lacks.
+export const NERD_FONT_FALLBACK = "'JetBrainsMono Nerd Font'"
+export function terminalFontStack(family: string): string {
+  return `${family}, ${NERD_FONT_FALLBACK}, monospace`
+}
+
+// A drag or window resize reports many intermediate sizes. Each native resize
+// is a SIGWINCH, and Claude Code and Codex reprint their transcript on every
+// one, which leaves repeated text in scrollback. Send only the settled size.
+const NATIVE_RESIZE_SETTLE_MS = 90
+
+// "Quiet after work": output that ran for at least BUSY_MIN_MS with no gap
+// longer than BUSY_GAP_MS, followed by QUIET_MS of silence.
+const BUSY_GAP_MS = 1500
+const BUSY_MIN_MS = 4000
+const QUIET_MS = 3000
+// Output this soon after a keystroke is echo, not work.
+const ECHO_WINDOW_MS = 300
+
+/** Text of an OSC 9 / 99 / 777 desktop-notification sequence, or null if it is not one. */
+export function oscNotificationText(ident: 9 | 99 | 777, data: string): string | null {
+  if (ident === 9) {
+    // OSC 9;4 and other numeric subcommands are progress reports, not messages.
+    return /^\d+(;|$)/.test(data) ? null : data
+  }
+  if (ident === 777) {
+    const [kind, title = '', ...body] = data.split(';')
+    if (kind !== 'notify') return null
+    return [title, body.join(';')].filter(Boolean).join(': ')
+  }
+  const separator = data.indexOf(';')
+  if (separator === -1) return null
+  const metadata = data.slice(0, separator).split(':')
+  // Kitty sends close/query/icon payloads on the same code; only text counts.
+  const payloadType = metadata.find(item => item.startsWith('p='))?.slice(2) ?? 'title'
+  if (payloadType !== 'title' && payloadType !== 'body') return null
+  return data.slice(separator + 1)
+}
 
 // Keep a detached xterm screen connected while React re-parents its view.
 // xterm.js pauses its renderer when the observed screen element leaves the
@@ -146,7 +190,7 @@ export class SgrColorNormalizer {
 
 export class TerminalSession {
   readonly element = document.createElement('div')
-  readonly terminal = new XTerm({ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, cursorBlink: true, scrollback: 3000 })
+  readonly terminal = new XTerm({ fontFamily: terminalFontStack("'JetBrains Mono'"), fontSize: 13, cursorBlink: true, scrollback: 3000, altClickMovesCursor: true })
   readonly fit = new FitAddon()
   readonly ready: Promise<void>
   id: number | null = null
@@ -173,6 +217,13 @@ export class TerminalSession {
   private pointerScrolling = false
   private viewport: ViewportState = { buffer: 'normal', followOutput: true, marker: null, fallbackLine: 0 }
   private screenTimer: ReturnType<typeof setTimeout> | null = null
+  private nativeResizeTimer: ReturnType<typeof setTimeout> | null = null
+  private quietTimer: ReturnType<typeof setTimeout> | null = null
+  private busySince = 0
+  private lastOutputAt = 0
+  private lastInputAt = 0
+  private startupCommand: string | null = null
+  private sawOutput = false
 
   constructor(
     readonly paneId: string,
@@ -184,7 +235,8 @@ export class TerminalSession {
     this.terminal.loadAddon(this.fit)
     this.terminal.loadAddon(new WebLinksAddon())
     this.terminal.open(this.element)
-    this.terminal.attachCustomKeyEventHandler(e => !matchedCommand(e))
+    this.terminal.attachCustomKeyEventHandler(e => this.handleKey(e))
+    this.registerNotificationSources()
     this.applyTheme()
     this.applyAppearance()
     const onData = this.terminal.onData(data => {
@@ -192,9 +244,7 @@ export class TerminalSession {
       // xterm's scrollOnUserInput snaps typing back to the live prompt; adopt
       // that as the new intent so the next write does not scroll away again.
       if (this.terminal.options.scrollOnUserInput !== false) this.followLiveOutput()
-      this.input = this.input.then(() => {
-        if (!this.closed && this.id !== null) return invoke('pty_write', { id: this.id, data })
-      }).catch(error => this.fail(error))
+      this.send(data)
     })
     this.releases.push(() => onData.dispose())
     const onScroll = this.terminal.onScroll(() => {
@@ -225,6 +275,70 @@ export class TerminalSession {
       this.requestNativeRedraw()
     }))
     this.ready = this.start(cwd, onSpawn)
+  }
+
+  private send(data: string) {
+    this.lastInputAt = performance.now()
+    this.input = this.input.then(() => {
+      if (!this.closed && this.id !== null) return invoke('pty_write', { id: this.id, data })
+    }).catch(error => this.fail(error))
+  }
+
+  /** xterm custom key hook: false means "handled here, do not send". */
+  private handleKey(event: KeyboardEvent): boolean {
+    if (matchedCommand(event)) return false
+    if (!getTerminalAppearance().macEditingKeys) return true
+    const action = macTerminalKeyAction(event, this.terminal.buffer.active.type)
+    if (!action) return true
+    // xterm also routes keypress/keyup through this hook; act once, on keydown.
+    if (event.type === 'keydown') {
+      event.preventDefault()
+      if (action.kind === 'scroll') {
+        this.userScrollUntil = performance.now() + 400
+        if (action.to === 'top') this.terminal.scrollToTop()
+        else this.terminal.scrollToBottom()
+      } else if (this.phase === 'running' && !this.closed) {
+        this.followLiveOutput()
+        this.send(action.data)
+      }
+    }
+    return false
+  }
+
+  private registerNotificationSources() {
+    const bell = this.terminal.onBell(() => notifyPane(this.paneId, 'bell'))
+    this.releases.push(() => bell.dispose())
+    for (const ident of [9, 99, 777] as const) {
+      const handler = this.terminal.parser.registerOscHandler(ident, data => {
+        const text = oscNotificationText(ident, data)
+        if (text === null) return false
+        notifyPane(this.paneId, 'osc', text)
+        return true
+      })
+      this.releases.push(() => handler.dispose())
+    }
+  }
+
+  /** Track sustained output so a background pane can report when it goes quiet. */
+  private noteOutput() {
+    const now = performance.now()
+    if (now - this.lastInputAt < ECHO_WINDOW_MS) return
+    if (now - this.lastOutputAt > BUSY_GAP_MS) this.busySince = now
+    this.lastOutputAt = now
+    if (this.quietTimer === null) this.quietTimer = setTimeout(() => this.checkQuiet(), QUIET_MS)
+  }
+
+  private checkQuiet() {
+    this.quietTimer = null
+    if (this.closed) return
+    const silence = performance.now() - this.lastOutputAt
+    if (silence < QUIET_MS) {
+      this.quietTimer = setTimeout(() => this.checkQuiet(), QUIET_MS - silence)
+      return
+    }
+    const worked = this.lastOutputAt - this.busySince
+    this.busySince = 0
+    if (worked >= BUSY_MIN_MS && this.phase === 'running') notifyPane(this.paneId, 'quiet')
   }
 
   private trackUserScrollIntent() {
@@ -343,6 +457,28 @@ export class TerminalSession {
       cursorY: buffer.cursorY,
       capturedAt: Date.now(),
     })
+    this.observeForeground()
+  }
+  /** Remember whether an agent CLI owns this shell, for an explicit resume after a restart. */
+  private observeForeground() {
+    if (this.id === null || this.phase !== 'running') return
+    void invoke<AgentCli | null>('pty_foreground', { id: this.id })
+      .then(agentCli => { if (!this.closed) setPaneAgentCli(this.paneId, agentCli === 'claude' || agentCli === 'codex' ? agentCli : null) })
+      .catch(() => { /* exited, or a backend without foreground inspection */ })
+  }
+  /** Run one command in the new shell after it has printed its first output. */
+  runWhenReady(command: string) {
+    this.startupCommand = command
+    if (this.sawOutput) this.flushStartupCommand()
+  }
+  private flushStartupCommand() {
+    const command = this.startupCommand
+    if (command === null) return
+    this.startupCommand = null
+    // Let the login shell finish drawing its prompt before typing into it.
+    setTimeout(() => {
+      if (!this.closed && this.phase === 'running') this.send(`${command}\r`)
+    }, 400)
   }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private fail(error: unknown) {
@@ -361,6 +497,9 @@ export class TerminalSession {
         if (!this.closed) {
           const data = this.outputNormalizer.push(event.payload.data)
           if (data) this.terminal.write(data)
+          this.sawOutput = true
+          this.noteOutput()
+          this.flushStartupCommand()
         }
       })
       if (this.closed) { output(); return }
@@ -383,6 +522,9 @@ export class TerminalSession {
       if (this.phase === 'starting') this.phase = 'running'
       onSpawn(this.paneId, id)
       this.resize()
+      // Layout may have changed while spawn was pending; apply it now rather
+      // than after the settle delay, so the first prompt wraps correctly.
+      this.syncNativeSize()
       this.notify()
     } catch (error) {
       this.releases.splice(0).forEach(release => release())
@@ -453,7 +595,7 @@ export class TerminalSession {
   }
   applyAppearance() {
     const appearance = getTerminalAppearance()
-    this.terminal.options.fontFamily = `${appearance.fontFamily}, monospace`
+    this.terminal.options.fontFamily = terminalFontStack(/^[\w-]+$/.test(appearance.fontFamily) ? appearance.fontFamily : `'${appearance.fontFamily}'`)
     this.terminal.options.fontSize = appearance.fontSize
     this.terminal.options.lineHeight = appearance.lineHeight
     this.terminal.options.cursorStyle = appearance.cursorStyle
@@ -473,11 +615,20 @@ export class TerminalSession {
     if (bounds.width <= 1 || bounds.height <= 1) return
     try { this.fit.fit() } catch { return }
     this.restoreViewport()
+    this.scheduleNativeResize()
+  }
+  private scheduleNativeResize() {
+    if (this.nativeResizeTimer !== null) clearTimeout(this.nativeResizeTimer)
+    this.nativeResizeTimer = setTimeout(() => {
+      this.nativeResizeTimer = null
+      this.syncNativeSize()
+    }, NATIVE_RESIZE_SETTLE_MS)
+  }
+  private syncNativeSize() {
     const size = `${this.terminal.cols}:${this.terminal.rows}`
-    if (this.id !== null && this.phase === 'running' && this.nativeSize !== size) {
-      this.nativeSize = size
-      void invoke('pty_resize', { id: this.id, cols: this.terminal.cols, rows: this.terminal.rows }).catch(error => this.fail(error))
-    }
+    if (this.closed || this.id === null || this.phase !== 'running' || this.nativeSize === size) return
+    this.nativeSize = size
+    void invoke('pty_resize', { id: this.id, cols: this.terminal.cols, rows: this.terminal.rows }).catch(error => this.fail(error))
   }
   focus() {
     if (!this.attachedHost || this.element.parentElement !== this.attachedHost) return false
@@ -531,6 +682,8 @@ export class TerminalSession {
     this.attachment++
     if (this.repaintFrame !== null) cancelAnimationFrame(this.repaintFrame)
     if (this.screenTimer !== null) clearTimeout(this.screenTimer)
+    if (this.nativeResizeTimer !== null) clearTimeout(this.nativeResizeTimer)
+    if (this.quietTimer !== null) clearTimeout(this.quietTimer)
     this.disposeViewportMarker()
     this.releases.splice(0).forEach(release => release())
     this.listeners.clear()
@@ -568,6 +721,10 @@ export function flushTerminalSessionScreens() {
 export function disposeTerminalSession(paneId: string) {
   sessions.get(paneId)?.dispose()
   sessions.delete(paneId)
+}
+/** Queue a command for a pane's freshly spawned shell (explicit user action only). */
+export function runInTerminalSession(paneId: string, command: string) {
+  sessions.get(paneId)?.runWhenReady(command)
 }
 export function inspectTerminalSession(paneId: string): Promise<TerminalLifecycleSnapshot | null> {
   return sessions.get(paneId)?.snapshot() ?? Promise.resolve(null)

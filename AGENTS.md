@@ -1,5 +1,27 @@
 # Beads Station — agent handoff
 
+## Active work — 2026-10-02, second Todoist pass and v0.1.5 publication
+
+Epic `Code-xni` (all seven children closed). Built on the unpublished v0.1.5
+draft and published it. New: pane notifications (`src/state/paneNotifications.ts`,
+sources in `src/lib/terminalSessions.ts`: bell, OSC 9/99/777, quiet-after-work,
+agent turn end) with ring, tab/workspace dots, Dock badge, jump command and an
+auto-switch setting that waits for a typing pause; macOS editing chords
+(`src/lib/terminalKeys.ts`); bundled JetBrainsMono Nerd Font as the fallback in
+every terminal font stack (WKWebView cannot see user-installed fonts); Enter/Escape
+in both confirmation dialogs; release check and DMG download
+(`src-tauri/src/update.rs`, `BS_UPDATE_REPO` overrides the repository; falls back
+to the user's `gh` login while the repo is private); one native resize per settled
+size; and an explicit "resume Claude/Codex" action on restored shell panes
+(`pty_foreground`). New commands default to no shortcut when the user already uses
+that chord. Follow-ups: `Code-my5`, `Code-s8b`, `Code-270`, `Code-6un.3.1`,
+`Code-470`; self-replacing update stays in `Code-t3w.2`. Five Playwright specs
+raced the app's async event subscription and failed on unchanged code; they now
+wait for the reaction (`emitUntil` in `tests/live/helpers.ts`). None of the new
+behaviour was run in the packaged app: the checklist in
+`docs/releases/v0.1.5.md` is the user's hands-on list, and the release
+screenshots are from the Chromium harness, labelled as such.
+
 ## Active work — 2026-09-23, Designer conductor run and v0.1.5
 
 User decision: finish the Designer end-to-end run first, then cut v0.1.5 by hand

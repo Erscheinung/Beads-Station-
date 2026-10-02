@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, emitUntil } from './helpers'
 
 // RV8.1 — per-child builder cards. During a fanout the backend pushes one
 // BuilderStatus per builder on the SEPARATE `conductor_builder` event; the
@@ -29,12 +29,10 @@ function builder(bead_id: string, state: string, extra: Record<string, unknown> 
 
 test('two conductor_builder frames render two per-child cards', async ({ page }) => {
   await bootDesigner(page)
-  await page.evaluate(
-    bs => {
-      ;(window as any).__bsMockEmit('conductor_builder', bs[0])
-      ;(window as any).__bsMockEmit('conductor_builder', bs[1])
-    },
-    [builder('Code-b1', 'waking'), builder('Code-b2', 'waking')],
+  await emitUntil(
+    page,
+    [['conductor_builder', builder('Code-b1', 'waking')], ['conductor_builder', builder('Code-b2', 'waking')]],
+    () => expect(page.locator('[data-bs-builder-card]')).toHaveCount(2, { timeout: 500 }),
   )
   await expect(page.locator('[data-bs-builder-card]')).toHaveCount(2)
   await expect(page.locator('[data-bs-builder-card="Code-b1"]')).toBeVisible()
@@ -45,12 +43,10 @@ test('two conductor_builder frames render two per-child cards', async ({ page })
 
 test('Stop on one builder card fires conductor_stop_agent with only that bead id', async ({ page }) => {
   await bootDesigner(page)
-  await page.evaluate(
-    bs => {
-      ;(window as any).__bsMockEmit('conductor_builder', bs[0])
-      ;(window as any).__bsMockEmit('conductor_builder', bs[1])
-    },
-    [builder('Code-b1', 'waking'), builder('Code-b2', 'waking')],
+  await emitUntil(
+    page,
+    [['conductor_builder', builder('Code-b1', 'waking')], ['conductor_builder', builder('Code-b2', 'waking')]],
+    () => expect(page.locator('[data-bs-builder-card]')).toHaveCount(2, { timeout: 500 }),
   )
   const card1 = page.locator('[data-bs-builder-card="Code-b1"]')
   await card1.getByRole('button', { name: 'Stop' }).click()
@@ -65,12 +61,8 @@ test('Stop on one builder card fires conductor_stop_agent with only that bead id
 
 test('a blocked builder card persists and shows the blocked action', async ({ page }) => {
   await bootDesigner(page)
-  await page.evaluate(
-    b => (window as any).__bsMockEmit('conductor_builder', b),
-    builder('Code-b3', 'blocked', { detail: 'needs input' }),
-  )
   const card = page.locator('[data-bs-builder-card="Code-b3"]')
-  await expect(card).toBeVisible()
+  await emitUntil(page, [['conductor_builder', builder('Code-b3', 'blocked', { detail: 'needs input' })]], () => expect(card).toBeVisible({ timeout: 500 }))
   await expect(card.getByText(/Blocked/)).toBeVisible()
   // Defer is always offered on a builder card that carries a bead.
   await expect(card.getByRole('button', { name: 'Defer' })).toBeVisible()
