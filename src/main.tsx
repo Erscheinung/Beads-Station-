@@ -11,22 +11,33 @@ async function mount() {
   // Their initial snapshots then see the same preferences after a DMG upgrade,
   // even when WebKit assigned the installed app a fresh localStorage origin.
   await hydrateDurableUserConfig()
-  const [{ default: App }, { InvokeErrorBoundary }, { AppCloseGuard }] = await Promise.all([
+  const [{ default: App }, { InvokeErrorBoundary }, { AppCloseGuard }, { WhatsNew }, { NotificationPanel }] = await Promise.all([
     import("./App"),
     import("./lib/invokeErrorBoundary"),
     import("./components/AppCloseGuard"),
+    import("./components/WhatsNew"),
+    import("./components/NotificationPanel"),
   ])
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <InvokeErrorBoundary>
         <App />
         <AppCloseGuard />
+        <WhatsNew />
+        <NotificationPanel />
       </InvokeErrorBoundary>
     </React.StrictMode>,
   );
+  // Where the agent hook settings live; needed before the first resume command is shown.
+  void import("./state/agentHooks").then(m => m.loadAgentHooks()).catch(() => {});
   // Native file drops need the Tauri webview; the browser harness has none.
   if (!import.meta.env.VITE_LIVE_MOCK) {
     void import("./lib/fileDrop").then(m => m.installTerminalFileDrop()).catch(() => {});
+    // Folders opened from Finder: any that arrived before this point, then later ones.
+    void Promise.all([import("./state/projects"), import("./lib/listenerRegistry")]).then(([projects, registry]) => {
+      void projects.openRequestedFolders().catch(() => {});
+      void registry.safeListen("app:open-folders", () => { void projects.openRequestedFolders().catch(() => {}) }).catch(() => {});
+    }).catch(() => {});
   }
 }
 

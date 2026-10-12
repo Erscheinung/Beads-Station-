@@ -11,7 +11,9 @@ import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from 
 import { setSkin } from '../state/skin'
 import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
 import { closeFocusedPane } from './TerminalPanes'
-import { newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab } from '../state/termPanes'
+import { toggleNotificationPanel } from '../state/notificationPanel'
+import { stepTerminalFontSize } from '../state/terminalAppearance'
+import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell } from '../state/termPanes'
 import { initializeBeads } from '../lib/beadsInit'
 import { setFocused } from '../state/vim'
 import { dispatchSemanticCommand } from '../state/recipeIntegration'
@@ -143,6 +145,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       setSkin('terminal')
       cycleTab(id === 'terminalNext' ? 1 : -1)
       setFocused('terminal')
+      typeIntoActiveShell()
       return
     }
     if (id === 'terminalMoveLeft' || id === 'terminalMoveRight') {
@@ -155,6 +158,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       setSkin('terminal')
       switchTab(Number(id.slice('terminalSelect'.length)) - 1)
       setFocused('terminal')
+      typeIntoActiveShell()
       return
     }
     switch (id) {
@@ -164,7 +168,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'toggleTheme': onToggleTheme(); break
       case 'designer': onSwitchToDesigner(); break
       case 'terminal': setSkin('terminal'); break
-      case 'newTab': setSkin('terminal'); newTab(); setFocused('terminal'); break
+      case 'newTab': setSkin('terminal'); newTab(); setFocused('terminal'); typeIntoActiveShell(); break
       case 'splitH': dispatchSemanticCommand('terminal.split', { direction: 'right' }, { kind: 'active-terminal' }); break
       case 'splitV': dispatchSemanticCommand('terminal.split', { direction: 'down' }, { kind: 'active-terminal' }); break
       case 'unsplit': setSkin('terminal'); unsplitToTabs(); break
@@ -179,11 +183,16 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'resizeRight': setSkin('terminal'); setFocused('terminal'); resizePane('right'); break
       case 'resizeUp': setSkin('terminal'); setFocused('terminal'); resizePane('up'); break
       case 'resizeDown': setSkin('terminal'); setFocused('terminal'); resizePane('down'); break
+      case 'terminalFontLarger': stepTerminalFontSize(1); break
+      case 'terminalFontSmaller': stepTerminalFontSize(-1); break
+      case 'terminalFontReset': stepTerminalFontSize(null); break
       case 'notificationJump': jumpToLatestPaneNotification(); break
+      case 'notificationPanel': toggleNotificationPanel(); break
       case 'notificationsClear': clearAllPaneNotifications(); break
       case 'checkForUpdates': openSettings(); window.dispatchEvent(new Event('settings:show-about')); void checkForUpdates(); break
       case 'agent': onAction('agent:spawn'); break
       case 'files': onAction('filenav:spawn'); break
+      case 'browser': setSkin('terminal'); spawnBrowser(''); setFocused('terminal'); break
       case 'expand': case 'collapse': window.dispatchEvent(new CustomEvent('sidebar:cmd', { detail: { cmd: id === 'expand' ? 'expandAll' : 'collapseAll' } })); break
       case 'hideExplorer': setUiPreferences({ sidebarCollapsed: true }); break
       case 'showBoard': dispatchSemanticCommand('view.show', { view: 'board' }, { kind: 'view', view: 'board' }); break

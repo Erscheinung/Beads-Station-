@@ -124,3 +124,25 @@ test('directional tiling chords focus adjacent panes and resize their split', as
   await page.keyboard.press('Control+Alt+Shift+ArrowRight')
   await expect.poll(firstHalfBasis).toBe('50%')
 })
+
+// Code-gya.1: in the terminal-only view the region is a flex item. xterm gives
+// its screen a pixel height, so without min-height:0 the region could not
+// shrink and the bottom rows sat under the statusline until a fullscreen trip.
+test('terminal-only view keeps the pane above the statusline when the window shrinks', async ({ page }) => {
+  await page.getByLabel('Beads view').selectOption('terminal-only')
+  const pane = page.locator('[data-terminal-pane]').first()
+  await expect(pane).toBeVisible()
+  const viewport = page.viewportSize()
+  if (!viewport) throw new Error('no viewport')
+  await page.waitForFunction(() => document.querySelector('.xterm-screen') !== null)
+
+  await page.setViewportSize({ width: viewport.width, height: viewport.height - 220 })
+
+  await expect.poll(async () => {
+    const paneBox = await pane.boundingBox()
+    const status = await page.locator('.bs-app-statusline').boundingBox()
+    const screen = await page.locator('.xterm-screen').first().boundingBox()
+    if (!paneBox || !status || !screen) return Number.POSITIVE_INFINITY
+    return Math.max(paneBox.y + paneBox.height, screen.y + screen.height) - status.y
+  }).toBeLessThanOrEqual(1)
+})

@@ -318,3 +318,30 @@ describe('designer native run reconciliation', () => {
     ])
   })
 })
+
+describe('run events as readable lines', () => {
+  const parsed = (value: unknown) => ({ seq: 1, kind: 'stdout', parsed: value })
+  it('describes a Codex worker being started, waited on and reporting', async () => {
+    const { eventText, workerThreads } = await import('./nativeRuns')
+    const spawn = parsed({ type: 'item.completed', item: { type: 'collab_tool_call', tool: 'spawn_agent', receiver_thread_ids: ['01a12f46-5a08-77e3-b555-07be4bd79a22'], prompt: 'Change the   header\ncolour' } })
+    const waiting = parsed({ type: 'item.started', item: { type: 'collab_tool_call', tool: 'wait', receiver_thread_ids: [] } })
+    const done = parsed({ type: 'item.completed', item: { type: 'collab_tool_call', tool: 'wait', agents_states: { '01a12f46-5a08-77e3-b555-07be4bd79a22': { status: 'completed', message: 'Header is blue; tests pass.' } } } })
+    expect(eventText(spawn)).toBe('Worker started: Change the header colour')
+    expect(eventText(waiting)).toBe('Waiting for the worker…')
+    expect(eventText(done)).toBe('Worker completed: Header is blue; tests pass.')
+    expect(eventText(parsed({ type: 'item.started', item: { type: 'collab_tool_call', tool: 'spawn_agent', prompt: 'x' } }))).toBeNull()
+    expect(workerThreads([spawn, waiting, done, parsed({ item: { type: 'collab_tool_call', receiver_thread_ids: ['../etc'] } })])).toEqual(['01a12f46-5a08-77e3-b555-07be4bd79a22'])
+  })
+  it('labels Claude delegation and what a subagent is doing', async () => {
+    const { eventText } = await import('./nativeRuns')
+    expect(eventText(parsed({ type: 'assistant', parent_tool_use_id: null, message: { content: [
+      { type: 'text', text: 'Planning.' },
+      { type: 'tool_use', name: 'Agent', input: { subagent_type: 'sonnet-worker', model: 'sonnet', description: 'Fix the header' } },
+      { type: 'tool_use', name: 'Read', input: { file_path: 'a.ts' } },
+    ] } }))).toBe('Planning.\nDelegated to sonnet-worker (sonnet): Fix the header')
+    expect(eventText(parsed({ type: 'assistant', parent_tool_use_id: 'toolu_1', message: { content: [
+      { type: 'tool_use', name: 'Edit', input: { file_path: 'src/header.tsx' } },
+      { type: 'text', text: 'Done.' },
+    ] } }))).toBe('Worker: → Edit src/header.tsx\nWorker: Done.')
+  })
+})

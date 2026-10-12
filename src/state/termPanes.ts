@@ -19,7 +19,9 @@
 // The R3.5 render-loop was an uncached getSnapshot; do not repeat it.
 
 import { useSyncExternalStore } from 'react'
-import { shouldRestoreContextOnLaunch, type ObservedProvider } from './sessionPreferences'
+import { shouldKeepTerminalsRunning, shouldRestoreContextOnLaunch, type ObservedProvider } from './sessionPreferences'
+import { agentResumeCommand, isAgentSessionId, type AgentCli } from './agentHooks'
+export type { AgentCli }
 
 export type SplitDir = 'h' | 'v'
 export type PaneDirection = 'left' | 'right' | 'up' | 'down'
@@ -39,6 +41,12 @@ export interface Leaf {
   /** Agent CLI last seen in this shell's foreground. Only used to offer an
    *  explicit resume on a restored pane; nothing is launched from it. */
   agentCli?: AgentCli
+  /** That CLI's session, when the pane has learned it (a Claude Code hook, or
+   *  Codex's open session file). Lets a resume reopen this exact conversation. */
+  agentSessionId?: string
+  /** Names this pane's shell in the terminal host, so a later launch can
+   *  attach to the same running process. Random; never derived from anything. */
+  hostKey?: string
   /**
    * RV2 — additive agent-pane payload. Absent/undefined => legacy shell leaf.
    * Present => this leaf hosts a Claude agent session (ClaudeChat) instead of
@@ -67,17 +75,12 @@ export interface Leaf {
   fileNav?: {
     rootPath: string
   }
+  /** A web page pane. No process: it is restored as it was. */
+  browser?: {
+    url: string
+  }
 }
 
-export type AgentCli = 'claude' | 'codex'
-
-/** Shell command that reopens the most recent conversation for this folder.
- *  Resuming loads the local transcript; no model turn starts until a prompt
- *  is sent. */
-export const AGENT_CLI_RESUME: Record<AgentCli, { label: string; command: string }> = {
-  claude: { label: 'Claude', command: 'claude --continue' },
-  codex: { label: 'Codex', command: 'codex resume --last' },
-}
 
 export interface SavedTerminalScreen {
   lines: string[]
@@ -241,6 +244,7 @@ export function removeProjectSurface(projectId: string): { ptyIds: number[]; bri
   const previous = projectId === activeProjectId ? state : PROJECTS.get(projectId)
   const leaves = previous?.tabs.flatMap(t => leavesOf(t.root)) ?? []
   for (const leaf of leaves) window.dispatchEvent(new CustomEvent('terminal:dispose', { detail: { paneId: leaf.paneId } }))
+  releaseHostKeys(leaves)
   PROJECTS.delete(projectId)
   if (projectId === activeProjectId) {
     activeProjectId = BOOT_PROJECT
@@ -280,7 +284,10 @@ function sanitizeNode(node: Node): Node {
       ...node,
       ptyId: null,
       // File navigation is read-only and has no process/provider side effect.
-      restored: node.fileNav ? undefined : true,
+      // A plain shell is not an agent launch either: it simply starts again.
+      // Panes that hosted an agent (chat pane, or an agent CLI in the shell)
+      // stay inert until the user asks, so nothing is resumed unprompted.
+      restored: node.fileNav || node.browser || (!node.agent && !node.agentCli) ? undefined : true,
       ...(node.agent ? { agent: {
         ...node.agent,
         provider: node.agent.provider ?? 'claude',
@@ -356,7 +363,7 @@ try {
 function isPristine(s: TermPanesState): boolean {
   if (s.tabs.length !== 1) return false
   const leaves = leavesOf(s.tabs[0].root)
-  return leaves.length === 1 && leaves[0].ptyId === null && leaves[0].cwd === '' && !leaves[0].agent && !leaves[0].fileNav
+  return leaves.length === 1 && leaves[0].ptyId === null && leaves[0].cwd === '' && !leaves[0].agent && !leaves[0].fileNav && !leaves[0].browser
 }
 
 /**
@@ -519,6 +526,16 @@ export function locatePane(paneId: string): PaneLocation | null {
   return found
 }
 
+/** 1-based position of the terminal tab holding a pane, in its own workspace. */
+export function paneTabNumber(paneId: string): number | null {
+  let position: number | null = null
+  eachSurface((_projectId, surface) => {
+    const index = surface.tabs.findIndex(tab => findLeaf(tab.root, paneId))
+    if (index >= 0) { position = index + 1; return true }
+  })
+  return position
+}
+
 /** The pane hosting an agent bridge, in any workspace. */
 export function paneForAgentBridge(bridgeId: string): string | null {
   let paneId: string | null = null
@@ -655,7 +672,7 @@ export function allAgentBridges(): string[] {
 export function resolveActiveShellPtyId(): number | null {
   const tab = activeTab(state)
   const active = findLeaf(tab.root, tab.activePaneId)
-  if (active == null || active.agent != null || active.fileNav != null) return null
+  if (active == null || active.agent != null || active.fileNav != null || active.browser != null) return null
   return active.ptyId ?? null
 }
 
@@ -757,7 +774,8 @@ export function setPaneAgentCli(paneId: string, agentCli: AgentCli | null): void
     if ((leaf.agentCli ?? null) === agentCli) return source
     return replaceTab(source, tab.id, {
       ...tab,
-      root: mapLeaf(tab.root, paneId, existing => ({ ...existing, agentCli: agentCli ?? undefined })),
+      // A session id belongs to the CLI that reported it.
+      root: mapLeaf(tab.root, paneId, existing => ({ ...existing, agentCli: agentCli ?? undefined, agentSessionId: undefined })),
     })
   }
   const before = state
@@ -768,6 +786,69 @@ export function setPaneAgentCli(paneId: string, agentCli: AgentCli | null): void
     const next = update(project)
     if (next !== project) { PROJECTS.set(projectId, next); schedulePersist(); return }
   }
+}
+
+/** Closed panes give up their kept shells, including ones never shown this launch. */
+function releaseHostKeys(leaves: Leaf[]): void {
+  const keys = leaves.flatMap(leaf => leaf.hostKey ? [leaf.hostKey] : [])
+  if (keys.length > 0) window.dispatchEvent(new CustomEvent('terminal:release-keys', { detail: { keys } }))
+}
+
+/**
+ * The key under which this pane's shell is kept alive across app restarts, or
+ * null when the user has not asked for that (or the pane is not in the tree).
+ * A pane gets its key the first time its shell starts.
+ */
+export function paneHostKey(paneId: string): string | null {
+  const tab = state.tabs.find(candidate => findLeaf(candidate.root, paneId))
+  const leaf = tab ? findLeaf(tab.root, paneId) : null
+  // The pre-workspace scratch surface is never saved, so its key would be lost.
+  if (!tab || !leaf || leaf.agent || leaf.fileNav || leaf.browser || activeProjectId === BOOT_PROJECT) return null
+  if (!shouldKeepTerminalsRunning()) {
+    if (leaf.hostKey) {
+      // The setting was turned off: this pane goes back to an ordinary shell.
+      releaseHostKeys([leaf])
+      state = replaceTab(state, tab.id, { ...tab, root: mapLeaf(tab.root, paneId, existing => ({ ...existing, hostKey: undefined })) })
+      emit()
+    }
+    return null
+  }
+  if (leaf.hostKey) return leaf.hostKey
+  const hostKey = crypto.randomUUID()
+  state = replaceTab(state, tab.id, { ...tab, root: mapLeaf(tab.root, paneId, existing => ({ ...existing, hostKey })) })
+  emit()
+  // Saved before the shell exists: a key lost to a crash would leave a shell
+  // running that no pane could ever find again.
+  flushTermPanePersistence()
+  return hostKey
+}
+
+/** Record the exact session an agent CLI is running in a shell pane. */
+export function setPaneAgentSession(paneId: string, agentCli: AgentCli, sessionId: string): void {
+  if (!isAgentSessionId(sessionId)) return
+  const update = (source: TermPanesState): TermPanesState => {
+    const tab = source.tabs.find(candidate => findLeaf(candidate.root, paneId))
+    if (!tab) return source
+    const leaf = findLeaf(tab.root, paneId)!
+    if (leaf.agentCli === agentCli && leaf.agentSessionId === sessionId) return source
+    return replaceTab(source, tab.id, {
+      ...tab,
+      root: mapLeaf(tab.root, paneId, existing => ({ ...existing, agentCli, agentSessionId: sessionId })),
+    })
+  }
+  const before = state
+  state = update(state)
+  if (state !== before) { emit(); return }
+  for (const [projectId, project] of PROJECTS) {
+    if (projectId === activeProjectId) continue
+    const next = update(project)
+    if (next !== project) { PROJECTS.set(projectId, next); schedulePersist(); return }
+  }
+}
+
+/** The command an explicit resume of this pane would run. */
+export function paneResumeCommand(leaf: Pick<Leaf, 'agentCli' | 'agentSessionId'>): string | null {
+  return leaf.agentCli ? agentResumeCommand(leaf.agentCli, leaf.agentSessionId) : null
 }
 
 const startupCommands = new Map<string, string>()
@@ -788,7 +869,8 @@ export function activateRestoredPane(paneId: string, options: { resumeAgentCli?:
   const tab = state.tabs.find(candidate => findLeaf(candidate.root, paneId))
   if (!tab) return
   const leaf = findLeaf(tab.root, paneId)
-  if (options.resumeAgentCli && leaf?.agentCli) startupCommands.set(paneId, AGENT_CLI_RESUME[leaf.agentCli].command)
+  const resume = options.resumeAgentCli && leaf ? paneResumeCommand(leaf) : null
+  if (resume) startupCommands.set(paneId, resume)
   state = replaceTab(state, tab.id, {
     ...tab,
     root: mapLeaf(tab.root, paneId, existing => ({ ...existing, restored: undefined })),
@@ -921,12 +1003,79 @@ export function spawnFileNav(rootPath: string): void {
   emit()
 }
 
+/**
+ * A typed address as a loadable URL: bare hosts get a scheme (http for local
+ * addresses, https otherwise). Only http and https are ever loaded.
+ */
+export function normalizeBrowserUrl(input: string): string | null {
+  const text = input.trim()
+  if (!text || /\s/.test(text)) return null
+  const local = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(:|\/|$)/i.test(text)
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `${local ? 'http' : 'https'}://${text}`
+  try {
+    const url = new URL(candidate)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
+/** Split the active pane and show a web page beside it. */
+export function spawnBrowser(url: string): void {
+  const tab = activeTab(state)
+  const leaf: Leaf = { kind: 'leaf', paneId: uid('pane'), ptyId: null, cwd: spawnCwd(), browser: { url } }
+  const next: Tab = {
+    ...tab,
+    root: mapLeaf(tab.root, tab.activePaneId, existing => ({
+      kind: 'split',
+      splitId: uid('split'),
+      dir: 'v',
+      ratio: 0.5,
+      a: existing,
+      b: leaf,
+    })),
+    activePaneId: leaf.paneId,
+  }
+  state = replaceTab(state, tab.id, next)
+  emit()
+}
+
+/** True for an address on this machine: a dev server, a local preview. */
+export function isLocalUrl(url: string): boolean {
+  try {
+    return ['localhost', '127.0.0.1', '[::1]', '0.0.0.0'].includes(new URL(url).hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Show a page in the active tab's browser pane, opening one beside the active
+ * pane if the tab has none. Returns false for anything but http and https.
+ */
+export function showInBrowserPane(url: string): boolean {
+  const target = normalizeBrowserUrl(url)
+  if (!target) return false
+  const existing = leavesOf(activeTab(state).root).find(leaf => leaf.browser)
+  if (existing) setBrowserUrl(existing.paneId, target)
+  else spawnBrowser(target)
+  return true
+}
+
+/** Remember the address a browser pane is showing, so a restart reopens it. */
+export function setBrowserUrl(paneId: string, url: string): void {
+  const tab = state.tabs.find(candidate => findLeaf(candidate.root, paneId))
+  if (!tab || findLeaf(tab.root, paneId)?.browser?.url === url) return
+  state = replaceTab(state, tab.id, { ...tab, root: mapLeaf(tab.root, paneId, existing => existing.browser ? { ...existing, browser: { url } } : existing) })
+  emit()
+}
+
 /** Close the active pane. If it's the last pane in the tab, close the tab. */
 export function closeActivePane(): { killPtyId: number | null; killBridgeId: string | null } {
   const tab = activeTab(state)
   const leaf = findLeaf(tab.root, tab.activePaneId)
   const disposal = new CustomEvent('terminal:dispose', { cancelable: true, detail: { paneId: leaf?.paneId } })
-  if (leaf) window.dispatchEvent(disposal)
+  if (leaf) { window.dispatchEvent(disposal); releaseHostKeys([leaf]) }
   const killPtyId = disposal.defaultPrevented ? null : leaf?.ptyId ?? null
   // RV2 — an agent leaf has ptyId:null; the caller kills its claude session
   // via killBridgeId (claude_kill) instead of killing a pty.
@@ -1149,6 +1298,16 @@ export function useZoom(): string | null {
 }
 
 // ---- insert vs pane-op mode -------------------------------------------
+
+/**
+ * Hand the keyboard to the active pane when it is a plain shell. Agent and
+ * file panes own their focus: forcing insert there has no focused input.
+ */
+export function typeIntoActiveShell(): void {
+  const tab = activeTab(state)
+  const leaf = findLeaf(tab.root, tab.activePaneId)
+  if (leaf && !leaf.agent && !leaf.fileNav && !leaf.browser) setInsert(true)
+}
 
 export function setInsert(b: boolean): void {
   if (state.insert === b) return

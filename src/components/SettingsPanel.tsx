@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { closeSettings, useSettingsOpen } from '../state/settings'
+import { ensureSystemNotificationPermission } from '../lib/systemNotifications'
+import { setAgentHooksInstalled, useAgentHooks } from '../state/agentHooks'
 import { COMMANDS, eventBinding, LEADER_SHORTCUTS, resetBindings, setBinding, shortcutLabel, useCommandBindings } from '../state/commands'
 import { BUNDLED_THEMES, setThemePalette, useViewThemes } from '../state/theme'
 import { setBeadsView, useUiPreferences, type BeadsView } from '../state/uiPreferences'
@@ -17,7 +19,7 @@ import { RecipeSettings } from './RecipeSettings'
 import appPackage from '../../package.json'
 import { setNotificationPreferences, useNotificationPreferences } from '../state/notificationPreferences'
 import { clearAllPaneNotifications, usePaneNotifications } from '../state/paneNotifications'
-import { checkForUpdates, downloadUpdate, setCheckForUpdatesOnLaunch, useAppUpdate, useCheckForUpdatesOnLaunch, type UpdateState } from '../state/appUpdate'
+import { checkForUpdates, downloadUpdate, setCheckForUpdatesOnLaunch, useAppUpdate, useCheckForUpdatesOnLaunch, type UpdateState, prepareUpdate, restartToUpdate } from '../state/appUpdate'
 
 function updateSummary(update: UpdateState): string {
   switch (update.status) {
@@ -27,6 +29,8 @@ function updateSummary(update: UpdateState): string {
     case 'available': return `${update.info.latest} is available`
     case 'downloading': return `Downloading ${update.info.latest}…`
     case 'downloaded': return `${update.info.latest} downloaded and opened in Finder`
+    case 'preparing': return `Downloading and checking ${update.info.latest}…`
+    case 'ready': return `${update.info.latest} is ready to install`
     case 'error': return 'Could not check'
   }
 }
@@ -43,6 +47,9 @@ const TERMINAL_PANE_COMMAND_IDS = new Set([
   'resizeRight',
   'resizeUp',
   'resizeDown',
+  'terminalFontLarger',
+  'terminalFontSmaller',
+  'terminalFontReset',
 ])
 export function SettingsPanel() {
   const open = useSettingsOpen()
@@ -50,6 +57,8 @@ export function SettingsPanel() {
   const [section, setSection] = useState<typeof sections[number]>('General')
   const [search, setSearch] = useState('')
   const [recording, setRecording] = useState<string | null>(null)
+  const [systemDenied, setSystemDenied] = useState(false)
+  const agentHooks = useAgentHooks()
   const [error, setError] = useState('')
   const bindings = useCommandBindings()
   const viewThemes = useViewThemes()
@@ -98,8 +107,9 @@ export function SettingsPanel() {
   useEffect(() => {
     if (!recording) return
     const onRecordingKeyDown = (event: KeyboardEvent) => {
-      // Tab cancels capture but keeps normal dialog focus traversal usable.
-      if (event.key === 'Tab') {
+      // Plain Tab cancels capture and keeps dialog focus traversal usable.
+      // With Command or Control it is a chord like any other.
+      if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey) {
         setRecording(null)
         setError('')
         event.stopPropagation()
@@ -208,13 +218,14 @@ export function SettingsPanel() {
         {(section === 'Appearance' || section === 'Terminal') && <>
           {section === 'Terminal' && <p className="bs-settings__intro">Changes apply to existing shells in both views. Applications such as Neovim can override the cursor.</p>}
           <label className="bs-settings__row"><span>Terminal font<small>Nerd Font icons (LazyVim, prompts, file trees) are bundled and work with every choice.</small></span><select value={appearance.fontFamily} onChange={e => setTerminalAppearance({ fontFamily: e.target.value })}>{TERMINAL_FONTS.map(f => <option key={f}>{f}</option>)}</select></label>
-          <label className="bs-settings__row"><span>Font size</span><input aria-label="Font size" type="number" min="10" max="24" value={appearance.fontSize} onChange={e => { const n = Number(e.target.value); if (n >= 10 && n <= 24) setTerminalAppearance({ fontSize: n }) }} /></label>
+          <label className="bs-settings__row"><span>Font size<small>{[bindings.terminalFontLarger, bindings.terminalFontSmaller, bindings.terminalFontReset].filter(Boolean).map(shortcutLabel).join(' · ') || 'Shortcuts can be set under Keyboard shortcuts.'}</small></span><input aria-label="Font size" type="number" min="10" max="24" value={appearance.fontSize} onChange={e => { const n = Number(e.target.value); if (n >= 10 && n <= 24) setTerminalAppearance({ fontSize: n }) }} /></label>
           <label className="bs-settings__row"><span>Line height</span><input aria-label="Line height" type="number" min="1" max="1.8" step="0.1" value={appearance.lineHeight} onChange={e => { const n = Number(e.target.value); if (n >= 1 && n <= 1.8) setTerminalAppearance({ lineHeight: n }) }} /></label>
         </>}
         {section === 'Terminal' && <>
           <label className="bs-settings__row"><span>Cursor shape</span><select aria-label="Cursor shape" value={appearance.cursorStyle} onChange={e => setTerminalAppearance({ cursorStyle: e.target.value as 'block' | 'bar' | 'underline' })}><option value="block">Block</option><option value="bar">Bar</option><option value="underline">Underline</option></select></label>
           <label className="bs-settings__row"><span>Blink cursor</span><input aria-label="Blink cursor" type="checkbox" checked={appearance.cursorBlink} onChange={e => setTerminalAppearance({ cursorBlink: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>Scrollback lines<small>More history uses more memory per terminal. Reducing this trims older output.</small></span><input aria-label="Scrollback lines" type="number" min="100" max="50000" step="100" value={appearance.scrollback} onChange={e => setTerminalAppearance({ scrollback: Number(e.target.value) })} /></label>
+          <label className="bs-settings__row"><span>Copy on select<small>Finishing a mouse selection copies it. Hold Option while dragging to select inside Claude Code, Codex or Neovim when they capture the mouse. Cmd+C and Cmd+V always work.</small></span><input aria-label="Copy on select" type="checkbox" checked={appearance.copyOnSelect} onChange={e => setTerminalAppearance({ copyOnSelect: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>macOS editing shortcuts<small>Cmd+Left/Right moves to line start/end, Cmd+Backspace deletes to line start, Cmd+Delete to line end, Option+Delete deletes the next word, Cmd+Up/Down scrolls to top/bottom, Shift+Enter adds a newline in Claude and Codex prompts. Option+Left/Right, Option+Backspace and Option-click to move the cursor always work. App shortcuts win when both match.</small></span><input aria-label="macOS editing shortcuts" type="checkbox" checked={appearance.macEditingKeys} onChange={e => setTerminalAppearance({ macEditingKeys: e.target.checked })} /></label>
           <p className="bs-settings__note">Unsplit to tabs keeps every session running. Close pane stops the selected shell or agent. Zoom temporarily fills the terminal area with one pane.</p>
           <button onClick={resetTerminalAppearance}>Restore terminal defaults</button>
@@ -224,11 +235,17 @@ export function SettingsPanel() {
           <label className="bs-settings__row"><span>Pane notifications<small>Triggered by the terminal bell, by OSC 9 / 99 / 777 notification sequences, and by an agent pane finishing a turn.</small></span><input aria-label="Pane notifications" type="checkbox" checked={notificationPrefs.enabled} onChange={e => setNotificationPreferences({ enabled: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>Notify when a background terminal goes quiet<small>Marks a pane you are not looking at when it stops printing after at least four seconds of continuous output. This is how Claude Code, Codex and long builds are noticed without any setup; turn it off if a chatty process causes false alarms.</small></span><input aria-label="Notify when a background terminal goes quiet" type="checkbox" disabled={!notificationPrefs.enabled} checked={notificationPrefs.notifyOnQuiet} onChange={e => setNotificationPreferences({ notifyOnQuiet: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>Switch to the pane that notified<small>Opens its workspace and tab and focuses it. Waits until you have stopped typing and no dialog is open, so keystrokes never land in the wrong pane.</small></span><input aria-label="Switch to the pane that notified" type="checkbox" disabled={!notificationPrefs.enabled} checked={notificationPrefs.autoSwitch} onChange={e => setNotificationPreferences({ autoSwitch: e.target.checked })} /></label>
+          <div className="bs-settings__row"><span>Exact signals from Claude Code<small>Claude Code can tell a pane the moment it needs you or finishes, and which conversation it is running, so a restart reopens that exact one. Sessions Beads Station starts for you already do this. Turn this on for <code>claude</code> you type yourself: it adds three hooks to <code>~/.claude/settings.json</code> (a backup is kept beside it) that do nothing outside Beads Station. Codex reports a finished turn when started with <code>-c tui.notifications=true</code>.{agentHooks.error ? ` ${agentHooks.error}` : ''}</small></span><button aria-label="Exact signals from Claude Code" aria-pressed={agentHooks.installed} onClick={() => void setAgentHooksInstalled(!agentHooks.installed)}>{agentHooks.installed ? 'Remove hooks' : 'Add hooks'}</button></div>
+          <label className="bs-settings__row"><span>macOS notifications in the background<small>When Beads Station is not the front app, a waiting pane also posts to Notification Center. macOS asks for permission the first time you turn this on.{systemDenied ? ' Permission was not granted; allow Beads Station under System Settings → Notifications.' : ''}</small></span><input aria-label="macOS notifications in the background" type="checkbox" disabled={!notificationPrefs.enabled} checked={notificationPrefs.systemNotifications} onChange={e => {
+            if (!e.target.checked) { setNotificationPreferences({ systemNotifications: false }); return }
+            void ensureSystemNotificationPermission().then(granted => { setSystemDenied(!granted); setNotificationPreferences({ systemNotifications: granted }) })
+          }} /></label>
           <label className="bs-settings__row"><span>Show the count on the Dock icon</span><input aria-label="Show the count on the Dock icon" type="checkbox" disabled={!notificationPrefs.enabled} checked={notificationPrefs.dockBadge} onChange={e => setNotificationPreferences({ dockBadge: e.target.checked })} /></label>
-          <p className="bs-settings__note">{waitingPanes === 0 ? 'No panes are waiting.' : `${waitingPanes} pane${waitingPanes === 1 ? ' is' : 's are'} waiting.`} Jump to the latest one with {shortcutLabel(bindings.notificationJump) || 'the command palette'}.</p>
+          <p className="bs-settings__note">{waitingPanes === 0 ? 'No panes are waiting.' : `${waitingPanes} pane${waitingPanes === 1 ? ' is' : 's are'} waiting.`} Jump to the latest one with {shortcutLabel(bindings.notificationJump) || 'the command palette'}, or list them all with {shortcutLabel(bindings.notificationPanel) || 'the command palette'}.</p>
           <button disabled={waitingPanes === 0} onClick={clearAllPaneNotifications}>Clear pane notifications</button>
         </>}
         {section === 'Keyboard shortcuts' && <>
+          <p className="bs-settings__note">macOS keeps Command+Tab, Command+Space, Command+` and Command+H for itself, so they cannot be recorded. Control chords work instead (for example Control+Tab), and Control with a single key always goes to the shell.</p>
           <p className="bs-settings__intro">Choose Change beside any action, then press a more comfortable Command or Control shortcut. Leader chords are fixed and listed by context below.</p>
           <input className="bs-settings__search" aria-label="Search shortcuts" placeholder="Search commands…" value={search} onChange={e => setSearch(e.target.value)} />
           {error && <p role="alert">{error}</p>}
@@ -256,6 +273,7 @@ export function SettingsPanel() {
         {section === 'Sessions' && <>
           <p className="bs-settings__intro">Agents start when you ask them to. Interactive chat uses the selected local adapter.</p>
           <label className="bs-settings__row"><span>Restore saved context on launch<small>Restores workspaces, layout, selected panes and bounded screen context. It never attaches a live process or starts a provider turn.</small></span><input aria-label="Restore saved context on launch" type="checkbox" checked={session.restoreContextOnLaunch} onChange={e => setSessionPreferences({ restoreContextOnLaunch: e.target.checked })} /></label>
+          <label className="bs-settings__row"><span>Keep terminals running when Beads Station quits (experimental)<small>Shells started after you turn this on live in a small background process instead of the app. Quitting, a crash or an update leaves them running, with Claude Code, Codex or a dev server still inside, and the next launch reattaches each pane with its history. They do not survive logging out or restarting the Mac; then a pane falls back to its saved screen and the resume offer. Closing a pane or workspace still stops its shell.</small></span><input aria-label="Keep terminals running when Beads Station quits" type="checkbox" checked={session.keepTerminalsRunning} onChange={e => setSessionPreferences({ keepTerminalsRunning: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>Interactive chat provider<small>Choose a supported provider for the developer chat pane. Availability checks only whether its CLI is installed; login stays owned by that CLI.</small></span><select aria-label="Interactive chat provider" value={interactiveProvider} onChange={e => setInteractiveChatProvider(e.target.value as InteractiveChatProvider)}>
             {(['claude', 'codex'] as const).map(name => {
               const status = providerAvailability(providerStatuses, name)
@@ -279,10 +297,15 @@ export function SettingsPanel() {
             <div><dt>Updates</dt><dd data-testid="update-status" role="status">{updateSummary(update)}</dd></div>
           </dl>
           {update.status === 'error' && <p role="alert">{update.message}</p>}
+          {update.status === 'ready' && <p className="bs-settings__note">The new version was downloaded, matched its published SHA-256 and signature check, and is waiting next to the installed app. Restart to update asks before closing your terminals and agents, then replaces the app and opens it again. Settings and shortcuts are kept. Nothing changes until you restart.</p>}
           {update.status === 'downloaded' && <p className="bs-settings__note">Saved to {update.path}{update.checksumVerified ? ' (SHA-256 verified)' : ' (no published checksum to verify)'}. Quit Beads Station after saving your work, then drag the new app into Applications. Settings and shortcuts are kept.</p>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button disabled={update.status === 'checking' || update.status === 'downloading'} onClick={() => void checkForUpdates()}>Check for updates</button>
-            {(update.status === 'available' || (update.status === 'error' && update.info?.newer)) && update.info?.asset && <button onClick={() => void downloadUpdate()}>Download {update.info.latest}</button>}
+            <button disabled={update.status === 'checking' || update.status === 'downloading' || update.status === 'preparing' || update.status === 'ready'} onClick={() => void checkForUpdates()}>Check for updates</button>
+            {(update.status === 'available' || (update.status === 'error' && update.info?.newer)) && update.info?.asset && <>
+              <button onClick={() => void prepareUpdate()}>Install {update.info.latest}</button>
+              <button onClick={() => void downloadUpdate()}>Download only</button>
+            </>}
+            {update.status === 'ready' && <button onClick={() => void restartToUpdate()}>Restart to update</button>}
           </div>
           <label className="bs-settings__row"><span>Check for updates when the app starts<small>Reads this project’s GitHub releases once per launch. While the repository is private this uses your own <code>gh</code> CLI login. Nothing is installed automatically.</small></span><input aria-label="Check for updates when the app starts" type="checkbox" checked={checkOnLaunch} onChange={e => setCheckForUpdatesOnLaunch(e.target.checked)} /></label>
           <p className="bs-settings__note">This version is read from the application package metadata used to build the frontend.</p>

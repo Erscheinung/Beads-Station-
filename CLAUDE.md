@@ -100,7 +100,8 @@ backend in the request panel:
 | --- | --- |
 | Claude / Codex direct | Working via native CLI login |
 | `codex-orchestrator` | Working (`src-tauri/src/conductors.rs`): `codex exec` with an adaptive-orchestrator preamble; enabled when `codex` and the skill (workspace `.agents/skills/…` or `~/.codex/skills/…`) exist. One real run verified 2026-09-23 via the opt-in `live_designer_run_reaches_review_and_binds_approval` Rust test (needs_review → capture → stale detection). Packaged WKWebView click-through still unexercised. |
-| `opus-conductor` | **Placeholder.** Detection only via `BS_OPUS_CONDUCTOR_DIR`; never launches. The Opus conductor lives in a private repo on the second machine — wire its launch contract in `conductors.rs` + `native_run_start` there. |
+| `opus-conductor` | Wired in 0.1.6 (`conductors.rs`): `claude --print --model opus` with an adaptive-orchestrator preamble; enabled when `claude`, the skill and its `sonnet-worker` agent exist in the workspace `.claude/` or `~/.claude/` (installed by `setup.sh` from https://github.com/Erscheinung/opus-sonnet-conductor, local checkout `~/Desktop/Code/opus-sonnet-conductor`). Command line and availability are tested; **no real run has been made**. `BS_OPUS_CONDUCTOR_DIR` only tells the "not installed" message where `setup.sh` is. |
+| live session | The Designer's Session view; an attempt the user submits for review is recorded as provider `session` (`native_session_submit`). |
 
 The older interval conductor (`conductor.rs`, Claude pulses, herdr bridge)
 still exists; `Code-yfb` tracks durable leases/budgets. Finishing the Designer
@@ -109,7 +110,7 @@ packaged app) is the top product priority.
 
 ## Todoist reconciliation — "Test 0.1.3 and release 0.1.4"
 
-Status as of 2026-10-02 (v0.1.5 published). "Done" = implemented with automated evidence; items
+Status as of 2026-10-02 (v0.1.5 published); the 2026-10-12 round is in the v0.1.6 task list below. "Done" = implemented with automated evidence; items
 marked *native check* still need a hands-on packaged-app test before ticking.
 
 | Todoist item | Status | Evidence / bead |
@@ -146,6 +147,87 @@ marked *native check* still need a hands-on packaged-app test before ticking.
 | Herdr for pane management? | Not used for panes: only the conductor's optional herdr bridge; herdr CLI absent here. Evaluate under A3. | `Code-6un.3` |
 | Custom instructions/context layer; tracker connector | Future | `Code-un1` |
 | New icon | Open | `Code-f76` |
+
+## v0.1.6 task list (Todoist round of 2026-10-12, epic `Code-gya`)
+
+Source is at 0.1.6 in all three version files and committed. A local DMG was
+built on 2026-10-12; **no tag or GitHub release exists yet**. Everything marked
+done has automated evidence only and needs the hands-on pass in
+`docs/releases/v0.1.6.md` before the Todoist items are ticked.
+
+| # | Item | Status | Bead |
+| --- | --- | --- | --- |
+| 1 | Terminal-only view clips the bottom rows (Todoist P1, also "bottom part vanishes") | Done. `.bs-terminal-region` lacked `min-height: 0`, so it could never shrink below the xterm screen's pixel height. Live test fails without the fix | `Code-gya.1` |
+| 2 | Focusing a pane/tab/fullscreen puts the cursor in the shell | Done (`typeIntoActiveShell`). Agent and file panes keep their own focus rules | `Code-gya.2` |
+| 3 | Restored plain shell starts by itself | Done. Panes that hosted an agent (chat pane or agent CLI) still wait for an explicit resume | `Code-gya.3` |
+| 4 | Shortcut recorder: Tab chords, macOS Control chords | Done. `Ctrl+…` is a separate modifier on macOS; Control+single key always reaches the shell; Command+Tab cannot be captured by any app (Settings says so) | `Code-gya.4` |
+| 5 | Copy/paste | Partly: Cmd+C writes the selection directly, Option-drag selects inside mouse-capturing TUIs. "Wonky" needs a concrete repro from the user | `Code-gya.5` |
+| 6 | Copy on select | Done, setting on by default | `Code-gya.6` |
+| 7 | Terminal text size shortcuts | Done: `Mod+=`, `Mod+-`, `Mod+0`, rebindable | `Code-gya.7` |
+| 8 | What's new after an update | Done: `src/state/whatsNew.ts` (`RELEASE_HIGHLIGHTS`, add an entry per release). Never shown on a first install | `Code-gya.8` |
+| 9 | Open a folder from Finder | Done for Open With / Dock drop / `open -a` (`src-tauri/Info.plist`, `RunEvent::Opened`). "New Beads here" Quick Action not built | `Code-gya.9` |
+| 10 | Designer live session | First slice done, see below | `Code-gya.10` |
+| 11 | `.beads` files in Designer artifacts | Done | `Code-am5.7` |
+| 12 | Terminal keeps 80x24 when its host never resizes after attach | Done: one re-fit a frame after attach (xterm measures its cell on first intersection) | `Code-gya.10` |
+| 13 | Capture, approve and close a ticket from the Designer session | Done | `Code-cox` |
+| 14 | Worker visibility in Designer runs | Done: collab items and Claude subagent lines are narrated; Codex worker rollouts are read on demand (`codex_thread_activity`) | `Code-am5.8` |
+| 15 | Opus conductor | Wired, not run against a provider | `Code-am5.9` |
+| 16 | Waiting-panes panel (`Mod+I`) | Done | `Code-s8b` |
+| 17 | macOS Notification Center | Done (`tauri-plugin-notification`, setting off by default; permission asked when turned on) | `Code-my5` |
+| 18 | Exact waiting/finished signals and session id from Claude Code | Done: `agent_hooks.rs`. Hooks write OSC 777 / OSC 7770 to `$BEADS_STATION_TTY`. App-started sessions use `claude --settings`; hand-typed `claude` needs the opt-in install into `~/.claude/settings.json` | `Code-270` |
+| 19 | Exact session resume per pane | Done: Claude id from the hook, Codex id from its open rollout file (`lsof`) | `Code-6un.3.1` |
+| 20 | Self-installing update | Done: prepare (download, SHA-256, bundle id/version/codesign, stage beside the bundle) then swap after quit. Swap tested on stand-in folders only | `Code-t3w.2` |
+| 21 | Browser pane | Done as a sandboxed iframe plus a separate persistent window; native child web view is `Code-vjy` | `Code-470` |
+| 22 | Terminals survive quitting the app | Done, **opt-in and off by default**: `pty_host.rs` | `Code-6un.3` |
+| 23 | Repeated text while scrolling | No code change: Claude Code 2.1 and Codex 0.162 draw in the alternate screen, where the reprint cannot accumulate | `Code-xni.6` |
+
+Still open from that Todoist round: memory profile vs cmux (`Code-2mx`, deferred
+by the user), "New Beads here" Quick Action (`Code-xny`), saved screen above a
+restarted shell (`Code-lgp`), per-prompt snapshots (`Code-n76`), native browser
+web view (`Code-vjy`), a concrete repro for "copy/paste is wonky".
+
+### Terminal host (kept terminals, `Code-6un.3`)
+
+`src-tauri/src/pty_host.rs`. The app's own binary started with
+`--pty-host <socket>` is a detached process that owns shells. `pty_spawn` takes
+an optional `persistKey`; with one it attaches to that key in the host or
+spawns there, and falls back to an in-process PTY if the host cannot be
+reached. Rules that must hold:
+
+- A pane's key (`Leaf.hostKey`) is a random UUID, saved before the shell
+  starts, and known only to that pane and the host's memory. Nothing else may
+  be used to find a shell; a dead host means an unknown key, never a guess.
+- The wire protocol is versioned (`PROTOCOL = 1`) and changes must be additive:
+  an updated app has to talk to a host an older version started.
+- Replayed history is marked `replay` and must not raise notifications or let
+  a queued startup command run (it would be typed into a live program).
+- Attaching to a live shell is not launching an agent, so it needs no click.
+  A restored agent pane checks `pty_persisted` first and only offers resume
+  when its shell is gone.
+- Explicit pane/workspace close kills the shell, including panes never shown
+  this launch (`terminal:release-keys`). Quit leaves host shells running only
+  while the setting is on.
+- Not covered: logout, restart, shutdown, or the host being killed. Then the
+  exact-session resume offer is the fallback.
+
+### Designer live session (Napkin model)
+
+`src/components/designer/SessionView.tsx` adds a **Session** item to the
+Designer: the real `claude` / `codex` CLI (or a plain shell) in a terminal on
+the left, and the workspace's changed files with per-file diffs on the right
+(`artifact_preview`, the same bounded read as a capture, bound to no run and
+never stored). A ticket's **Open in a live session** hands the ticket over; a
+second click starts the CLI on it. Nothing starts on mount. The session's pane
+id is `designer:<workspaceId>`; it lives outside the `termPanes` tree and is
+disposed when the workspace closes.
+
+This follows the user's own Napkin Claude app (`~/Desktop/Code/Napkin-Claude`,
+Svelte 5 + Tauri): talk = real CLI in a PTY, ink spill = changed files. Next
+slices, in order: (1) done in 0.1.6: capture, approve, request changes and
+close ticket from the Session view; (2) per-prompt snapshots with erase/fold in a shadow git
+repo, porting Napkin's `snapshot.rs` and its `claude --settings` hooks (which
+also gives `Code-270` exact waiting signals); (3) the paper look as a Designer
+theme. The older JSON chat (`ClaudeChat`) still exists beside it.
 
 ## Future: Svelte migration (`Code-cuh`)
 

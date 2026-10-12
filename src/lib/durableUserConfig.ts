@@ -34,6 +34,7 @@ const DURABLE_EXACT_KEYS = new Set([
   'beads-station.sidebarWidth',
   'beads-station.terminalHeight',
   'beads-station.designer-layout.v1',
+  'beads-station.last-seen-version',
 ])
 
 const DURABLE_PREFIXES = ['beads-station.terminalHeight.']

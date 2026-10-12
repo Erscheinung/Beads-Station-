@@ -24,7 +24,7 @@ describe('session preferences', () => {
     act(() => setSessionPreferences({ askBeforeResume: false }))
 
     expect(result.current.askBeforeResume).toBe(false)
-    expect(JSON.parse(localStorage.getItem('beads-station.session-preferences')!)).toEqual({ askBeforeResume: false, restoreContextOnLaunch: true, confirmDestructiveActions: true })
+    expect(JSON.parse(localStorage.getItem('beads-station.session-preferences')!)).toEqual({ askBeforeResume: false, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false })
   })
 
   it('recognizes only a non-empty provider-observed bridge session', () => {

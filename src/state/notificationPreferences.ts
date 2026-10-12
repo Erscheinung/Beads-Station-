@@ -10,10 +10,12 @@ export interface NotificationPreferences {
   autoSwitch: boolean
   /** Show the number of waiting panes on the Dock icon. */
   dockBadge: boolean
+  /** Also post to macOS Notification Center while the app is in the background. */
+  systemNotifications: boolean
 }
 
 const STORAGE_KEY = 'beads-station.notification-preferences'
-const DEFAULTS: NotificationPreferences = { enabled: true, notifyOnQuiet: true, autoSwitch: false, dockBadge: true }
+const DEFAULTS: NotificationPreferences = { enabled: true, notifyOnQuiet: true, autoSwitch: false, dockBadge: true, systemNotifications: false }
 
 function load(): NotificationPreferences {
   try {
@@ -23,6 +25,7 @@ function load(): NotificationPreferences {
       notifyOnQuiet: parsed.notifyOnQuiet !== false,
       autoSwitch: parsed.autoSwitch === true,
       dockBadge: parsed.dockBadge !== false,
+      systemNotifications: parsed.systemNotifications === true,
     }
   } catch {
     return { ...DEFAULTS }

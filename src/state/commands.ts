@@ -33,11 +33,16 @@ export const COMMANDS = [
   { id: 'resizeRight', label: 'Resize terminal split right', binding: 'Mod+Alt+Shift+ArrowRight', repo: true },
   { id: 'resizeUp', label: 'Resize terminal split up', binding: 'Mod+Alt+Shift+ArrowUp', repo: true },
   { id: 'resizeDown', label: 'Resize terminal split down', binding: 'Mod+Alt+Shift+ArrowDown', repo: true },
+  { id: 'terminalFontLarger', label: 'Terminal text larger', binding: 'Mod+=' },
+  { id: 'terminalFontSmaller', label: 'Terminal text smaller', binding: 'Mod+-' },
+  { id: 'terminalFontReset', label: 'Terminal text default size', binding: 'Mod+0' },
   { id: 'notificationJump', label: 'Jump to latest pane notification', binding: 'Mod+Shift+U' },
+  { id: 'notificationPanel', label: 'Show waiting panes', binding: 'Mod+I' },
   { id: 'notificationsClear', label: 'Clear pane notifications' },
   { id: 'checkForUpdates', label: 'Check for updates' },
   { id: 'agent', label: 'New Claude agent pane', repo: true },
   { id: 'files', label: 'Open files explorer', repo: true },
+  { id: 'browser', label: 'Open browser pane', binding: 'Mod+Shift+L', repo: true },
   { id: 'expand', label: 'Expand all beads', repo: true },
   { id: 'collapse', label: 'Collapse bead groups', repo: true },
   { id: 'hideExplorer', label: 'Collapse explorer' },
@@ -139,16 +144,26 @@ export function useCommandBindings() {
 export function getBinding(id: string) { return bindings[id] || '' }
 export function getRecipeBinding(recipeId: string) { return recipeBindings[recipeId]?.binding || '' }
 export function getRecipeBindings() { return { ...recipeBindings } }
+const isMac = () => /Mac|iPhone|iPad/.test(navigator.platform)
 export function shortcutLabel(binding: string) {
-  return binding.replace('Mod', /Mac|iPhone|iPad/.test(navigator.platform) ? '\u2318' : 'Ctrl').replace(/\+/g, ' ')
+  return binding.replace(/^Ctrl/, '\u2303').replace('Mod', isMac() ? '\u2318' : 'Ctrl').replace(/\+/g, ' ')
 }
-export function eventBinding(e: KeyboardEvent): string {
+/**
+ * The chord an event spells. `Mod` is Command on macOS and Control elsewhere.
+ * On macOS a Control chord is spelled `Ctrl`: Command+Tab, Command+Space and
+ * friends belong to the system and never reach the app, so Control is the
+ * only way to bind Tab there.
+ */
+export function eventBinding(e: KeyboardEvent, mac = isMac()): string {
   if (!(e.metaKey || e.ctrlKey) || (e.metaKey && e.ctrlKey) || ['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) return ''
-  return ['Mod', ...(e.altKey ? ['Alt'] : []), ...(e.shiftKey ? ['Shift'] : []), e.key.length === 1 ? e.key.toUpperCase() : e.key].join('+')
+  const modifier = mac && e.ctrlKey ? 'Ctrl' : 'Mod'
+  return [modifier, ...(e.altKey ? ['Alt'] : []), ...(e.shiftKey ? ['Shift'] : []), e.key.length === 1 ? e.key.toUpperCase() : e.key].join('+')
 }
 export function bindingError(id: string, binding: string): string | null {
   if (!binding) return null
-  if (!/^Mod\+(Alt\+)?(Shift\+)?([^+]|Enter|ArrowUp|ArrowDown|ArrowLeft|ArrowRight)$/.test(binding)) return 'Use Command or Control with a letter, number, or punctuation key.'
+  if (!/^(Mod|Ctrl)\+(Alt\+)?(Shift\+)?([^+]|Enter|Tab|ArrowUp|ArrowDown|ArrowLeft|ArrowRight)$/.test(binding)) return 'Use Command or Control with a letter, number, punctuation key, Tab, Enter or an arrow.'
+  // Control+letter is how a shell receives Ctrl-C, Ctrl-R, Ctrl-K and the rest.
+  if (/^Ctrl\+[^+]$/.test(binding)) return 'Control with a single key is left to the shell. Add Shift or Option, or use Command.'
   if (['Mod+P', 'Mod+W', 'Mod+Q', 'Mod+C', 'Mod+V', 'Mod+X', 'Mod+A', 'Mod+Z', 'Mod+Shift+Z', 'Mod+R'].includes(binding)) return 'Reserved for pane controls, editing, or the application.'
   const conflict = COMMANDS.find(c => c.id !== id && bindings[c.id] === binding)
   if (conflict) return `Already assigned to ${conflict.label}.`
@@ -171,14 +186,22 @@ export function resetBindings() {
   persistDurableUserConfigKey(KEY)
   listeners.forEach(l => l())
 }
-export function matchedCommand(e: KeyboardEvent): CommandId | undefined {
-  if (e.isComposing) return
-  const binding = eventBinding(e)
-  if (!binding) return undefined
+function commandFor(binding: string): CommandId | undefined {
   const command = COMMANDS.find(c => bindings[c.id] === binding)?.id
   if (command) return command
   const recipe = Object.entries(recipeBindings).find(([, value]) => value.binding === binding)
   return recipe ? `recipe:${recipe[0]}` : undefined
+}
+export function matchedCommand(e: KeyboardEvent, mac = isMac()): CommandId | undefined {
+  if (e.isComposing) return
+  const binding = eventBinding(e, mac)
+  if (!binding) return undefined
+  const exact = commandFor(binding)
+  if (exact || !binding.startsWith('Ctrl+')) return exact
+  // macOS Control chord with no binding of its own. Control+key stays with
+  // the shell; with Shift or Option it also answers to the Command binding.
+  if (/^Ctrl\+[^+]$/.test(binding)) return undefined
+  return commandFor(`Mod${binding.slice('Ctrl'.length)}`)
 }
 export function dispatchCommand(id: CommandId) {
   if (id === 'palette') { openPalette(); return }

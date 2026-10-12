@@ -110,7 +110,7 @@ describe('SettingsPanel shortcut recorder', () => {
 
     const terminalGroup = screen.getByRole('region', { name: 'Terminal pane controls' })
     expect(terminalGroup).toBeVisible()
-    expect(terminalGroup.querySelectorAll('[aria-label^="Shortcut for"]')).toHaveLength(9)
+    expect(terminalGroup.querySelectorAll('[aria-label^="Shortcut for"]')).toHaveLength(12)
 
     const focusLeft = screen.getByRole('button', { name: 'Shortcut for Focus terminal pane left' })
     expect(focusLeft).toHaveTextContent('Change')

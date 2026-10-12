@@ -9,8 +9,11 @@ import { getActivePalette, subscribeTheme } from '../state/theme'
 import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/terminalAppearance'
 import { matchedCommand } from '../state/commands'
 import { notifyPane } from '../state/paneNotifications'
-import { setPaneAgentCli, type AgentCli } from '../state/termPanes'
+import { isLocalUrl, paneHostKey, setPaneAgentCli, setPaneAgentSession, showInBrowserPane, type AgentCli } from '../state/termPanes'
 import { macTerminalKeyAction } from './terminalKeys'
+import { shellQuote } from './shellQuote'
+import { shouldKeepTerminalsRunning, subscribeSessionPreferences } from '../state/sessionPreferences'
+import { isAgentSessionId } from '../state/agentHooks'
 
 type Phase = 'starting' | 'running' | 'exited' | 'error'
 
@@ -190,7 +193,7 @@ export class SgrColorNormalizer {
 
 export class TerminalSession {
   readonly element = document.createElement('div')
-  readonly terminal = new XTerm({ fontFamily: terminalFontStack("'JetBrains Mono'"), fontSize: 13, cursorBlink: true, scrollback: 3000, altClickMovesCursor: true })
+  readonly terminal = new XTerm({ fontFamily: terminalFontStack("'JetBrains Mono'"), fontSize: 13, cursorBlink: true, scrollback: 3000, altClickMovesCursor: true, macOptionClickForcesSelection: true })
   readonly fit = new FitAddon()
   readonly ready: Promise<void>
   id: number | null = null
@@ -224,6 +227,11 @@ export class TerminalSession {
   private lastInputAt = 0
   private startupCommand: string | null = null
   private sawOutput = false
+  private agentCli: AgentCli | null = null
+  private codexSessionKnown = false
+  // A program that sends its own notifications does not need the quiet-after-work guess.
+  private selfReporting = false
+  private replaying = false
 
   constructor(
     readonly paneId: string,
@@ -233,7 +241,7 @@ export class TerminalSession {
   ) {
     this.element.style.cssText = 'width:100%;height:100%;'
     this.terminal.loadAddon(this.fit)
-    this.terminal.loadAddon(new WebLinksAddon())
+    this.terminal.loadAddon(new WebLinksAddon((_event, uri) => openTerminalLink(uri)))
     this.terminal.open(this.element)
     this.terminal.attachCustomKeyEventHandler(e => this.handleKey(e))
     this.registerNotificationSources()
@@ -287,6 +295,12 @@ export class TerminalSession {
   /** xterm custom key hook: false means "handled here, do not send". */
   private handleKey(event: KeyboardEvent): boolean {
     if (matchedCommand(event)) return false
+    // Cmd+C normally arrives as the Edit menu's copy event. Writing the
+    // selection here as well covers a WebView that has lost that menu route.
+    if (event.type === 'keydown' && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'c' && this.terminal.hasSelection()) {
+      copyText(this.terminal.getSelection())
+      return false
+    }
     if (!getTerminalAppearance().macEditingKeys) return true
     const action = macTerminalKeyAction(event, this.terminal.buffer.active.type)
     if (!action) return true
@@ -306,17 +320,26 @@ export class TerminalSession {
   }
 
   private registerNotificationSources() {
-    const bell = this.terminal.onBell(() => notifyPane(this.paneId, 'bell'))
+    const bell = this.terminal.onBell(() => { if (!this.replaying) notifyPane(this.paneId, 'bell') })
     this.releases.push(() => bell.dispose())
     for (const ident of [9, 99, 777] as const) {
       const handler = this.terminal.parser.registerOscHandler(ident, data => {
         const text = oscNotificationText(ident, data)
         if (text === null) return false
+        if (this.replaying) return true
+        this.selfReporting = true
         notifyPane(this.paneId, 'osc', text)
         return true
       })
       this.releases.push(() => handler.dispose())
     }
+    // Private to Beads Station: a Claude Code hook reporting its session id.
+    const session = this.terminal.parser.registerOscHandler(7770, data => {
+      const [kind, cli, id] = data.split(';')
+      if (kind === 'session' && cli === 'claude' && isAgentSessionId(id)) setPaneAgentSession(this.paneId, 'claude', id)
+      return true
+    })
+    this.releases.push(() => session.dispose())
   }
 
   /** Track sustained output so a background pane can report when it goes quiet. */
@@ -338,7 +361,7 @@ export class TerminalSession {
     }
     const worked = this.lastOutputAt - this.busySince
     this.busySince = 0
-    if (worked >= BUSY_MIN_MS && this.phase === 'running') notifyPane(this.paneId, 'quiet')
+    if (worked >= BUSY_MIN_MS && this.phase === 'running' && !this.selfReporting) notifyPane(this.paneId, 'quiet')
   }
 
   private trackUserScrollIntent() {
@@ -351,6 +374,9 @@ export class TerminalSession {
       if (!this.pointerScrolling) return
       this.pointerScrolling = false
       extend()
+      // The release of a drag that began in this terminal, wherever it ends.
+      // It is a user gesture, which the clipboard requires.
+      if (getTerminalAppearance().copyOnSelect && this.terminal.hasSelection()) copyText(this.terminal.getSelection())
     }
     const options = { capture: true, passive: true }
     this.element.addEventListener('wheel', extend, options)
@@ -459,11 +485,27 @@ export class TerminalSession {
     })
     this.observeForeground()
   }
-  /** Remember whether an agent CLI owns this shell, for an explicit resume after a restart. */
+  /** Remember which agent CLI (and, for Codex, which session) owns this shell, for an explicit resume after a restart. */
   private observeForeground() {
     if (this.id === null || this.phase !== 'running') return
-    void invoke<AgentCli | null>('pty_foreground', { id: this.id })
-      .then(agentCli => { if (!this.closed) setPaneAgentCli(this.paneId, agentCli === 'claude' || agentCli === 'codex' ? agentCli : null) })
+    // Finding Codex's session costs an lsof; ask until it is known, then stop.
+    const wantSession = this.agentCli === 'codex' && !this.codexSessionKnown
+    void invoke<{ cli: AgentCli | null; sessionId: string | null } | null>('pty_foreground', { id: this.id, wantSession })
+      .then(foreground => {
+        if (this.closed) return
+        const cli = foreground?.cli === 'claude' || foreground?.cli === 'codex' ? foreground.cli : null
+        if (cli !== this.agentCli) {
+          this.agentCli = cli
+          this.codexSessionKnown = false
+          // A different program now owns the pane; what the last one reported no longer applies.
+          this.selfReporting = false
+        }
+        setPaneAgentCli(this.paneId, cli)
+        if (cli === 'codex' && isAgentSessionId(foreground?.sessionId)) {
+          this.codexSessionKnown = true
+          setPaneAgentSession(this.paneId, 'codex', foreground.sessionId)
+        }
+      })
       .catch(() => { /* exited, or a backend without foreground inspection */ })
   }
   /** Run one command in the new shell after it has printed its first output. */
@@ -493,9 +535,19 @@ export class TerminalSession {
     // prevent spawning; a shell with no output listener is not usable.
     const eventKey = crypto.randomUUID()
     try {
-      const output = await listen<{ id: number; data: string }>(`pty_data:${eventKey}`, event => {
+      const output = await listen<{ id: number; data: string; replay?: boolean }>(`pty_data:${eventKey}`, event => {
         if (!this.closed) {
           const data = this.outputNormalizer.push(event.payload.data)
+          if (event.payload.replay) {
+            // History of a shell that kept running while the app was closed.
+            // Its bells and notifications already happened; and nothing may be
+            // typed into a program that is already running there.
+            this.startupCommand = null
+            this.replaying = true
+            this.terminal.write(data, () => { this.replaying = false })
+            this.sawOutput = true
+            return
+          }
           if (data) this.terminal.write(data)
           this.sawOutput = true
           this.noteOutput()
@@ -515,7 +567,7 @@ export class TerminalSession {
       if (this.closed) { exit(); return }
       this.releases.push(exit)
       this.nativeSize = `${this.terminal.cols}:${this.terminal.rows}`
-      const id = await invoke<number>('pty_spawn', { cwd, eventKey, cols: this.terminal.cols, rows: this.terminal.rows })
+      const id = await invoke<number>('pty_spawn', { cwd, eventKey, cols: this.terminal.cols, rows: this.terminal.rows, persistKey: paneHostKey(this.paneId) })
       if (this.closed) { await invoke('pty_kill', { id }); return }
       this.id = id
       // A fast-exiting shell can emit exit before spawn's response arrives.
@@ -570,8 +622,16 @@ export class TerminalSession {
     // driven by ResizeObserver; do not poll fit across animation frames.
     this.repaintFrame = requestAnimationFrame(() => {
       if (this.closed || attachment !== this.attachment) return
-      this.repaintFrame = null
       this.repaint(attachment)
+      // xterm measures its cell size when its screen first intersects the
+      // viewport, which the browser reports after this frame's callbacks.
+      // Until then a fit is a no-op, and a host that never changes size would
+      // keep the default 80x24. Fit once more, one frame later.
+      this.repaintFrame = requestAnimationFrame(() => {
+        if (this.closed || attachment !== this.attachment) return
+        this.repaintFrame = null
+        this.resize()
+      })
     })
   }
   applyTheme() {
@@ -693,6 +753,27 @@ export class TerminalSession {
   }
 }
 
+/**
+ * A link clicked in terminal output. An address on this machine (the dev
+ * server a command just printed) opens in a browser pane beside the terminal;
+ * everything else opens as it always has.
+ */
+export function openTerminalLink(uri: string) {
+  if (isLocalUrl(uri) && showInBrowserPane(uri)) return
+  const opened = window.open()
+  if (!opened) return
+  try { opened.opener = null } catch { /* cross-origin window */ }
+  opened.location.href = uri
+}
+
+/** Put text on the system clipboard; falls back to the focused element's copy event. */
+export function copyText(text: string) {
+  if (!text) return
+  const fallback = () => { try { document.execCommand('copy') } catch { /* no clipboard in this context */ } }
+  if (!navigator.clipboard?.writeText) { fallback(); return }
+  navigator.clipboard.writeText(text).catch(fallback)
+}
+
 const sessions = new Map<string, TerminalSession>()
 export function getTerminalSession(
   paneId: string,
@@ -711,10 +792,7 @@ export function terminalSessionForNode(node: Node): TerminalSession | null {
   }
   return null
 }
-/** POSIX-quote a path only when the shell would otherwise split or expand it. */
-export function shellQuote(path: string): string {
-  return /^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replace(/'/g, `'\\''`)}'`
-}
+export { shellQuote }
 export function flushTerminalSessionScreens() {
   for (const session of sessions.values()) session.checkpointScreen()
 }
@@ -726,6 +804,17 @@ export function disposeTerminalSession(paneId: string) {
 export function runInTerminalSession(paneId: string, command: string) {
   sessions.get(paneId)?.runWhenReady(command)
 }
+export function hasTerminalSession(paneId: string) {
+  return sessions.has(paneId)
+}
+/** Paste text at a running session's cursor, without submitting it. */
+export function pasteIntoTerminalSession(paneId: string, text: string) {
+  const session = sessions.get(paneId)
+  if (!session || session.phase !== 'running') return false
+  session.terminal.paste(text)
+  session.focus()
+  return true
+}
 export function inspectTerminalSession(paneId: string): Promise<TerminalLifecycleSnapshot | null> {
   return sessions.get(paneId)?.snapshot() ?? Promise.resolve(null)
 }
@@ -736,6 +825,15 @@ function onDispose(event: Event) {
   if (sessions.has(paneId)) event.preventDefault()
   disposeTerminalSession(paneId)
 }
+function onReleaseKeys(event: Event) {
+  const keys = (event as CustomEvent<{ keys: string[] }>).detail.keys
+  void Promise.resolve(invoke('pty_release_keys', { keys })).catch(() => { /* no terminal host */ })
+}
+window.addEventListener('terminal:release-keys', onReleaseKeys)
+// The backend decides at quit whether kept shells are stopped; keep it told.
+const syncKeepRunning = () => { void Promise.resolve(invoke('pty_set_keep_running', { keep: shouldKeepTerminalsRunning() })).catch(() => {}) }
+syncKeepRunning()
+subscribeSessionPreferences(syncKeepRunning)
 window.addEventListener('terminal:dispose', onDispose)
 // A module replacement is a development restart, not ordinary React navigation.
 if (import.meta.hot) import.meta.hot.dispose(() => {

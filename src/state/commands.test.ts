@@ -4,10 +4,10 @@ import { dispatchCommand, eventBinding, getBinding, LEADER_SHORTCUTS, matchedCom
 describe('command bindings', () => {
   beforeEach(resetBindings)
   it('rebinds the action and releases its old shortcut', () => {
-    expect(setBinding('palette', 'Mod+Shift+L')).toBeNull()
+    expect(setBinding('palette', 'Mod+Shift+J')).toBeNull()
     expect(matchedCommand(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))).toBeUndefined()
-    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'L', metaKey: true, shiftKey: true }))).toBe('palette')
-    expect(JSON.parse(localStorage.getItem('beads-station.command-bindings.v1')!).palette).toBe('Mod+Shift+L')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'J', metaKey: true, shiftKey: true }))).toBe('palette')
+    expect(JSON.parse(localStorage.getItem('beads-station.command-bindings.v1')!).palette).toBe('Mod+Shift+J')
   })
   it('rejects conflicts and protects editing, pane leader and Escape', () => {
     expect(setBinding('workspace', 'Mod+K')).toContain('Command palette')
@@ -73,5 +73,21 @@ describe('command bindings', () => {
     vi.resetModules()
     const fresh = await import('./commands')
     expect(fresh.getBinding('notificationJump')).toBe('Mod+Shift+U')
+  })
+  it('accepts Tab chords and spells macOS Control chords as Ctrl', () => {
+    const ctrlShiftTab = new KeyboardEvent('keydown', { key: 'Tab', ctrlKey: true, shiftKey: true })
+    expect(eventBinding(ctrlShiftTab, true)).toBe('Ctrl+Shift+Tab')
+    expect(eventBinding(ctrlShiftTab, false)).toBe('Mod+Shift+Tab')
+    expect(setBinding('terminalPrevious', 'Ctrl+Shift+Tab')).toBeNull()
+    expect(setBinding('terminalNext', 'Ctrl+Tab')).toBeNull()
+    expect(matchedCommand(ctrlShiftTab, true)).toBe('terminalPrevious')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'Tab', ctrlKey: true }), true)).toBe('terminalNext')
+  })
+  it('leaves Control+key to the shell on macOS but keeps modified Control chords working', () => {
+    expect(setBinding('workspace', 'Ctrl+K')).toContain('shell')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }), true)).toBeUndefined()
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'k', metaKey: true }), true)).toBe('palette')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }), false)).toBe('palette')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, shiftKey: true }), true)).toBe('fullscreen')
   })
 })

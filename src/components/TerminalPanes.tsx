@@ -7,12 +7,13 @@
 // wrapper is promoted to position:absolute/inset:0 over the region while
 // siblings are visually hidden. Nothing unmounts.
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './TerminalPanes.css'
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
 import { ClaudeChat } from './ClaudeChat'
 import { FileTree } from './FileTree'
+import { BrowserPane } from './BrowserPane'
 import { useClaudeStatus } from '../state/claudeStatus'
 import {
   useTermPanes,
@@ -22,11 +23,13 @@ import {
   updatePaneScreen,
   activateRestoredPane,
   takePaneStartupCommand,
-  AGENT_CLI_RESUME,
+  paneResumeCommand,
   focusPane,
   setInsert,
   setRatio,
   switchTab, reorderTab,
+  typeIntoActiveShell,
+  spawnBrowser,
   type Node,
   type Leaf,
 } from '../state/termPanes'
@@ -35,6 +38,7 @@ import { clearObservedProviderSession, observedProviderSession } from '../state/
 import { requestDestructiveAction } from '../state/destructiveActions'
 import { clearPaneNotification, usePaneNotifications, type PaneNotification } from '../state/paneNotifications'
 import { runInTerminalSession } from '../lib/terminalSessions'
+import { AGENT_CLI_LABEL, useAgentHooks } from '../state/agentHooks'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
@@ -67,6 +71,24 @@ function onScreen(paneId: string, screen: Parameters<typeof updatePaneScreen>[1]
 }
 
 function RestoredShell({ leaf }: { leaf: Leaf }) {
+  // Re-render when the hook settings path arrives: it is part of the command shown.
+  useAgentHooks()
+  // A kept shell may still be running. Attaching to it starts nothing, so it
+  // needs no click; the buttons wait until that is known, because a resume
+  // command must never be typed into a program that is already there.
+  const [checking, setChecking] = useState(Boolean(leaf.hostKey))
+  useEffect(() => {
+    if (!leaf.hostKey) return
+    let cancelled = false
+    invoke<string[]>('pty_persisted', { keys: [leaf.hostKey] })
+      .then(alive => {
+        if (cancelled) return
+        if (Array.isArray(alive) && alive.includes(leaf.hostKey!)) activateRestoredPane(leaf.paneId)
+        else setChecking(false)
+      })
+      .catch(() => { if (!cancelled) setChecking(false) })
+    return () => { cancelled = true }
+  }, [leaf.hostKey, leaf.paneId])
   return <div data-restored-pane={leaf.paneId} style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bs-bg)' }}>
     <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--bs-border)', color: 'var(--bs-yellow)', fontSize: 11 }}>
       Saved screen · previous shell is stopped · no live process attached
@@ -75,13 +97,13 @@ function RestoredShell({ leaf }: { leaf: Leaf }) {
       {leaf.savedScreen?.lines.join('\n') || 'No terminal screen was captured before the app stopped.'}
     </pre>
     <div style={{ padding: 8, borderTop: '1px solid var(--bs-border)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      <button onClick={() => activateRestoredPane(leaf.paneId)}>Start new shell</button>
+      <button disabled={checking} onClick={() => activateRestoredPane(leaf.paneId)}>Start new shell</button>
       {leaf.agentCli && <>
-        <button onClick={() => activateRestoredPane(leaf.paneId, { resumeAgentCli: true })} title={`Starts a shell and runs: ${AGENT_CLI_RESUME[leaf.agentCli].command}`}>
-          Start shell and resume {AGENT_CLI_RESUME[leaf.agentCli].label}
+        <button disabled={checking} onClick={() => activateRestoredPane(leaf.paneId, { resumeAgentCli: true })} title={`Starts a shell and runs: ${paneResumeCommand(leaf)}`}>
+          Start shell and resume {AGENT_CLI_LABEL[leaf.agentCli]}
         </button>
         <span style={{ color: 'var(--bs-fg-muted)', fontSize: 11 }}>
-          Runs <code>{AGENT_CLI_RESUME[leaf.agentCli].command}</code>. Reopening a conversation uses no tokens until you send a message.
+          {leaf.agentSessionId ? 'Reopens the conversation this pane had.' : 'Reopens the latest conversation in this folder.'} Runs <code>{paneResumeCommand(leaf)}</code>. Reopening uses no tokens until you send a message.
         </span>
       </>}
     </div>
@@ -109,6 +131,7 @@ function PaneLeaf({
   if (leaf.agent) return <AgentPaneLeaf leaf={leaf} ctx={ctx} />
   // RV3-B — a file-nav leaf hosts a read-only FileTree.
   if (leaf.fileNav) return <FileNavPaneLeaf leaf={leaf} ctx={ctx} />
+  if (leaf.browser) return <BrowserPaneLeaf leaf={leaf} ctx={ctx} />
 
   const paneId = leaf.paneId
   const isActive = paneId === ctx.activePaneId
@@ -288,6 +311,31 @@ function FileNavPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
   )
 }
 
+/** Browser leaf: the same focus ring and zoom wrapper around a web page. */
+function BrowserPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
+  const isActive = leaf.paneId === ctx.activePaneId
+  const isZoomed = ctx.zoomed === leaf.paneId
+  const hiddenByZoom = ctx.zoomed !== null && !isZoomed
+  return (
+    <div
+      onMouseDown={() => { focusPane(leaf.paneId); setFocused('terminal') }}
+      style={{
+        width: '100%',
+        height: '100%',
+        minWidth: 0,
+        minHeight: 0,
+        position: isZoomed ? 'absolute' : 'relative',
+        inset: isZoomed ? 0 : undefined,
+        zIndex: isZoomed ? 5 : undefined,
+        visibility: hiddenByZoom ? 'hidden' : 'visible',
+        boxShadow: isActive && ctx.termFocused ? 'inset 0 0 0 1px var(--bs-blue)' : undefined,
+      }}
+    >
+      <BrowserPane paneId={leaf.paneId} url={leaf.browser!.url} active={isActive && ctx.termFocused} />
+    </div>
+  )
+}
+
 function nodeKey(node: Node): string {
   return node.kind === 'leaf' ? node.paneId : node.splitId
 }
@@ -397,6 +445,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
         <button onClick={() => { splitActive('h'); setFocused('terminal'); setInsert(true) }} title="Split top and bottom">Split down</button>
         <button onClick={unsplitToTabs} disabled={tab.root.kind === 'leaf'} title="Remove splits and keep every session in its own tab">Unsplit to tabs</button>
         <button onClick={toggleZoom} disabled={tab.root.kind === 'leaf'}>{visibleZoom ? 'Restore panes' : 'Zoom pane'}</button>
+        <button onClick={() => { spawnBrowser(''); setFocused('terminal') }} title="Open a web page beside this pane">Browser</button>
         <button onClick={closeFocusedPane} title="Close the focused pane and stop its shell or agent">Close pane</button>
       </div>
       {/* tab strip — only when >1 tab, to keep the single-shell case clean */}
@@ -416,7 +465,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
           <span role="status" aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{announcement}</span>
           {tabs.map((t, i) => {
             const activeLeaf = leavesOf(t.root).find(l => l.paneId === t.activePaneId)
-            const kind = activeLeaf?.agent ? 'agent' : activeLeaf?.fileNav ? 'files' : 'shell'
+            const kind = activeLeaf?.agent ? 'agent' : activeLeaf?.fileNav ? 'files' : activeLeaf?.browser ? 'web' : 'shell'
             const waiting = leavesOf(t.root).filter(l => notifications.has(l.paneId)).length
             const name = `Terminal tab ${i + 1}: ${kind}${waiting ? `, ${waiting} waiting` : ''}`
             const selected = t.id === activeTabId
@@ -429,7 +478,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
                 aria-posinset={i + 1}
                 aria-setsize={tabs.length}
                 draggable
-                onClick={() => switchTab(i)}
+                onClick={() => { switchTab(i); setFocused('terminal'); typeIntoActiveShell() }}
                 onKeyDown={event => {
                   if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return
                   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return

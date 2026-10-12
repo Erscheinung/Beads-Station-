@@ -19,9 +19,10 @@ import { cancelNativeRun, reconcileNativeRuns, startNativeRun, useNativeRun, typ
 import { approveArtifact, captureArtifact, requestArtifactChanges, useArtifactReview, type ArtifactRevision } from './artifacts'
 import { openPalette } from '../../state/palette'
 import { openSettings } from '../../state/settings'
+import { SessionView } from './SessionView'
 
 type Tier = 'everyday' | 'heavy'
-type NavItem = 'requests' | 'graph' | 'agents' | 'timeline'
+type NavItem = 'requests' | 'session' | 'graph' | 'agents' | 'timeline'
 interface ProviderAvailability {
   provider: NativeProvider
   available: boolean
@@ -30,6 +31,7 @@ interface ProviderAvailability {
 
 const NAV_ITEMS: { id: NavItem; label: string }[] = [
   { id: 'requests', label: 'Requests' },
+  { id: 'session',  label: 'Session' },
   { id: 'graph',    label: 'Bead graph' },
   { id: 'agents',   label: 'Agents' },
   { id: 'timeline', label: 'Timeline' },
@@ -40,7 +42,7 @@ const RUN_OPTIONS: { value: NativeProvider; label: string }[] = [
   { value: 'claude', label: 'Claude (native login)' },
   { value: 'codex', label: 'Codex (native login)' },
   { value: 'codex-orchestrator', label: 'Codex orchestrator (Sol + Luna)' },
-  { value: 'opus-conductor', label: 'Opus conductor (placeholder)' },
+  { value: 'opus-conductor', label: 'Opus conductor (Opus + Sonnet workers)' },
 ]
 
 const TIER_META = {
@@ -52,6 +54,9 @@ export function DesignerShell() {
   const [tier, setTier] = useState<Tier>('everyday')
   const [nav, setNav]   = useState<NavItem>('requests')
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
+  // The ticket handed to the live session; starting anything on it is a separate click there.
+  const [sessionIssue, setSessionIssue] = useState<Issue | null>(null)
+  const openSession = useCallback((issue: Issue) => { setSessionIssue(issue); setNav('session') }, [])
   const [layout, setLayout] = useState<DesignerLayout>(loadDesignerLayout)
   const resizeColumn = useCallback((side: keyof DesignerLayout, width: number) => {
     setLayout(current => (current[side] === width ? current : { ...current, [side]: width }))
@@ -176,7 +181,7 @@ export function DesignerShell() {
 
         {/* Center — main view */}
         <main style={styles.main}>
-          <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} />
+          <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} sessionIssue={sessionIssue} onSessionIssue={setSessionIssue} onOpenSession={openSession} />
         </main>
 
         {/* Right — gate cockpit (RV5.0) + sensors (RV5.1) + conductor (Code-9ud) + agents placeholder (DU3) */}
@@ -249,16 +254,29 @@ function ConductorFooter() {
   )
 }
 
-function CenterView({ nav, selectedIssue, onSelectIssue }: {
+function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSessionIssue, onOpenSession }: {
   nav: NavItem
   selectedIssue: Issue | null
   onSelectIssue: (issue: Issue | null) => void
+  sessionIssue: Issue | null
+  onSessionIssue: (issue: Issue | null) => void
+  onOpenSession: (issue: Issue) => void
 }) {
+  const { projects, activeId } = useProjects()
+  const project = projects.find(p => p.id === activeId) ?? projects[0] ?? null
+  if (nav === 'session') {
+    return project
+      ? <SessionView key={project.id} project={project} issue={sessionIssue} onClearIssue={() => onSessionIssue(null)} />
+      : <div style={styles.viewPlaceholder}><p style={styles.graphPlaceholderText}>Session</p><p style={styles.graphPlaceholderSub}>Open a workspace to start a session.</p></div>
+  }
+  if (nav === 'agents') {
+    return <div style={{ ...styles.graphSlot, padding: 16, overflow: 'auto' }}><ActiveAgents /></div>
+  }
   if (nav === 'requests' || nav === 'graph') {
     return (
       <div id="du-bead-graph" style={styles.graphSlot}>
         {selectedIssue
-          ? <TicketRun issue={selectedIssue} onBack={() => onSelectIssue(null)} />
+          ? <TicketRun issue={selectedIssue} onBack={() => onSelectIssue(null)} onOpenSession={onOpenSession} />
           : nav === 'requests'
             ? <RequestBrowser onSelect={onSelectIssue} />
             : <BeadGraph onSelect={onSelectIssue} />}
@@ -272,12 +290,7 @@ function CenterView({ nav, selectedIssue, onSelectIssue }: {
       </div>
     )
   }
-  return (
-    <div style={styles.viewPlaceholder}>
-      <p style={styles.graphPlaceholderText}>{nav.charAt(0).toUpperCase() + nav.slice(1)}</p>
-      <p style={styles.graphPlaceholderSub}>Coming in a later DU phase.</p>
-    </div>
-  )
+  return null
 }
 
 function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
@@ -311,7 +324,7 @@ function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
   </div>
 }
 
-function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
+function TicketRun({ issue, onBack, onOpenSession }: { issue: Issue; onBack: () => void; onOpenSession: (issue: Issue) => void }) {
   const { projects, activeId } = useProjects()
   const project = projects.find(p => p.id === activeId) ?? projects[0] ?? null
   const [provider, setProvider] = useState<NativeProvider>('claude')
@@ -419,11 +432,17 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
         {(status === 'running' || status === 'unknown') && <button style={styles.skinBtn} onClick={() => void reconcileNativeRuns(project?.id ?? 'missing')}>Check run status</button>}
         {(status === 'running' || status === 'starting' || status === 'unknown') && run.runId && <button style={styles.skinBtn} onClick={cancel}>Cancel</button>}
         <span style={styles.requestMeta}>Status: {status.replace('_', ' ')}</span>
+        <button style={styles.skinBtn} onClick={() => onOpenSession(issue)} title="Work on this ticket with the interactive CLI and watch the changed files">Open in a live session</button>
       </div>
       {status === 'unknown' && <span style={styles.requestMeta}>Backend state unavailable; no new run will start automatically.</span>}
       <div style={styles.runOutput} aria-live="polite">
         {output.length === 0 ? 'Provider output will appear here. No work starts until you choose Start work.' : output.map((line, i) => <p key={i}>{line}</p>)}
       </div>
+      {run.workers.length > 0 && <div style={styles.reviewBox} data-testid="designer-run-workers">
+        <strong>Workers</strong>
+        <span style={styles.requestMeta}>The run above shows the primary agent. Open a worker to read what it has done so far.</span>
+        {run.workers.map((threadId, index) => <WorkerActivity key={threadId} threadId={threadId} label={`Worker ${index + 1}`} live={status === 'running'} />)}
+      </div>}
       {status === 'needs_review' && <div style={styles.reviewBox}>
         <strong>Run finished; review is required.</strong>
         <span>Approval is available only for this exact run and an immutable workspace capture. Completion has not been claimed.</span>
@@ -439,6 +458,31 @@ function TicketRun({ issue, onBack }: { issue: Issue; onBack: () => void }) {
       </div>}
     </section>
   )
+}
+
+/** A delegated Codex worker's own activity, read from its session file only while open. */
+function WorkerActivity({ threadId, label, live }: { threadId: string; label: string; live: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [lines, setLines] = useState<string[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const read = () => invoke<string[]>('codex_thread_activity', { threadId })
+      .then(value => { if (!cancelled) { setLines(Array.isArray(value) ? value : []); setError(null) } })
+      .catch(failure => { if (!cancelled) setError(String(failure)) })
+    void read()
+    if (!live) return () => { cancelled = true }
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') void read() }, 5000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [open, live, threadId])
+  return <details onToggle={event => setOpen((event.currentTarget as HTMLDetailsElement).open)}>
+    <summary>{label} <span style={styles.requestMeta}>{threadId.slice(0, 8)}</span></summary>
+    {error && <p style={{ color: 'var(--bs-red)' }}>{error}</p>}
+    {lines === null ? <p style={styles.requestMeta}>Reading…</p>
+      : lines.length === 0 ? <p style={styles.requestMeta}>Nothing recorded for this worker yet.</p>
+        : <div style={styles.runOutput}>{lines.map((line, index) => <p key={index}>{line}</p>)}</div>}
+  </details>
 }
 
 function ArtifactReview({ revision, approval }: { revision: ArtifactRevision; approval: boolean }) {

@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('../lib/durableUserConfig', () => ({ persistDurableUserConfigKey: vi.fn() }))
 
-import { __resetAppUpdateForTest, checkForUpdates, checkForUpdatesOnLaunch, downloadUpdate, setCheckForUpdatesOnLaunch, useAppUpdate } from './appUpdate'
+import { __resetAppUpdateForTest, checkForUpdates, checkForUpdatesOnLaunch, downloadUpdate, setCheckForUpdatesOnLaunch, useAppUpdate, prepareUpdate, restartToUpdate } from './appUpdate'
 import { renderHook, waitFor } from '@testing-library/react'
 
 const newer = { current: '0.1.5', latest: 'v0.1.6', newer: true, url: 'https://example.invalid/v0.1.6', asset: 'Beads.Station_0.1.6_aarch64.dmg' }
@@ -25,6 +25,30 @@ describe('release check', () => {
     await downloadUpdate()
     expect(mocks.invoke).toHaveBeenCalledWith('app_download_update', { tag: 'v0.1.6' })
     await waitFor(() => expect(result.current).toMatchObject({ status: 'downloaded', path: '/tmp/x.dmg', checksumVerified: true }))
+  })
+  it('prepares an update without applying it, and applies only on restart', async () => {
+    mocks.invoke.mockResolvedValueOnce(newer)
+    const { result } = renderHook(() => useAppUpdate())
+    await restartToUpdate()
+    expect(mocks.invoke).not.toHaveBeenCalled()
+    await checkForUpdates()
+    await waitFor(() => expect(result.current.status).toBe('available'))
+    mocks.invoke.mockResolvedValueOnce({ version: 'v0.1.6', bundle: '/Applications/Beads Station.app' })
+    await prepareUpdate()
+    expect(mocks.invoke).toHaveBeenLastCalledWith('app_prepare_update', { tag: 'v0.1.6' })
+    await waitFor(() => expect(result.current.status).toBe('ready'))
+    expect(mocks.invoke).not.toHaveBeenCalledWith('app_apply_update')
+    mocks.invoke.mockResolvedValueOnce(null)
+    await restartToUpdate()
+    expect(mocks.invoke).toHaveBeenLastCalledWith('app_apply_update')
+  })
+  it('a release that cannot be installed automatically says why and keeps the download path', async () => {
+    mocks.invoke.mockResolvedValueOnce(newer)
+    const { result } = renderHook(() => useAppUpdate())
+    await checkForUpdates()
+    mocks.invoke.mockRejectedValueOnce('This release publishes no SHA-256')
+    await prepareUpdate()
+    await waitFor(() => expect(result.current).toMatchObject({ status: 'error', message: 'This release publishes no SHA-256', info: { newer: true } }))
   })
   it('reports up to date, and shows a manual check failure', async () => {
     mocks.invoke.mockResolvedValueOnce({ ...newer, latest: 'v0.1.5', newer: false })

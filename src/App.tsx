@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges, splitActive, focusPaneDirection } from './state/termPanes'
+import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges, splitActive, focusPaneDirection, typeIntoActiveShell } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -22,6 +22,8 @@ import { BdLiveProvider } from './lib/BdLiveProvider'
 import { DesignerShell } from './components/designer/DesignerShell'
 import { openPalette } from './state/palette'
 import { openSettings } from './state/settings'
+import { openNotificationPanel } from './state/notificationPanel'
+import { usePaneNotifications } from './state/paneNotifications'
 import { useCommandBindings, shortcutLabel } from './state/commands'
 import { setBeadsView, setUiPreferences, useUiPreferences, type BeadsView } from './state/uiPreferences'
 import { clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
@@ -58,6 +60,7 @@ export default function App() {
   const vim = useVim()
   const skin = useSkin()
   const { projects, activeId, setActive, closeProject } = useProjects()
+  const waitingPanes = usePaneNotifications().size
   const workspaceIds = projects.map(project => project.id)
   const persistedWorkspaceOrder = useWorkspaceOrder(workspaceIds)
   const orderedProjects = persistedWorkspaceOrder
@@ -163,6 +166,7 @@ export default function App() {
           setSkin('terminal')
           splitActive(direction === 'right' ? 'h' : 'v')
           setFocused('terminal')
+          typeIntoActiveShell()
           return
         }
         case 'terminal.focus': {
@@ -282,6 +286,7 @@ export default function App() {
           terminalFocusRestore.current = { collapsed: terminalCollapsed, focused: vim.focused }
           setTerminalCollapsed(false)
           setFocused('terminal')
+          typeIntoActiveShell()
         } else {
           const restore = terminalFocusRestore.current
           setTerminalCollapsed(restore?.collapsed ?? false)
@@ -559,8 +564,9 @@ export default function App() {
               return next
             })}
           >{chatRequested ? `${providerLabel(activeChatProvider)} chat running` : `Start ${providerLabel(interactiveChatProvider)} chat`}</button>
+          {waitingPanes > 0 && <button className="bs-toolbar__waiting" onClick={openNotificationPanel} title="Show waiting panes">Waiting {waitingPanes} <kbd>{shortcutLabel(commandBindings.notificationPanel)}</kbd></button>}
           <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
-          {(appUpdate.status === 'available' || appUpdate.status === 'downloaded') && (
+          {(appUpdate.status === 'available' || appUpdate.status === 'downloaded' || appUpdate.status === 'ready') && (
             <button className="bs-toolbar__update" onClick={() => { openSettings(); window.dispatchEvent(new Event('settings:show-about')) }} title="A newer release is available">
               Update {appUpdate.info.latest}
             </button>
@@ -598,6 +604,12 @@ export default function App() {
               flexDirection: 'column',
               flexShrink: 0,
               flex: !showBoard && !terminalFocus ? 1 : undefined,
+              // xterm sizes its screen in pixels. Without these the region's
+              // automatic minimum is that pixel height, so it can grow but
+              // never shrink, and the bottom rows end up under the statusline.
+              minHeight: 0,
+              maxHeight: '100%',
+              overflow: 'hidden',
               transition: terminalFocus ? undefined : 'height 120ms ease',
               // RV1-focus: cover the whole content area, Board mounted beneath.
               ...(terminalFocus

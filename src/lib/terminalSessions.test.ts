@@ -5,14 +5,14 @@ const mock = vi.hoisted(() => ({
   scrollToBottom: vi.fn(), scrollToLine: vi.fn(), markerDispose: vi.fn(), paste: vi.fn(),
   onScroll: null as null | (() => void), onWriteParsed: null as null | (() => void), onData: null as null | ((data: string) => void),
   onBell: null as null | (() => void), keyHandler: null as null | ((event: KeyboardEvent) => boolean),
-  osc: new Map<number, (data: string) => boolean>(), scrollToTop: vi.fn(), notifyPane: vi.fn(), setPaneAgentCli: vi.fn(),
-  themeListeners: new Set<() => void>(),
+  osc: new Map<number, (data: string) => boolean>(), scrollToTop: vi.fn(), notifyPane: vi.fn(), setPaneAgentCli: vi.fn(), setPaneAgentSession: vi.fn(), showInBrowserPane: vi.fn(() => true),
+  themeListeners: new Set<() => void>(), selection: '', hostKey: null as string | null, pendingWrite: null as null | (() => void),
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
 vi.mock('../state/theme', () => ({ getActivePalette: () => null, subscribeTheme: (listener: () => void) => { mock.themeListeners.add(listener); return () => mock.themeListeners.delete(listener) } }))
 vi.mock('../state/paneNotifications', () => ({ notifyPane: mock.notifyPane }))
-vi.mock('../state/termPanes', () => ({ setPaneAgentCli: mock.setPaneAgentCli }))
+vi.mock('../state/termPanes', () => ({ setPaneAgentCli: mock.setPaneAgentCli, setPaneAgentSession: mock.setPaneAgentSession, isLocalUrl: (url: string) => url.includes('localhost'), showInBrowserPane: mock.showInBrowserPane, paneHostKey: () => mock.hostKey }))
 vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
   buffer = {
@@ -22,6 +22,8 @@ vi.mock('xterm', () => ({ Terminal: class {
     onBufferChange() { return { dispose() {} } },
   }
   loadAddon() {} open() {} focus = mock.focus
+  hasSelection() { return mock.selection !== '' }
+  getSelection() { return mock.selection }
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { mock.keyHandler = handler }
   onBell(handler: () => void) { mock.onBell = handler; return { dispose() {} } }
   parser = { registerOscHandler(ident: number, handler: (data: string) => boolean) { mock.osc.set(ident, handler); return { dispose() {} } } }
@@ -41,10 +43,12 @@ vi.mock('xterm', () => ({ Terminal: class {
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit = mock.fit } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
-import { disposeTerminalSession, getTerminalSession, oscNotificationText, runInTerminalSession, SgrColorNormalizer, shellQuote, terminalFontStack, terminalSessionForNode } from './terminalSessions'
+import { openTerminalLink, disposeTerminalSession, getTerminalSession, oscNotificationText, runInTerminalSession, SgrColorNormalizer, shellQuote, terminalFontStack, terminalSessionForNode } from './terminalSessions'
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mock.selection = ''
+  mock.hostKey = null
   mock.listen.mockResolvedValue(mock.released)
   mock.invoke.mockResolvedValue(7)
 })
@@ -431,16 +435,123 @@ describe('terminal keys and fonts', () => {
   })
 })
 
+describe('terminal copy', () => {
+  function clipboard() {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText }, platform: navigator.platform })
+    return writeText
+  }
+  function drag(session: { element: HTMLElement }) {
+    session.element.dispatchEvent(new Event('pointerdown'))
+    window.dispatchEvent(new Event('pointerup'))
+  }
+
+  it('copies a finished mouse selection, and only when the setting is on', () => {
+    const writeText = clipboard()
+    const session = getTerminalSession('pane', '/tmp', vi.fn())
+    drag(session)
+    expect(writeText).not.toHaveBeenCalled()
+
+    mock.selection = 'git status'
+    drag(session)
+    expect(writeText).toHaveBeenCalledWith('git status')
+
+    setTerminalAppearance({ copyOnSelect: false })
+    drag(session)
+    expect(writeText).toHaveBeenCalledTimes(1)
+  })
+
+  it('copies the selection on Cmd+C and leaves Cmd+C alone without one', () => {
+    const writeText = clipboard()
+    getTerminalSession('pane', '/tmp', vi.fn())
+    const copy = () => mock.keyHandler!(new KeyboardEvent('keydown', { key: 'c', metaKey: true }))
+    expect(copy()).toBe(true)
+    expect(writeText).not.toHaveBeenCalled()
+    mock.selection = 'pwd'
+    expect(copy()).toBe(false)
+    expect(writeText).toHaveBeenCalledWith('pwd')
+  })
+})
+
+describe('kept terminals', () => {
+  it('asks for an ordinary shell unless the pane has a key', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    expect(mock.invoke).toHaveBeenCalledWith('pty_spawn', expect.objectContaining({ persistKey: null }))
+    disposeTerminalSession('pane')
+    mock.hostKey = '2c975569-13c1-43b2-8e7a-f88d6138d7d8'
+    await getTerminalSession('pane', '/repo', vi.fn()).ready
+    expect(mock.invoke).toHaveBeenLastCalledWith('pty_spawn', expect.objectContaining({ persistKey: mock.hostKey }))
+  })
+  it('replayed history raises no notification and cancels a queued command', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    mock.write.mockImplementation((_data: string, done?: () => void) => { mock.pendingWrite = done ?? null })
+    runInTerminalSession('pane', 'claude --continue')
+    vi.useFakeTimers()
+    mock.invoke.mockClear()
+    mock.listen.mock.calls[0][1]({ payload: { id: 7, data: 'old output\u0007', replay: true } })
+    // While the replay is being parsed, its bell and notifications are history.
+    mock.onBell!()
+    expect(mock.osc.get(777)!('notify;Claude Code;Finished')).toBe(true)
+    expect(mock.notifyPane).not.toHaveBeenCalled()
+    mock.pendingWrite!()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mock.invoke).not.toHaveBeenCalledWith('pty_write', expect.anything())
+    // Live output afterwards notifies as usual.
+    mock.onBell!()
+    expect(mock.notifyPane).toHaveBeenCalledWith('pane', 'bell')
+  })
+})
+
+describe('links in terminal output', () => {
+  it('opens an address on this machine in a browser pane and anything else outside', () => {
+    const open = vi.fn(() => null)
+    vi.stubGlobal('open', open)
+    openTerminalLink('http://localhost:5173/')
+    expect(mock.showInBrowserPane).toHaveBeenCalledWith('http://localhost:5173/')
+    expect(open).not.toHaveBeenCalled()
+    mock.showInBrowserPane.mockClear()
+    openTerminalLink('https://example.com/docs')
+    expect(mock.showInBrowserPane).not.toHaveBeenCalled()
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('agent CLI resume support', () => {
   it('records the foreground agent CLI at each screen checkpoint', async () => {
-    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? 'claude' : 7)
+    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? { cli: 'claude', sessionId: null } : 7)
     const session = getTerminalSession('pane', '/repo', vi.fn(), vi.fn())
     await session.ready
     session.checkpointScreen()
     await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', 'claude'))
-    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? null : 7)
+    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? { cli: null, sessionId: null } : 7)
     session.checkpointScreen()
     await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', null))
+  })
+  it('asks for the Codex session until it is known, and records it', async () => {
+    const id = '01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e'
+    let answer: unknown = { cli: 'codex', sessionId: null }
+    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? answer : 7)
+    const session = getTerminalSession('pane', '/repo', vi.fn(), vi.fn())
+    await session.ready
+    const asked = () => mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_foreground').map(([, args]) => (args as { wantSession: boolean }).wantSession)
+    session.checkpointScreen()
+    await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', 'codex'))
+    answer = { cli: 'codex', sessionId: id }
+    session.checkpointScreen()
+    await vi.waitFor(() => expect(mock.setPaneAgentSession).toHaveBeenCalledWith('pane', 'codex', id))
+    session.checkpointScreen()
+    await vi.waitFor(() => expect(asked()).toEqual([false, true, false]))
+  })
+  it('records the session a Claude Code hook reports, and ignores a malformed one', async () => {
+    getTerminalSession('pane', '/repo', vi.fn())
+    const report = mock.osc.get(7770)!
+    expect(report('session;claude;not-an-id')).toBe(true)
+    expect(report('session;codex;2c975569-13c1-43b2-8e7a-f88d6138d7d8')).toBe(true)
+    expect(mock.setPaneAgentSession).not.toHaveBeenCalled()
+    report('session;claude;2c975569-13c1-43b2-8e7a-f88d6138d7d8')
+    expect(mock.setPaneAgentSession).toHaveBeenCalledWith('pane', 'claude', '2c975569-13c1-43b2-8e7a-f88d6138d7d8')
   })
   it('types a requested startup command only after the shell has printed', async () => {
     const session = getTerminalSession('pane', '/repo', vi.fn())

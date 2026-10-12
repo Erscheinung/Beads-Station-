@@ -97,7 +97,7 @@ describe('TerminalPanes tab accessibility', () => {
     expect(mocks.invoke.mock.calls.some(([command]) => command === 'claude_start' || command === 'codex_chat_start' || command === 'codex_chat_send')).toBe(false)
   })
 
-  it('offers to resume an agent CLI in a restored shell, and runs it only when asked', () => {
+  it('restarts a plain restored shell, and resumes an agent CLI only when asked', () => {
     restoreProjects(JSON.stringify({
       v: 2,
       projects: {
@@ -107,7 +107,7 @@ describe('TerminalPanes tab accessibility', () => {
             activePaneId: 'pane911',
             root: {
               kind: 'split', splitId: 'split912', dir: 'v', ratio: 0.5,
-              a: { kind: 'leaf', paneId: 'pane911', ptyId: 4, cwd: '/tmp/restore', agentCli: 'codex', savedScreen: { lines: ['codex> hi'], cols: 80, rows: 24, buffer: 'normal', cursorX: 0, cursorY: 0, capturedAt: 1 } },
+              a: { kind: 'leaf', paneId: 'pane911', ptyId: 4, cwd: '/tmp/restore', agentCli: 'codex', agentSessionId: '01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e', savedScreen: { lines: ['codex> hi'], cols: 80, rows: 24, buffer: 'normal', cursorX: 0, cursorY: 0, capturedAt: 1 } },
               b: { kind: 'leaf', paneId: 'pane913', ptyId: 5, cwd: '/tmp/restore' },
             },
           }],
@@ -120,18 +120,19 @@ describe('TerminalPanes tab accessibility', () => {
 
     render(<TerminalPanes termFocused />)
 
-    // Restoring starts nothing: both panes are inert saved screens.
-    expect(screen.getAllByText(/previous shell is stopped/)).toHaveLength(2)
-    expect(document.querySelector('[data-terminal-pane]')).toBeNull()
-    expect(screen.getAllByRole('button', { name: 'Start new shell' })).toHaveLength(2)
+    // The pane that ran an agent CLI waits for the user; the plain shell just starts.
+    expect(screen.getAllByText(/previous shell is stopped/)).toHaveLength(1)
+    expect(document.querySelector('[data-terminal-pane="pane911"]')).toBeNull()
+    expect(document.querySelector('[data-terminal-pane="pane913"]')).not.toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Start new shell' })).toHaveLength(1)
     const resume = screen.getByRole('button', { name: 'Start shell and resume Codex' })
-    expect(screen.getByText('codex resume --last')).toBeInTheDocument()
+    // The pane knew its Codex session, so that exact one is reopened.
+    expect(screen.getByText('codex resume 01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e -c tui.notifications=true -c tui.notification_method=osc9')).toBeInTheDocument()
 
     act(() => fireEvent.click(resume))
 
     expect(document.querySelector('[data-terminal-pane="pane911"]')).not.toBeNull()
-    expect(document.querySelector('[data-terminal-pane="pane913"]')).toBeNull()
-    expect(takePaneStartupCommand('pane911')).toBe('codex resume --last')
+    expect(takePaneStartupCommand('pane911')).toBe('codex resume 01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e -c tui.notifications=true -c tui.notification_method=osc9')
     expect(takePaneStartupCommand('pane913')).toBeNull()
   })
 })

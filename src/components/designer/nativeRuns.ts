@@ -6,9 +6,10 @@ import { chanId } from '../../lib/eventChannel'
 /**
  * Direct provider CLIs plus Code-da0.5 conductor backends. `codex-orchestrator`
  * runs Codex through the adaptive Sol/Luna orchestrator skill;
- * `opus-conductor` is a detection-only placeholder that never starts.
+ * `opus-conductor` runs Claude Code through the Opus/Sonnet adaptive
+ * orchestrator skill; `session` is an attempt submitted from a live session.
  */
-export type NativeProvider = 'claude' | 'codex' | 'codex-orchestrator' | 'opus-conductor'
+export type NativeProvider = 'claude' | 'codex' | 'codex-orchestrator' | 'opus-conductor' | 'session'
 export type NativeRunStatus = 'idle' | 'starting' | 'running' | 'needs_review' | 'failed' | 'cancelled' | 'unknown'
 export interface NativeRunState {
   key: string
@@ -21,9 +22,11 @@ export interface NativeRunState {
   provider: NativeProvider
   status: NativeRunStatus
   output: string[]
+  /** Codex worker thread ids seen in this run; their activity is read on demand. */
+  workers: string[]
 }
 
-interface NativeRunEvent { seq: number; kind: string; status?: NativeRunStatus; line?: string; parsed?: unknown }
+export interface NativeRunEvent { seq: number; kind: string; status?: NativeRunStatus; line?: string; parsed?: unknown }
 interface NativeRunSnapshot {
   runId: string
   workspaceId: string
@@ -53,6 +56,7 @@ try {
     ticketId: run.ticketId ?? '',
     attemptId: run.attemptId ?? null,
     cwd: run.cwd ?? '',
+    workers: Array.isArray(run.workers) ? run.workers : [],
     status: run.status === 'running' || run.status === 'starting' ? 'unknown' : run.status,
   }]))
 } catch { /* corrupt summaries do not block requests */ }
@@ -62,22 +66,74 @@ function emit() {
   listeners.forEach(listener => listener())
 }
 function setRun(key: string, patch: Partial<NativeRunState>) {
-  const current = states.get(key) ?? { key, runId: null, workspaceId: '', ticketId: '', attemptId: null, cwd: '', provider: 'claude', status: 'idle', output: [] }
+  const current = states.get(key) ?? { key, runId: null, workspaceId: '', ticketId: '', attemptId: null, cwd: '', provider: 'claude', status: 'idle', output: [], workers: [] }
   states = new Map(states).set(key, { ...current, ...patch })
   emit()
 }
-function eventText(event: NativeRunEvent): string | null {
+const short = (text: unknown, limit = 240) => {
+  const value = String(text ?? '').replace(/\s+/g, ' ').trim()
+  return value.length > limit ? `${value.slice(0, limit)}…` : value
+}
+
+/** A Codex collaboration item: the primary agent starting, waiting on or closing a worker. */
+function collabText(item: any, phase: string): string | null {
+  const tool = String(item.tool ?? '')
+  const states = Object.values((item.agents_states ?? {}) as Record<string, { status?: string; message?: string | null }>)
+  if (tool === 'spawn_agent') return phase === 'item.completed' ? `Worker started: ${short(item.prompt)}` : null
+  if (tool === 'wait' || tool === 'wait_agent') {
+    if (phase === 'item.started') return 'Waiting for the worker…'
+    const reports = states.filter(state => state?.message).map(state => `Worker ${state.status ?? 'reported'}: ${short(state.message, 600)}`)
+    return reports.length ? reports.join('\n') : null
+  }
+  if (tool === 'close_agent') return phase === 'item.completed' ? 'Worker closed.' : null
+  if (tool === 'send_input' || tool === 'followup_task' || tool === 'send_message') return phase === 'item.completed' ? `To worker: ${short(item.prompt)}` : null
+  return null
+}
+
+/** Claude Code content blocks. Lines from a subagent carry its parent tool call id. */
+function claudeText(value: any): string | null {
+  const blocks = value?.message?.content
+  if (!Array.isArray(blocks)) return null
+  const worker = value.parent_tool_use_id ? 'Worker: ' : ''
+  const lines: string[] = []
+  for (const block of blocks) {
+    if (block?.type === 'text' && block.text) lines.push(`${worker}${block.text}`)
+    else if (block?.type === 'tool_use' && (block.name === 'Agent' || block.name === 'Task')) {
+      lines.push(`Delegated to ${block.input?.subagent_type ?? 'a worker'}${block.input?.model ? ` (${block.input.model})` : ''}: ${short(block.input?.description ?? block.input?.prompt)}`)
+    } else if (block?.type === 'tool_use' && worker) {
+      // The primary agent's own tool calls stay out of the summary; a worker's
+      // are the only sign of what it is doing until it reports back.
+      const target = block.input?.file_path ?? block.input?.command ?? block.input?.pattern ?? ''
+      lines.push(`${worker}→ ${block.name} ${short(target, 160)}`.trimEnd())
+    }
+  }
+  return lines.length ? lines.join('\n') : null
+}
+
+export function eventText(event: NativeRunEvent): string | null {
   if (event.kind === 'stderr') return String(event.line ?? '')
   const value: any = event.parsed
   if (typeof value?.message === 'string') return value.message
   if (typeof value?.text === 'string') return value.text
-  const blocks = value?.message?.content
-  if (Array.isArray(blocks)) {
-    const text = blocks.filter((b: any) => b?.type === 'text').map((b: any) => b.text).join('\n')
-    if (text) return text
-  }
-  if (value?.item?.type === 'agent_message' && typeof value.item.text === 'string') return value.item.text
+  const claude = claudeText(value)
+  if (claude) return claude
+  const item = value?.item
+  if (item?.type === 'collab_tool_call') return collabText(item, String(value.type ?? ''))
+  if (item?.type === 'agent_message' && typeof item.text === 'string') return item.text
   return null
+}
+
+/** Thread ids of the Codex workers a run has started, in order of appearance. */
+export function workerThreads(events: NativeRunEvent[]): string[] {
+  const ids: string[] = []
+  for (const event of events) {
+    const item = (event.parsed as any)?.item
+    if (item?.type !== 'collab_tool_call') continue
+    for (const id of [...(item.receiver_thread_ids ?? []), ...Object.keys(item.agents_states ?? {})]) {
+      if (typeof id === 'string' && /^[0-9a-f-]{8,64}$/i.test(id) && !ids.includes(id)) ids.push(id)
+    }
+  }
+  return ids
 }
 
 function mergeEvents(key: string, runId: string, incoming: NativeRunEvent[]) {
@@ -97,7 +153,7 @@ function mergeEvents(key: string, runId: string, incoming: NativeRunEvent[]) {
     event.kind === 'status' && event.status && (!authority || event.seq > authority.seq)
   ))
   const status = newerStatus?.status ?? authority?.status ?? current.status
-  setRun(key, { output, status })
+  setRun(key, { output, status, workers: workerThreads(ordered) })
   if (['needs_review', 'failed', 'cancelled'].includes(status)) {
     subscriptions.get(runId)?.abort()
     subscriptions.delete(runId)
@@ -236,7 +292,7 @@ async function reconcileNativeRunsFresh(workspaceId: string) {
 export async function startNativeRun(key: string, args: { runId: string; workspaceId: string; ticketId: string; attemptId: string; provider: NativeProvider; cwd: string; prompt: string }) {
   if (['starting', 'running', 'unknown'].includes(states.get(key)?.status ?? 'idle')) return
   keyGenerations.set(key, (keyGenerations.get(key) ?? 0) + 1)
-  setRun(key, { runId: args.runId, workspaceId: args.workspaceId, ticketId: args.ticketId, attemptId: args.attemptId, cwd: args.cwd, provider: args.provider, status: 'starting', output: [] })
+  setRun(key, { runId: args.runId, workspaceId: args.workspaceId, ticketId: args.ticketId, attemptId: args.attemptId, cwd: args.cwd, provider: args.provider, status: 'starting', output: [], workers: [] })
   eventHistory.set(args.runId, new Map())
   snapshotAuthorities.delete(args.runId)
   let listenerReady = true
@@ -278,7 +334,7 @@ export async function cancelNativeRun(key: string) {
 export function useNativeRun(key: string, workspaceId: string, ticketId: string): NativeRunState {
   let empty = emptyStates.get(key)
   if (!empty) {
-    empty = { key, runId: null, workspaceId, ticketId, attemptId: null, cwd: '', provider: 'claude', status: 'idle', output: [] }
+    empty = { key, runId: null, workspaceId, ticketId, attemptId: null, cwd: '', provider: 'claude', status: 'idle', output: [], workers: [] }
     emptyStates.set(key, empty)
   }
   useEffect(() => { void reconcileNativeRuns(workspaceId) }, [workspaceId])
@@ -287,4 +343,16 @@ export function useNativeRun(key: string, workspaceId: string, ticketId: string)
     () => states.get(key) ?? empty!,
     () => states.get(key) ?? empty!,
   )
+}
+
+/**
+ * Mark a live session's work on a ticket as ready for review. The backend
+ * records it as a finished attempt; capture and approval bind to that attempt
+ * exactly as they do for a provider run.
+ */
+export async function submitSessionAttempt(args: { workspaceId: string; ticketId: string; attemptId: string; cwd: string }) {
+  const snapshot = await invoke<{ runId: string; attemptId: string }>('native_session_submit', args)
+  const identity = { workspaceId: args.workspaceId, ticketId: args.ticketId, runId: snapshot?.runId ?? `${args.workspaceId}:${args.ticketId}:${args.attemptId}`, attemptId: args.attemptId }
+  await reconcileNativeRunsFresh(args.workspaceId).catch(() => { /* the request page reconciles again when it opens */ })
+  return identity
 }

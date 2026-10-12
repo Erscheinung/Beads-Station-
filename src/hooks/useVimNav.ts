@@ -50,6 +50,7 @@ import {
   cyclePane,
   toggleZoom,
   setInsert,
+  typeIntoActiveShell,
 } from '../state/termPanes'
 import { killPty } from '../components/TerminalPanes'
 
@@ -235,12 +236,14 @@ export function useVimNav(): void {
           if (Date.now() - pendingCwAt <= CW_TIMEOUT_MS) {
             if (k === 'h' || k === 'j' || k === 'k' || k === 'l') {
               moveFocus(k)
+              typeIntoActiveShell()
               pendingCw = false
               event.preventDefault()
               return
             }
             if (k === 'w') {
               cyclePane()
+              typeIntoActiveShell()
               pendingCw = false
               event.preventDefault()
               return
@@ -382,6 +385,7 @@ export function useVimNav(): void {
             default:
               if (k >= '1' && k <= '9') {
                 switchTab(Number(k) - 1)
+                typeIntoActiveShell()
                 event.preventDefault()
                 return
               }
@@ -400,12 +404,14 @@ export function useVimNav(): void {
         if (k === 't' && event.shiftKey === false && !ctrl && pendingKey === 'g') {
           pendingKey = null
           cycleTab(1)
+          typeIntoActiveShell()
           event.preventDefault()
           return
         }
         if (k === 'T' && !ctrl && pendingKey === 'g') {
           pendingKey = null
           cycleTab(-1)
+          typeIntoActiveShell()
           event.preventDefault()
           return
         }

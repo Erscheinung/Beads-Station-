@@ -219,31 +219,36 @@ pub struct DownloadedUpdate {
     checksum_verified: bool,
 }
 
+/// Download a release's DMG (and its checksum) into `dir` and verify it.
+fn download_release(tag: &str, dir: &PathBuf) -> Result<(PathBuf, bool), String> {
+    if parse_version(tag).is_none() {
+        return Err("Invalid release tag".into());
+    }
+    let releases = fetch_releases()?;
+    let release = releases
+        .iter()
+        .find(|release| release.tag_name == tag && !release.draft)
+        .ok_or("That release no longer exists")?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.ends_with(dmg_suffix()))
+        .ok_or("This release has no DMG for this Mac")?;
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    download_with_gh(tag, dir).or_else(|_| download_with_http(release, dir))?;
+    let dmg = dir.join(&asset.name);
+    if !dmg.is_file() {
+        return Err("The DMG was not downloaded".into());
+    }
+    let checksum_verified = verify_checksum(&dmg)?;
+    Ok((dmg, checksum_verified))
+}
+
 /// Download a release's DMG to ~/Downloads, verify it, and open it in Finder.
 #[tauri::command]
 pub async fn app_download_update(tag: String) -> Result<DownloadedUpdate, String> {
-    if parse_version(&tag).is_none() {
-        return Err("Invalid release tag".into());
-    }
     tauri::async_runtime::spawn_blocking(move || {
-        let releases = fetch_releases()?;
-        let release = releases
-            .iter()
-            .find(|release| release.tag_name == tag && !release.draft)
-            .ok_or("That release no longer exists")?;
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| asset.name.ends_with(dmg_suffix()))
-            .ok_or("This release has no DMG for this Mac")?;
-        let dir = downloads_dir()?;
-        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-        download_with_gh(&tag, &dir).or_else(|_| download_with_http(release, &dir))?;
-        let dmg = dir.join(&asset.name);
-        if !dmg.is_file() {
-            return Err("The DMG was not downloaded".into());
-        }
-        let checksum_verified = verify_checksum(&dmg)?;
+        let (dmg, checksum_verified) = download_release(&tag, &downloads_dir()?)?;
         Command::new("/usr/bin/open")
             .arg(&dmg)
             .status()
@@ -255,6 +260,196 @@ pub async fn app_download_update(tag: String) -> Result<DownloadedUpdate, String
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+// ── Installing an update in place (Code-t3w.2) ──────────────────────────────
+//
+// The app is ad-hoc signed, so macOS's own update frameworks are not
+// available. Instead: download and verify the DMG, check the app inside it,
+// copy it next to the running bundle, and after the app has quit swap the two
+// and start the new one. Every step that changes anything is the result of an
+// explicit click, and quitting goes through the normal close confirmation.
+
+const BUNDLE_IDENTIFIER: &str = "ai.beads-station.desktop";
+/// How long the swap waits for the app to quit before giving up.
+const SWAP_WAIT_SECONDS: u32 = 900;
+
+/// The `.app` bundle this executable runs from, when it is an installed app.
+fn bundle_of(executable: &std::path::Path) -> Option<PathBuf> {
+    let macos = executable.parent()?;
+    let contents = macos.parent()?;
+    let bundle = contents.parent()?;
+    (macos.file_name()? == "MacOS"
+        && contents.file_name()? == "Contents"
+        && bundle.extension().is_some_and(|extension| extension == "app"))
+    .then(|| bundle.to_path_buf())
+}
+
+fn running_bundle() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = std::fs::canonicalize(&executable).unwrap_or(executable);
+    bundle_of(&executable).ok_or_else(|| "Only the installed app can update itself; this build is not running from an .app bundle.".to_string())
+}
+
+/// Where the new bundle waits: a hidden sibling, so the final swap is a rename on one volume.
+fn staged_bundle(bundle: &std::path::Path) -> Option<PathBuf> {
+    let name = bundle.file_name()?.to_string_lossy().into_owned();
+    Some(bundle.with_file_name(format!(".{name}.update")))
+}
+
+fn plist_value(bundle: &std::path::Path, key: &str) -> Result<String, String> {
+    let output = Command::new("/usr/bin/plutil")
+        .args(["-extract", key, "raw", "-o", "-"])
+        .arg(bundle.join("Contents/Info.plist"))
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!("The downloaded app has no {key}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// The downloaded app must be this app, at the expected version, with an intact signature.
+fn check_downloaded_bundle(bundle: &std::path::Path, tag: &str) -> Result<(), String> {
+    let identifier = plist_value(bundle, "CFBundleIdentifier")?;
+    if identifier != BUNDLE_IDENTIFIER {
+        return Err(format!("The downloaded app is {identifier}, not Beads Station"));
+    }
+    let version = plist_value(bundle, "CFBundleShortVersionString")?;
+    if parse_version(&version) != parse_version(tag) {
+        return Err(format!("The downloaded app is version {version}, not {tag}"));
+    }
+    let signature = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(bundle)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !signature.status.success() {
+        return Err("The downloaded app's code signature is not intact".into());
+    }
+    Ok(())
+}
+
+fn find_app(dir: &std::path::Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+}
+
+/// Mount the DMG, check its app, and copy it to the staging place.
+fn stage_from_dmg(dmg: &std::path::Path, tag: &str, staged: &std::path::Path, work: &std::path::Path) -> Result<(), String> {
+    let mount = work.join("mount");
+    let _ = std::fs::remove_dir_all(&mount);
+    std::fs::create_dir_all(&mount).map_err(|error| error.to_string())?;
+    let attached = Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"])
+        .arg(&mount)
+        .arg(dmg)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !attached.status.success() {
+        return Err("The downloaded disk image could not be opened".into());
+    }
+    let result = (|| {
+        let app = find_app(&mount).ok_or("The disk image contains no app")?;
+        check_downloaded_bundle(&app, tag)?;
+        let _ = std::fs::remove_dir_all(staged);
+        let copied = Command::new("/usr/bin/ditto").arg(&app).arg(staged).status().map_err(|error| error.to_string())?;
+        if !copied.success() {
+            let _ = std::fs::remove_dir_all(staged);
+            return Err("The new app could not be copied next to the installed one (is that folder writable?)".to_string());
+        }
+        // The copy is what will run; check it too.
+        check_downloaded_bundle(staged, tag).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(staged);
+        })
+    })();
+    let _ = Command::new("/usr/bin/hdiutil").args(["detach", "-quiet"]).arg(&mount).status();
+    result
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedUpdate {
+    version: String,
+    /// The installed bundle that will be replaced.
+    bundle: String,
+}
+
+/// Download, verify and stage a release next to the installed app. Nothing is
+/// replaced yet and the app keeps running.
+#[tauri::command]
+pub async fn app_prepare_update(app: tauri::AppHandle, tag: String) -> Result<StagedUpdate, String> {
+    use tauri::Manager;
+    let bundle = running_bundle()?;
+    let staged = staged_bundle(&bundle).ok_or("The installed app has no usable name")?;
+    let work = app.path().app_cache_dir().map_err(|error| error.to_string())?.join("update");
+    tauri::async_runtime::spawn_blocking(move || {
+        let (dmg, checksum_verified) = download_release(&tag, &work)?;
+        if !checksum_verified {
+            let _ = std::fs::remove_file(&dmg);
+            return Err("This release publishes no SHA-256, so it will not be installed automatically. Download it instead.".to_string());
+        }
+        let staged_result = stage_from_dmg(&dmg, &tag, &staged, &work);
+        let _ = std::fs::remove_file(&dmg);
+        staged_result?;
+        Ok(StagedUpdate { version: tag, bundle: bundle.display().to_string() })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Shell program that waits for process `$1` to exit, then replaces bundle
+/// `$2` with staged bundle `$3` and runs the remaining arguments (the
+/// relaunch). If the app has not quit in time, or the swap fails, the
+/// installed app is left exactly as it was.
+const SWAP_SCRIPT: &str = r#"
+pid="$1"; bundle="$2"; staged="$3"; wait="$4"; shift 4
+i=0
+while kill -0 "$pid" 2>/dev/null; do
+  i=$((i + 1))
+  [ "$i" -gt "$((wait * 5))" ] && exit 0
+  sleep 0.2
+done
+[ -d "$staged" ] || exit 0
+old="$bundle.previous"
+rm -rf "$old"
+if mv "$bundle" "$old"; then
+  if mv "$staged" "$bundle"; then rm -rf "$old"; else mv "$old" "$bundle"; fi
+fi
+"$@"
+"#;
+
+fn spawn_swap(pid: u32, bundle: &std::path::Path, staged: &std::path::Path, wait_seconds: u32, relaunch: &[&std::ffi::OsStr]) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", SWAP_SCRIPT, "beads-station-update"])
+        .arg(pid.to_string())
+        .arg(bundle)
+        .arg(staged)
+        .arg(wait_seconds.to_string())
+        .args(relaunch)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        // Its own process group, so it outlives the app it is waiting for.
+        .process_group(0);
+    command.spawn().map(|_| ()).map_err(|error| format!("could not start the update step: {error}"))
+}
+
+/// Ask the app to quit (through the usual confirmation) and, once it has,
+/// replace it with the staged update and start the new version.
+#[tauri::command]
+pub fn app_apply_update(app: tauri::AppHandle, state: tauri::State<'_, crate::app_lifecycle::CloseCoordinator>) -> Result<(), String> {
+    let bundle = running_bundle()?;
+    let staged = staged_bundle(&bundle).filter(|staged| staged.is_dir()).ok_or("No update has been prepared")?;
+    let open = std::ffi::OsStr::new("/usr/bin/open");
+    spawn_swap(std::process::id(), &bundle, &staged, SWAP_WAIT_SECONDS, &[open, bundle.as_os_str()])?;
+    crate::app_lifecycle::request_close(&app, &state, "update");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -314,6 +509,70 @@ mod tests {
         assert_eq!(info.latest.as_deref(), Some("v0.1.5"));
         assert!(!info.newer);
         assert!(!summarize("0.1.5", &[]).newer);
+    }
+
+    #[test]
+    fn only_an_installed_bundle_can_update_itself() {
+        let installed = std::path::Path::new("/Applications/Beads Station.app/Contents/MacOS/beads-station");
+        assert_eq!(bundle_of(installed), Some(PathBuf::from("/Applications/Beads Station.app")));
+        assert_eq!(bundle_of(std::path::Path::new("/repo/src-tauri/target/debug/beads-station")), None);
+        assert_eq!(
+            staged_bundle(std::path::Path::new("/Applications/Beads Station.app")),
+            Some(PathBuf::from("/Applications/.Beads Station.app.update"))
+        );
+    }
+
+    /// Run the real swap program against stand-in folders and a short-lived process.
+    fn swap_fixture(name: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("bs-update-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = root.join("Beads Station.app");
+        let staged = staged_bundle(&bundle).unwrap();
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(bundle.join("version"), "old").unwrap();
+        std::fs::write(staged.join("version"), "new").unwrap();
+        let marker = root.join("relaunched");
+        (root, bundle, staged, marker)
+    }
+
+    fn wait_for(path: &std::path::Path) -> bool {
+        (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            path.exists()
+        })
+    }
+
+    #[test]
+    fn swap_waits_for_the_app_to_quit_then_replaces_it_and_relaunches() {
+        let (root, bundle, staged, marker) = swap_fixture("swap");
+        let mut app = Command::new("/bin/sleep").arg("1").spawn().unwrap();
+        let touch = std::ffi::OsStr::new("/usr/bin/touch");
+        spawn_swap(app.id(), &bundle, &staged, 30, &[touch, marker.as_os_str()]).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        // Still running: nothing has been touched.
+        assert_eq!(std::fs::read_to_string(bundle.join("version")).unwrap(), "old");
+        assert!(!marker.exists());
+        app.wait().unwrap();
+        assert!(wait_for(&marker), "relaunch command did not run");
+        assert_eq!(std::fs::read_to_string(bundle.join("version")).unwrap(), "new");
+        assert!(!staged.exists());
+        assert!(!root.join("Beads Station.app.previous").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn swap_gives_up_and_leaves_the_app_alone_when_it_never_quits() {
+        let (root, bundle, staged, marker) = swap_fixture("timeout");
+        let mut app = Command::new("/bin/sleep").arg("3").spawn().unwrap();
+        let touch = std::ffi::OsStr::new("/usr/bin/touch");
+        spawn_swap(app.id(), &bundle, &staged, 1, &[touch, marker.as_os_str()]).unwrap();
+        app.wait().unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(std::fs::read_to_string(bundle.join("version")).unwrap(), "old");
+        assert!(staged.exists(), "the prepared update is kept for a later restart");
+        assert!(!marker.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Opt-in: reads the real release list (public API, then the `gh` login).

@@ -203,7 +203,7 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
         { provider: 'claude', available: true, executable: '/mock/claude', detail: 'Installed; login is managed by the native CLI' },
         { provider: 'codex', available: true, executable: '/mock/codex', detail: 'Installed; login is managed by the native CLI' },
         { provider: 'codex-orchestrator', available: true, executable: '/mock/codex', detail: 'Sol plans, Luna workers implement; skill at /mock/.codex/skills/adaptive-orchestrator/SKILL.md' },
-        { provider: 'opus-conductor', available: false, executable: null, detail: 'Placeholder: set BS_OPUS_CONDUCTOR_DIR to a local Opus conductor checkout' },
+        { provider: 'opus-conductor', available: false, executable: null, detail: 'Install the adaptive-orchestrator skill and agents from https://github.com/Erscheinung/opus-sonnet-conductor' },
       ]
     case 'codex_chat_start':
     case 'codex_chat_send':
@@ -216,6 +216,44 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return null
     case 'native_run_snapshot':
       return []
+    // Session review: echo the caller's identity, as the backend does.
+    case 'native_session_submit':
+      return { runId: `${args?.workspaceId}:${args?.ticketId}:${args?.attemptId}`, ...args, provider: 'session', status: 'needs_review', events: [] }
+    case 'artifact_review':
+      return { revision: null, approval: null }
+    case 'artifact_capture': {
+      const identity = (args?.args ?? {}) as Record<string, unknown>
+      return {
+        schemaVersion: 1, revisionId: 'rev-session', capturedAt: 1, workspaceId: identity.workspaceId, ticketId: identity.ticketId, runId: identity.runId, attemptId: identity.attemptId,
+        workspacePath: identity.workspacePath, revisionHash: 'hash-session-0001', validation: [], diff: null,
+        files: [{ path: 'src/app.ts', status: 'M', size: 10, contentHash: 'a', content: null, binary: false, truncated: false }],
+      }
+    }
+    case 'artifact_verify':
+      return true
+    case 'artifact_approve': {
+      const revision = ((args?.args as Record<string, unknown> | undefined)?.revision ?? {}) as Record<string, unknown>
+      return { ...revision, approvedAt: 2 }
+    }
+    case 'app_prepare_update':
+      return { version: String(args?.tag ?? ''), bundle: '/Applications/Beads Station.app' }
+    case 'agent_hooks_status':
+    case 'agent_hooks_set_installed':
+      return { installed: args?.installed === true, sessionSettings: '/tmp/beads-station/agent-hooks/claude-settings.json' }
+    case 'pty_persisted':
+      return []
+    case 'pty_foreground':
+      return { cli: null, sessionId: null }
+    case 'artifact_preview':
+      return {
+        schemaVersion: 1, revisionId: 'preview', capturedAt: 1, workspaceId: 'preview', ticketId: 'preview', runId: 'preview', attemptId: 'preview',
+        workspacePath: String(args?.workspacePath ?? ''), revisionHash: 'preview', validation: [],
+        files: [
+          { path: 'src/app.ts', status: 'M', size: 10, contentHash: 'a', content: null, binary: false, truncated: false },
+          { path: 'notes.md', status: '??', size: 8, contentHash: 'b', content: 'one\ntwo\n', binary: false, truncated: false },
+        ],
+        diff: 'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n-old\n+new\n+more',
+      }
     case 'app_close_scope':
       return { ptyCount: 1, providerCount: 1, runCount: 0 }
     case 'app_request_close':

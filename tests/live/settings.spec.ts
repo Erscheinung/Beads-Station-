@@ -40,7 +40,7 @@ test('terminal pane controls are grouped and can be rebound to easier shortcuts'
 
   const group = page.getByRole('region', { name: 'Terminal pane controls' })
   await expect(group).toBeVisible()
-  await expect(group.getByRole('button', { name: /^Shortcut for / })).toHaveCount(9)
+  await expect(group.getByRole('button', { name: /^Shortcut for / })).toHaveCount(12)
 
   const focusLeft = group.getByRole('button', { name: 'Shortcut for Focus terminal pane left', exact: true })
   await expect(focusLeft).toContainText('Change')

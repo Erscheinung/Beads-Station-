@@ -20,7 +20,9 @@ async function splitVertical(page: import('@playwright/test').Page): Promise<voi
   const before = await page.evaluate(() => (window as any).__bsTerm?.paneCount)
   await page.keyboard.press('Control+Shift+Enter')
   await page.waitForFunction(() => (window as any).__bsVim?.focused === 'terminal')
-  await leader(page)
+  // Fullscreen hands the keyboard to the shell (Code-gya.2), so a bare Space
+  // is typed, not a leader. Cmd+P arms the leader from the shell.
+  await page.keyboard.press('Meta+p')
   await page.keyboard.press('v')
   await page.waitForFunction(
     (n) => (window as any).__bsTerm?.paneCount === n + 1,

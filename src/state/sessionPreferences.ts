@@ -5,10 +5,12 @@ export interface SessionPreferences {
   askBeforeResume: boolean
   restoreContextOnLaunch: boolean
   confirmDestructiveActions: boolean
+  /** Shells live in a background terminal host and survive quitting the app. */
+  keepTerminalsRunning: boolean
 }
 
 const STORAGE_KEY = 'beads-station.session-preferences'
-const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true }
+const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false }
 
 function load(): SessionPreferences {
   try {
@@ -17,6 +19,7 @@ function load(): SessionPreferences {
       askBeforeResume: parsed.askBeforeResume !== false,
       restoreContextOnLaunch: parsed.restoreContextOnLaunch !== false,
       confirmDestructiveActions: parsed.confirmDestructiveActions !== false,
+      keepTerminalsRunning: parsed.keepTerminalsRunning === true,
     }
   } catch {
     return { ...DEFAULTS }
@@ -41,7 +44,7 @@ export function useSessionPreferences(): SessionPreferences {
 
 export function setSessionPreferences(next: Partial<SessionPreferences>): void {
   const updated = { ...state, ...next }
-  if (updated.askBeforeResume === state.askBeforeResume && updated.restoreContextOnLaunch === state.restoreContextOnLaunch && updated.confirmDestructiveActions === state.confirmDestructiveActions) return
+  if (updated.askBeforeResume === state.askBeforeResume && updated.restoreContextOnLaunch === state.restoreContextOnLaunch && updated.confirmDestructiveActions === state.confirmDestructiveActions && updated.keepTerminalsRunning === state.keepTerminalsRunning) return
   state = updated
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* optional */ }
   persistDurableUserConfigKey(STORAGE_KEY)
@@ -51,6 +54,15 @@ export function setSessionPreferences(next: Partial<SessionPreferences>): void {
 /** Synchronous boot-time read used before React mounts the workspace stores. */
 export function shouldRestoreContextOnLaunch(): boolean {
   return state.restoreContextOnLaunch
+}
+
+/** Synchronous read used when a pane's shell is about to start. */
+export function shouldKeepTerminalsRunning(): boolean {
+  return state.keepTerminalsRunning
+}
+
+export function subscribeSessionPreferences(listener: () => void): () => void {
+  return subscribe(listener)
 }
 
 /** Synchronous read for lifecycle actions that may arrive outside React. */

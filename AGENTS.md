@@ -260,6 +260,56 @@ Codex module, and `git diff --check` passed. Repository-wide `cargo fmt
 --check` remains red on pre-existing files and was not applied broadly. No
 commit, push, lockfile edit, or native provider work call was made.
 
+## Latest handoff — 2026-10-12, v0.1.6 source round (uncommitted, unbuilt)
+
+Epic `Code-gya`, from the Todoist task "Manually test 0.1.5 with bugs/features".
+The task list, statuses and the Designer live-session design are in
+`CLAUDE.md` ("v0.1.6 task list"); the draft notes and hands-on checklist are in
+`docs/releases/v0.1.6.md`.
+
+Things the next session should know that the code does not say:
+
+- The Todoist P1 "bottom rows hidden" was a layout bug, not an xterm bug:
+  a flex item holding an xterm needs `min-height: 0`, because xterm sizes its
+  screen in pixels and that becomes the item's automatic minimum.
+- xterm cannot measure its cell until its screen first intersects the viewport.
+  A fit before that is a silent no-op, so sessions re-fit once a frame after
+  attach. Any new host whose size never changes depends on this.
+- On macOS, xterm swallows Control chords it can send to the shell, so they
+  never reach the window key handler; Command chords pass through. The leader
+  from a focused shell is therefore `Cmd+P`, and live tests must press
+  `Meta+p`, not `Control+p`, once the shell has focus.
+- `tests/live/pane-notifications.spec.ts` rewrites
+  `docs/images/releases/v0.1.5/*.png` on every run. Restore them with
+  `git checkout -- docs/images/releases/v0.1.5` before committing.
+- The Playwright suite needs `npx playwright install chromium` once per
+  Playwright upgrade on a machine.
+- A Claude Code hook has no controlling terminal, so `/dev/tty` fails inside
+  it. Pane shells export `BEADS_STATION_TTY` (the pty's device path) and hooks
+  write there. Verified by starting the real CLI in a pseudo-terminal with no
+  prompt; that is the only provider process started in this round.
+- Claude Code 2.1 and Codex 0.162 both run in the alternate screen with mouse
+  reporting on. That is why selecting needs Option-drag, and why the old
+  "repeated text in scrollback" report no longer applies to them.
+- Codex keeps its rollout file open; `lsof -g <pgid>` yields the session id.
+  The user's `~/.codex/config.toml` already sets `notify` for another tool, so
+  never write that key; app-started Codex gets `-c tui.notifications=true`.
+- `serde_json` now has `preserve_order` so editing `~/.claude/settings.json`
+  keeps the user's key order.
+- Two older tests in `claude.rs` (`kill_all_on_empty…`,
+  `completion_poll_keeps_live_child…`) share global run state and can fail
+  together when they interleave; rerun before investigating.
+- cmux (`~/Desktop/Code/cmux`) is GPL-3.0-or-later: take approaches, not code.
+  Its live persistence is an opt-in tmux owner; its browser pane is a native
+  web view placed over the pane.
+- The second round (rows 13-23 of the task list) was committed and a DMG was
+  built locally. Nothing was tagged, released or pushed. Todoist was read, not
+  changed. No model turn was sent to any provider.
+
+Next, in order: run the 0.1.6 checklist in the built app; publish the release
+with screenshots from that build; then per-prompt snapshots ported from Napkin
+Claude (`Code-n76`) and the native browser web view (`Code-vjy`).
+
 ## Latest handoff — 2026-09-12, three UI regressions resolved
 
 User asked to pick and resolve at least three easy regressions. Implemented and

@@ -4,6 +4,7 @@ import { safeInvoke } from '../lib/invokeErrorBoundary'
 import { migrateProjectSurface, removeProjectSurface, setActiveProject as activateSurface } from './termPanes'
 import { shouldRestoreContextOnLaunch } from './sessionPreferences'
 import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
+import { setWorkspaceNameLookup } from './paneNotifications'
 
 export interface Project {
   id: string
@@ -138,6 +139,19 @@ export async function openFolder(path: string): Promise<void> {
   persistSelection()
 }
 
+/**
+ * Open the folders the operating system handed to the app (Finder "Open With",
+ * a drop on the Dock icon). Choosing a folder there is an explicit open.
+ */
+export async function openRequestedFolders(): Promise<void> {
+  // The first discovery replaces the open set; open after it, not under it.
+  if (!state.loaded) await refreshProjects().catch(() => {})
+  const folders = await invoke<string[]>('app_take_open_requests')
+  for (const folder of folders ?? []) {
+    try { await openFolder(folder) } catch (error) { setState({ error: String(error) }) }
+  }
+}
+
 export interface FolderDiscovery extends Discovery { truncated: boolean }
 
 /** Build a bounded, ignore-aware folder index only after the user chooses that scope. */
@@ -171,6 +185,8 @@ export function setActiveProject(id: string): void {
 export async function closeProject(id: string): Promise<void> {
   // Closing is distinct from switching. Stop only this workspace's resources.
   const resources = removeProjectSurface(id)
+  // The Designer's live session for this workspace is not part of the pane tree.
+  window.dispatchEvent(new CustomEvent('terminal:dispose', { detail: { paneId: `designer:${id}` }, cancelable: true }))
   const openIds = state.openIds.filter(p => p !== id)
   const activeId = state.activeId === id ? openIds[0] ?? null : state.activeId
   const active = state.availableProjects.find(p => p.id === activeId)
@@ -187,6 +203,7 @@ export async function closeProject(id: string): Promise<void> {
 export async function saveRoots(roots: string[]): Promise<void> {
   applyDiscovery(await invoke<Discovery>('projects_set_roots', { roots }))
 }
+setWorkspaceNameLookup(id => state.availableProjects.find(project => project.id === id)?.name ?? null)
 function subscribe(listener: () => void) {
   listeners.add(listener)
   if (!state.loaded && !inFlight) void refreshProjects()

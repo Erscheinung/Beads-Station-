@@ -6,8 +6,10 @@
 
 mod bd;
 mod app_lifecycle;
+mod agent_hooks;
 mod artifacts;
 mod binresolve;
+mod browser;
 mod claude;
 mod codex;
 mod conductor;
@@ -18,6 +20,8 @@ mod fs;
 mod herdr_bridge;
 mod projects;
 mod pty;
+#[cfg(unix)]
+mod pty_host;
 mod sense;
 mod spawngov;
 mod spending;
@@ -54,9 +58,24 @@ fn raise_fd_limit() {
 #[cfg(not(unix))]
 fn raise_fd_limit() {}
 
+/// `--pty-host <socket>`: run as the terminal host instead of the app.
+#[cfg(unix)]
+fn run_as_pty_host_if_asked() {
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|flag| flag == pty_host::HOST_FLAG) {
+        if let Some(socket) = args.next() {
+            pty_host::run_host(std::path::Path::new(&socket));
+        }
+        std::process::exit(2);
+    }
+}
+#[cfg(not(unix))]
+fn run_as_pty_host_if_asked() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     raise_fd_limit();
+    run_as_pty_host_if_asked();
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -77,8 +96,10 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .manage(app_lifecycle::CloseCoordinator::default())
+        .manage(app_lifecycle::OpenRequests::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
@@ -117,6 +138,10 @@ pub fn run() {
             }
         })
         .on_window_event(|window, event| {
+            // Only the main window owns sessions; a browser window just closes.
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<app_lifecycle::CloseCoordinator>();
                 if !app_lifecycle::should_allow_close(&state) {
@@ -163,6 +188,8 @@ pub fn run() {
             claude::native_run_start,
             claude::native_run_cancel,
             claude::native_run_snapshot,
+            claude::native_session_submit,
+            conductors::codex_thread_activity,
             conductor::conductor_start,
             conductor::conductor_stop,
             conductor::conductor_pulse_now,
@@ -182,6 +209,9 @@ pub fn run() {
             projects::projects_set_claude_session,
             pty::pty_foreground,
             pty::pty_kill,
+            pty::pty_persisted,
+            pty::pty_release_keys,
+            pty::pty_set_keep_running,
             pty::pty_resize,
             pty::pty_snapshot,
             pty::pty_spawn,
@@ -199,23 +229,40 @@ pub fn run() {
             app_lifecycle::app_close_scope,
             app_lifecycle::app_resolve_close,
             app_lifecycle::app_recover_stale_sessions,
+            app_lifecycle::app_take_open_requests,
+            browser::browser_open_window,
+            agent_hooks::agent_hooks_status,
+            agent_hooks::agent_hooks_set_installed,
             artifacts::artifact_capture,
+            artifacts::artifact_preview,
             artifacts::artifact_review,
             artifacts::artifact_verify,
             artifacts::artifact_approve,
             update::app_check_update,
             update::app_download_update,
+            update::app_prepare_update,
+            update::app_apply_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+    app.run(|app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { api, .. } => {
             let state = app_handle.state::<app_lifecycle::CloseCoordinator>();
             if !app_lifecycle::should_allow_close(&state) {
                 api.prevent_exit();
                 app_lifecycle::request_close(app_handle, &state, "menu-quit");
             }
         }
+        // Finder "Open With", a folder dropped on the Dock icon, or `open -a`.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Opened { urls } => {
+            let folders = app_lifecycle::folder_paths(
+                urls.iter().filter_map(|url| url.to_file_path().ok()),
+            );
+            let requests = app_handle.state::<app_lifecycle::OpenRequests>();
+            app_lifecycle::queue_open_requests(app_handle, &requests, folders);
+        }
+        _ => {}
     });
 }

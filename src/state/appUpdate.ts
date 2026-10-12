@@ -21,6 +21,9 @@ export type UpdateState =
   | { status: 'available'; info: UpdateInfo; checkedAt: number }
   | { status: 'downloading'; info: UpdateInfo }
   | { status: 'downloaded'; info: UpdateInfo; path: string; checksumVerified: boolean }
+  | { status: 'preparing'; info: UpdateInfo }
+  /** Verified and copied next to the installed app; a restart swaps it in. */
+  | { status: 'ready'; info: UpdateInfo }
   | { status: 'error'; message: string; info?: UpdateInfo }
 
 const PREFERENCES_KEY = 'beads-station.update-preferences'
@@ -68,7 +71,7 @@ function isUpdateInfo(value: unknown): value is UpdateInfo {
 }
 
 export async function checkForUpdates(): Promise<void> {
-  if (state.status === 'checking' || state.status === 'downloading') return
+  if (state.status === 'checking' || state.status === 'downloading' || state.status === 'preparing' || state.status === 'ready') return
   set({ status: 'checking' })
   try {
     const info = await invoke<unknown>('app_check_update')
@@ -87,6 +90,31 @@ export async function downloadUpdate(): Promise<void> {
   try {
     const result = await invoke<{ path: string; checksumVerified: boolean }>('app_download_update', { tag: info.latest })
     set({ status: 'downloaded', info, path: result.path, checksumVerified: result.checksumVerified })
+  } catch (error) {
+    set({ status: 'error', message: String(error instanceof Error ? error.message : error), info })
+  }
+}
+
+/** Download, verify and stage the update. The running app is not touched. */
+export async function prepareUpdate(): Promise<void> {
+  if (state.status !== 'available' && !(state.status === 'error' && state.info?.newer)) return
+  const info = state.info!
+  if (!info.latest) return
+  set({ status: 'preparing', info })
+  try {
+    await invoke('app_prepare_update', { tag: info.latest })
+    set({ status: 'ready', info })
+  } catch (error) {
+    set({ status: 'error', message: String(error instanceof Error ? error.message : error), info })
+  }
+}
+
+/** Quit (through the usual confirmation), swap in the staged update, and reopen. */
+export async function restartToUpdate(): Promise<void> {
+  if (state.status !== 'ready') return
+  const info = state.info
+  try {
+    await invoke('app_apply_update')
   } catch (error) {
     set({ status: 'error', message: String(error instanceof Error ? error.message : error), info })
   }

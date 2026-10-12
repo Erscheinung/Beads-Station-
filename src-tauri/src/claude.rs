@@ -292,6 +292,64 @@ pub(crate) async fn ensure_native_run_reviewable(
     Ok(())
 }
 
+/// A live Designer session has no owned child to watch, so nothing can decide
+/// for the user that its work is ready. This records their explicit "review
+/// this" as a terminal attempt in `needs_review`, which is what capture and
+/// approval bind to. It replaces any earlier terminal attempt for the ticket.
+fn submit_session_attempt(
+    runs: &HashMap<String, NativeRun>,
+    terminals: &mut VecDeque<NativeRunSnapshot>,
+    workspace_id: String,
+    ticket_id: String,
+    attempt_id: String,
+    cwd: String,
+) -> Result<NativeRunSnapshot, String> {
+    if [workspace_id.as_str(), ticket_id.as_str(), attempt_id.as_str(), cwd.as_str()]
+        .iter()
+        .any(|value| value.trim().is_empty())
+    {
+        return Err("workspace_id, ticket_id, attempt_id and cwd are required".into());
+    }
+    if native_ticket_is_reserved(runs, &workspace_id, &ticket_id) {
+        return Err(format!("ticket {ticket_id} still has an active native run"));
+    }
+    let snapshot = NativeRunSnapshot {
+        run_id: format!("{workspace_id}:{ticket_id}:{attempt_id}"),
+        workspace_id,
+        ticket_id,
+        attempt_id,
+        cwd,
+        provider: SESSION_PROVIDER.into(),
+        status: "needs_review".into(),
+        events: vec![json!({ "kind": "status", "status": "needs_review", "seq": 1 })],
+    };
+    terminals.retain(|old| {
+        !(old.workspace_id == snapshot.workspace_id && old.ticket_id == snapshot.ticket_id)
+    });
+    if terminals.len() >= 50 {
+        terminals.pop_front();
+    }
+    terminals.push_back(snapshot.clone());
+    Ok(snapshot)
+}
+
+/// Provider name of an attempt submitted from a live Designer session.
+pub const SESSION_PROVIDER: &str = "session";
+
+#[tauri::command]
+pub async fn native_session_submit(
+    workspace_id: String,
+    ticket_id: String,
+    attempt_id: String,
+    cwd: String,
+) -> Result<NativeRunSnapshot, String> {
+    let _review_guard = lock_native_review_action().await;
+    std::fs::canonicalize(&cwd).map_err(|error| format!("session workspace path: {error}"))?;
+    let runs = NATIVE_RUNS.lock().await;
+    let mut terminals = NATIVE_TERMINALS.lock().await;
+    submit_session_attempt(&runs, &mut terminals, workspace_id, ticket_id, attempt_id, cwd)
+}
+
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeProviderAvailability {
@@ -344,12 +402,27 @@ pub fn native_provider_status(cwd: Option<String>) -> Vec<NativeProviderAvailabi
             detail: format!("Install the adaptive-orchestrator skill from {}", crate::conductors::ORCHESTRATOR_SOURCE),
         },
     });
-    let opus = crate::conductors::opus_conductor_dir();
-    providers.push(NativeProviderAvailability {
-        provider: crate::conductors::OPUS_CONDUCTOR.into(),
-        available: false,
-        executable: opus.as_ref().map(|dir| dir.display().to_string()),
-        detail: crate::conductors::opus_placeholder_detail(opus.as_deref()),
+    let claude = providers.iter().find(|p| p.provider == "claude").cloned();
+    let opus_skill = crate::conductors::current_opus_conductor_skill(cwd.as_deref().map(std::path::Path::new));
+    providers.push(match (claude, opus_skill) {
+        (Some(claude), Some(skill)) if claude.available => NativeProviderAvailability {
+            provider: crate::conductors::OPUS_CONDUCTOR.into(),
+            available: true,
+            executable: claude.executable,
+            detail: format!("Opus plans, Sonnet workers implement, Haiku reads; skill at {}", skill.display()),
+        },
+        (Some(claude), _) if !claude.available => NativeProviderAvailability {
+            provider: crate::conductors::OPUS_CONDUCTOR.into(),
+            available: false,
+            executable: None,
+            detail: format!("Requires Claude Code: {}", claude.detail),
+        },
+        _ => NativeProviderAvailability {
+            provider: crate::conductors::OPUS_CONDUCTOR.into(),
+            available: false,
+            executable: None,
+            detail: crate::conductors::opus_missing_detail(crate::conductors::opus_conductor_dir().as_deref()),
+        },
     });
     providers
 }
@@ -446,7 +519,9 @@ fn spawn_native_child(provider: &str, cwd: &str, prompt: &str) -> Result<Child, 
             crate::binresolve::resolve_bin("codex").map_err(|e| format!("codex is unavailable: {e}"))?
         }
         crate::conductors::OPUS_CONDUCTOR => {
-            return Err(crate::conductors::opus_placeholder_detail(crate::conductors::opus_conductor_dir().as_deref()))
+            crate::conductors::current_opus_conductor_skill(Some(std::path::Path::new(cwd)))
+                .ok_or_else(|| crate::conductors::opus_missing_detail(crate::conductors::opus_conductor_dir().as_deref()))?;
+            crate::binresolve::resolve_bin("claude").map_err(|e| format!("claude is unavailable: {e}"))?
         }
         _ => return Err(format!("unsupported provider {provider}")),
     };
@@ -475,6 +550,19 @@ fn native_run_args(provider: &str, cwd: &str, prompt: &str) -> Result<Vec<String
             "--add-dir".into(),
             cwd.into(),
             prompt.into(),
+        ]),
+        // The conductor's design is an Opus primary that delegates downward;
+        // its agents pin their own models, so only the primary is named here.
+        crate::conductors::OPUS_CONDUCTOR => Ok(vec![
+            "--print".into(),
+            "--verbose".into(),
+            "--output-format=stream-json".into(),
+            "--permission-mode=acceptEdits".into(),
+            "--model".into(),
+            "opus".into(),
+            "--add-dir".into(),
+            cwd.into(),
+            crate::conductors::opus_conductor_prompt(prompt),
         ]),
         "codex" | crate::conductors::CODEX_ORCHESTRATOR => {
             let prompt = if provider == crate::conductors::CODEX_ORCHESTRATOR {
@@ -1214,6 +1302,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_submitted_session_attempt_is_reviewable_and_replaces_the_previous_one() {
+        let cwd = std::fs::canonicalize("/tmp").unwrap();
+        let path = cwd.to_string_lossy().into_owned();
+        let workspace = format!("workspace-session-{}", std::process::id());
+        let first = native_session_submit(workspace.clone(), "Code-session".into(), "attempt-1".into(), path.clone())
+            .await
+            .unwrap();
+        assert_eq!(first.provider, SESSION_PROVIDER);
+        assert_eq!(first.status, "needs_review");
+        ensure_native_run_reviewable(&workspace, "Code-session", &first.run_id, "attempt-1", &cwd)
+            .await
+            .expect("first attempt reviewable");
+
+        let second = native_session_submit(workspace.clone(), "Code-session".into(), "attempt-2".into(), path.clone())
+            .await
+            .unwrap();
+        ensure_native_run_reviewable(&workspace, "Code-session", &second.run_id, "attempt-2", &cwd)
+            .await
+            .expect("second attempt reviewable");
+        // Approval can no longer be bound to the attempt the user moved on from.
+        assert!(ensure_native_run_reviewable(&workspace, "Code-session", &first.run_id, "attempt-1", &cwd)
+            .await
+            .is_err());
+        assert!(native_session_submit(workspace, "Code-session".into(), " ".into(), path).await.is_err());
+    }
+
+    #[tokio::test]
     async fn artifact_review_requires_the_exact_successful_terminal_attempt() {
         let run_id = format!("artifact-review-{}", std::process::id());
         let cwd = std::fs::canonicalize("/tmp").unwrap();
@@ -1467,7 +1582,18 @@ mod tests {
             assert!(!args.iter().any(|arg| arg.starts_with("--ask-for-approval")));
             assert!(args.last().unwrap().ends_with("Work on ticket X"));
         }
-        assert!(native_run_args(crate::conductors::OPUS_CONDUCTOR, "/ws", "x").is_err());
+        assert!(native_run_args("unknown-backend", "/ws", "x").is_err());
+    }
+
+    #[test]
+    fn opus_conductor_runs_claude_with_an_opus_primary_and_the_orchestrator_preamble() {
+        let args = native_run_args(crate::conductors::OPUS_CONDUCTOR, "/ws", "Work on ticket X").unwrap();
+        assert_eq!(&args[..8], ["--print", "--verbose", "--output-format=stream-json", "--permission-mode=acceptEdits", "--model", "opus", "--add-dir", "/ws"]);
+        let prompt = args.last().unwrap();
+        assert!(prompt.starts_with("Use the adaptive-orchestrator skill"));
+        assert!(prompt.ends_with("Work on ticket X"));
+        // A plain Claude run names no model: the CLI's own configuration decides.
+        assert!(!native_run_args("claude", "/ws", "x").unwrap().contains(&"--model".to_string()));
     }
 
     /// Opt-in paid provider run: the Designer backend path without the

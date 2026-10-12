@@ -159,6 +159,19 @@ fn canonical_workspace(raw: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Version-control and tracker state is never part of a reviewed artifact:
+/// an agent claiming or commenting on its ticket rewrites `.beads/`, and that
+/// is bookkeeping, not the work under review.
+fn is_bookkeeping_dir(name: &std::ffi::OsStr) -> bool {
+    name == ".git" || name == ".beads"
+}
+
+fn is_bookkeeping_path(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).unwrap_or(path).components().any(
+        |component| matches!(component, std::path::Component::Normal(name) if is_bookkeeping_dir(name)),
+    )
+}
+
 fn safe_relative(root: &Path, raw: &Path) -> Result<Option<PathBuf>, String> {
     if raw.as_os_str().len() > MAX_PATH_BYTES {
         return Ok(None);
@@ -271,7 +284,7 @@ fn walk_workspace(root: &Path, out: &mut Vec<(String, PathBuf)>, depth: usize) {
             break;
         }
         let path = entry.path();
-        if path.file_name().is_some_and(|name| name == ".git") {
+        if path.file_name().is_some_and(is_bookkeeping_dir) {
             continue;
         }
         let metadata = match fs::symlink_metadata(&path) {
@@ -382,6 +395,9 @@ pub(crate) fn capture_inner(args: &CaptureArgs) -> Result<ArtifactRevision, Stri
     let mut files = Vec::new();
     let mut total = 0usize;
     for (status, path) in candidates {
+        if is_bookkeeping_path(&root, &path) {
+            continue;
+        }
         if let Some(file) = read_file(&root, status, path, &mut total)? {
             files.push(file);
         }
@@ -448,6 +464,8 @@ fn git_diff(root: &Path) -> Option<String> {
             "--no-color",
             "--unified=40",
             "--",
+            ".",
+            ":(exclude).beads",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -627,6 +645,21 @@ pub async fn artifact_capture(
     Ok(revision)
 }
 
+/// What the workspace has changed right now: the same bounded read as a
+/// capture, but bound to no run and never stored. A live Designer session
+/// shows it while the agent works; approval still needs a real capture.
+#[tauri::command]
+pub async fn artifact_preview(workspace_path: String) -> Result<ArtifactRevision, String> {
+    capture_off_thread(CaptureArgs {
+        workspace_id: "preview".into(),
+        ticket_id: "preview".into(),
+        run_id: "preview".into(),
+        attempt_id: "preview".into(),
+        workspace_path,
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn artifact_verify(app: tauri::AppHandle, args: VerifyArgs) -> Result<bool, String> {
     let revision = {
@@ -772,6 +805,31 @@ mod tests {
         assert_eq!(revision.files.len(), 1);
         assert_eq!(revision.files[0].path, "index.html");
         assert!(revision.validation.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tracker_files_are_left_out_of_the_artifact() {
+        let root =
+            std::env::temp_dir().join(format!("bs-artifacts-beads-fixture-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".beads/embeddeddolt")).unwrap();
+        fs::write(root.join(".beads/issues.jsonl"), b"{}").unwrap();
+        fs::write(root.join(".beads/embeddeddolt/manifest"), b"x").unwrap();
+        fs::write(root.join("index.html"), b"<main>fixture</main>").unwrap();
+        let revision = capture_inner(&CaptureArgs {
+            workspace_id: "fixture-workspace".into(),
+            ticket_id: "Code-game".into(),
+            run_id: "run-1".into(),
+            attempt_id: "attempt-1".into(),
+            workspace_path: root.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+        let paths: Vec<&str> = revision.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, vec!["index.html"]);
+        let canonical = fs::canonicalize(&root).unwrap();
+        assert!(is_bookkeeping_path(&canonical, &canonical.join(".beads/issues.jsonl")));
+        assert!(!is_bookkeeping_path(&canonical, &canonical.join("src/beads.rs")));
         let _ = fs::remove_dir_all(root);
     }
 

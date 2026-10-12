@@ -41,8 +41,9 @@ import {
   paneForAgentBridge,
   setPaneAgentCli,
   activateRestoredPane,
-  takePaneStartupCommand,
+  takePaneStartupCommand, setPaneAgentSession, paneResumeCommand, normalizeBrowserUrl, spawnBrowser, setBrowserUrl, paneHostKey,
 } from './termPanes'
+import { setSessionPreferences } from './sessionPreferences'
 
 // The store is a module singleton. Reset it to a known shape before each
 // test by collapsing back to a single pane, then reseeding cwd.
@@ -393,7 +394,9 @@ describe('termPanes persistence round-trip (Code-mkv)', () => {
     expect(restored.length).toBe(3)
     // ptyId stripped on every leaf.
     expect(restored.every(l => l.ptyId === null)).toBe(true)
-    expect(restored.filter(l => !l.fileNav).every(l => l.restored === true)).toBe(true)
+    // Only panes that hosted an agent wait for an explicit start; plain shells restart.
+    expect(restored.filter(l => l.agent).every(l => l.restored === true)).toBe(true)
+    expect(restored.filter(l => !l.agent).every(l => l.restored === undefined)).toBe(true)
     // Agent bridge preserved (resume key stability).
     expect(restored.some(l => l.agent?.bridgeId === agentBridge)).toBe(true)
   })
@@ -510,9 +513,82 @@ describe('pane lookup, reveal and agent CLI resume', () => {
     activateRestoredPane(again.paneId, { resumeAgentCli: true })
     expect(leavesOf(activeTabRoot())[0].restored).toBeUndefined()
     expect(takePaneStartupCommand(again.paneId)).toBe('claude --continue')
+
+    // Once the pane has learned its session, the same explicit resume reopens that one.
+    setPaneAgentSession(again.paneId, 'claude', '2c975569-13c1-43b2-8e7a-f88d6138d7d8')
+    expect(paneResumeCommand(leavesOf(activeTabRoot())[0])).toBe('claude --resume 2c975569-13c1-43b2-8e7a-f88d6138d7d8')
+    // A different CLI taking over the pane drops the old CLI's session.
+    setPaneAgentCli(again.paneId, 'codex')
+    expect(paneResumeCommand(leavesOf(activeTabRoot())[0])).toContain('codex resume --last')
     expect(takePaneStartupCommand(again.paneId)).toBeNull()
 
     setPaneAgentCli(again.paneId, null)
     expect(leavesOf(activeTabRoot())[0].agentCli).toBeUndefined()
   })
+
+describe('browser panes', () => {
+  it('turns a typed address into an http or https URL and refuses anything else', () => {
+    expect(normalizeBrowserUrl('localhost:3000')).toBe('http://localhost:3000/')
+    expect(normalizeBrowserUrl('127.0.0.1:8080/docs')).toBe('http://127.0.0.1:8080/docs')
+    expect(normalizeBrowserUrl('example.com/a b')).toBeNull()
+    expect(normalizeBrowserUrl('example.com')).toBe('https://example.com/')
+    expect(normalizeBrowserUrl('https://example.com/x?y=1')).toBe('https://example.com/x?y=1')
+    expect(normalizeBrowserUrl('file:///etc/passwd')).toBeNull()
+    expect(normalizeBrowserUrl('javascript://alert(1)')).toBeNull()
+    expect(normalizeBrowserUrl('  ')).toBeNull()
+  })
+  it('opens beside the active pane, remembers its address and is restored without a process', () => {
+    setActiveProject('browser-a', '/repo/browser')
+    spawnBrowser('')
+    const pane = leavesOf(activeTabRoot()).find(leaf => leaf.browser)!
+    expect(pane).toMatchObject({ ptyId: null, browser: { url: '' } })
+    setBrowserUrl(pane.paneId, 'http://localhost:3000/')
+    const saved = JSON.parse(serializeProjects())
+    setActiveProject('browser-b', '/repo/other')
+    restoreProjects(JSON.stringify({ v: 2, projects: { 'browser-restored': saved.projects['browser-a'] } }))
+    setActiveProject('browser-restored', '/repo/browser')
+    const restored = leavesOf(activeTabRoot()).find(leaf => leaf.browser)!
+    expect(restored.browser).toEqual({ url: 'http://localhost:3000/' })
+    expect(restored.restored).toBeUndefined()
+  })
+})
+
+describe('kept terminals', () => {
+  it('gives a shell pane a stable random key only when the setting is on, and releases it on close', () => {
+    setActiveProject('keep-a', '/repo/keep')
+    const pane = leavesOf(activeTabRoot())[0].paneId
+    setSessionPreferences({ keepTerminalsRunning: false })
+    expect(paneHostKey(pane)).toBeNull()
+
+    setSessionPreferences({ keepTerminalsRunning: true })
+    const key = paneHostKey(pane)!
+    expect(key).toMatch(/^[0-9a-f-]{36}$/)
+    expect(paneHostKey(pane)).toBe(key)
+    expect(paneHostKey('designer:keep-a')).toBeNull()
+
+    // The key travels with the saved layout, so the next launch asks for the same shell.
+    const saved = JSON.parse(serializeProjects())
+    setActiveProject('keep-b', '/repo/other')
+    restoreProjects(JSON.stringify({ v: 2, projects: { 'keep-restored': saved.projects['keep-a'] } }))
+    setActiveProject('keep-restored', '/repo/keep')
+    const restored = leavesOf(activeTabRoot())[0]
+    expect(restored.hostKey).toBe(key)
+
+    const released: string[][] = []
+    const onRelease = (event: Event) => released.push((event as CustomEvent<{ keys: string[] }>).detail.keys)
+    window.addEventListener('terminal:release-keys', onRelease)
+    closeActivePane()
+    expect(released).toEqual([[key]])
+
+    // Turning the setting off returns a pane to an ordinary shell and lets go of the kept one.
+    setActiveProject('keep-c', '/repo/keep-c')
+    const other = leavesOf(activeTabRoot())[0].paneId
+    const otherKey = paneHostKey(other)!
+    setSessionPreferences({ keepTerminalsRunning: false })
+    expect(paneHostKey(other)).toBeNull()
+    expect(released[1]).toEqual([otherKey])
+    expect(leavesOf(activeTabRoot())[0].hostKey).toBeUndefined()
+    window.removeEventListener('terminal:release-keys', onRelease)
+  })
+})
 })

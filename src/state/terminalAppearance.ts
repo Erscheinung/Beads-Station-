@@ -11,11 +11,14 @@ export interface TerminalAppearance {
   scrollback: number
   /** Cmd+arrows, Cmd+Backspace, Shift+Enter and friends act as in macOS terminals. */
   macEditingKeys: boolean
+  /** Finishing a mouse selection in a terminal copies it, as in iTerm and Ghostty. */
+  copyOnSelect: boolean
 }
 export const DEFAULT_TERMINAL_APPEARANCE: TerminalAppearance = {
   fontFamily: 'JetBrains Mono', fontSize: 13, lineHeight: 1.2,
   cursorStyle: 'block', cursorBlink: true, scrollback: 3000,
   macEditingKeys: true,
+  copyOnSelect: true,
 }
 function validated(next: Partial<TerminalAppearance>, base: TerminalAppearance): TerminalAppearance {
   const result = { ...base }
@@ -26,6 +29,7 @@ function validated(next: Partial<TerminalAppearance>, base: TerminalAppearance):
   if (typeof next.cursorBlink === 'boolean') result.cursorBlink = next.cursorBlink
   if (typeof next.scrollback === 'number' && Number.isInteger(next.scrollback) && next.scrollback >= 100 && next.scrollback <= 50000) result.scrollback = next.scrollback
   if (typeof next.macEditingKeys === 'boolean') result.macEditingKeys = next.macEditingKeys
+  if (typeof next.copyOnSelect === 'boolean') result.copyOnSelect = next.copyOnSelect
   return result
 }
 let state = { ...DEFAULT_TERMINAL_APPEARANCE }
@@ -42,5 +46,13 @@ export function setTerminalAppearance(next: Partial<TerminalAppearance>) {
   try { localStorage.setItem(KEY, JSON.stringify(state)) } catch { /* optional storage */ }
   persistDurableUserConfigKey(KEY)
   listeners.forEach(l => l())
+}
+export const TERMINAL_FONT_SIZE = { min: 10, max: 24 }
+/** Step the terminal text size, or return it to the default with `null`. */
+export function stepTerminalFontSize(delta: 1 | -1 | null) {
+  const fontSize = delta === null
+    ? DEFAULT_TERMINAL_APPEARANCE.fontSize
+    : Math.min(TERMINAL_FONT_SIZE.max, Math.max(TERMINAL_FONT_SIZE.min, state.fontSize + delta))
+  if (fontSize !== state.fontSize) setTerminalAppearance({ fontSize })
 }
 export function resetTerminalAppearance() { setTerminalAppearance(DEFAULT_TERMINAL_APPEARANCE) }

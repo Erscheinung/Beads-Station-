@@ -12,6 +12,7 @@ import { getNotificationPreferences, subscribeNotificationPreferences } from './
 import { getClaudeStatus, subscribeClaudeStatus, type ClaudeStatus } from './claudeStatus'
 import { getSkin, setSkin, subscribeSkin } from './skin'
 import { setFocused } from './vim'
+import { sendSystemNotification } from '../lib/systemNotifications'
 
 export type PaneNotificationSource = 'bell' | 'osc' | 'quiet' | 'agent'
 
@@ -73,7 +74,22 @@ export function notifyPane(paneId: string, source: PaneNotificationSource, messa
   next.set(paneId, { paneId, source, message: text, at: Date.now() })
   notifications = next
   emit()
+  // In the background the ring cannot be seen; Notification Center can.
+  if (preferences.systemNotifications && typeof document !== 'undefined' && !document.hasFocus()) {
+    sendSystemNotification(systemNotificationTitle(paneId), text)
+  }
   if (preferences.autoSwitch) scheduleAutoSwitch(paneId)
+}
+
+let workspaceName: (projectId: string) => string | null = () => null
+/** The project store registers its names here; importing it would be a cycle. */
+export function setWorkspaceNameLookup(lookup: (projectId: string) => string | null): void {
+  workspaceName = lookup
+}
+function systemNotificationTitle(paneId: string): string {
+  const location = locatePane(paneId)
+  const name = location ? workspaceName(location.projectId) : null
+  return name ? `Beads Station · ${name}` : 'Beads Station'
 }
 
 export function clearPaneNotification(paneId: string): void {

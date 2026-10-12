@@ -6,9 +6,9 @@ import { flushTermPanePersistence } from '../state/termPanes'
 import { markRendererActive, markRendererBoot, markRendererCleanExit } from '../state/rendererLifecycle'
 import { setSessionPreferences, useSessionPreferences } from '../state/sessionPreferences'
 
-type CloseSource = 'shortcut-window' | 'shortcut-quit' | 'window' | 'menu-quit' | 'system'
+type CloseSource = 'shortcut-window' | 'shortcut-quit' | 'window' | 'menu-quit' | 'system' | 'update'
 interface CloseRequest { source: CloseSource }
-interface CloseScope { ptyCount: number; providerCount: number; runCount: number }
+interface CloseScope { ptyCount: number; providerCount: number; runCount: number; keptPtyCount?: number }
 
 const EMPTY_SCOPE: CloseScope = { ptyCount: 0, providerCount: 0, runCount: 0 }
 
@@ -17,6 +17,7 @@ function sourceLabel(source: CloseSource): string {
   if (source === 'shortcut-quit') return 'Cmd/Ctrl+Q'
   if (source === 'menu-quit') return 'the application menu'
   if (source === 'window') return 'the window close button'
+  if (source === 'update') return 'Restart to update'
   return 'the operating system'
 }
 
@@ -64,7 +65,11 @@ export function AppCloseGuard() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((!event.metaKey && !event.ctrlKey) || event.altKey || event.shiftKey) return
+      // On macOS only Command closes: Ctrl-W and Ctrl-Q are shell keys
+      // (delete word, resume output) and must reach the terminal.
+      const mac = /Mac|iPhone|iPad/.test(navigator.platform)
+      if (mac ? !event.metaKey || event.ctrlKey : !event.metaKey && !event.ctrlKey) return
+      if (event.altKey || event.shiftKey) return
       const key = event.key.toLowerCase()
       if (key !== 'w' && key !== 'q') return
       event.preventDefault()
@@ -149,7 +154,9 @@ export function AppCloseGuard() {
       {scope === null ? <p>Checking app-owned sessions…</p> : affected === 0
         ? <p>No app-owned terminal or provider sessions are active.</p>
         : <p>This stops {current.ptyCount} terminal{current.ptyCount === 1 ? '' : 's'}, {current.providerCount} provider session{current.providerCount === 1 ? '' : 's'}, and {current.runCount} active run{current.runCount === 1 ? '' : 's'} owned by this app.</p>}
-      <p>Workspace, pane layout, selected context and bounded screen history are saved. Reopening restores saved context only; it does not preserve a live process or start a model turn.</p>
+      {(current.keptPtyCount ?? 0) > 0
+        ? <p>{current.keptPtyCount} terminal{current.keptPtyCount === 1 ? ' keeps' : 's keep'} running in the background and will be reattached when you reopen the app. They stop if you log out or restart the Mac.</p>
+        : <p>Workspace, pane layout, selected context and bounded screen history are saved. Reopening restores saved context only; it does not preserve a live process or start a model turn.</p>}
       {error && <p role="alert">Could not close: {error}</p>}
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0', color: 'var(--bs-fg-muted)', fontSize: 12 }}>
         <input type="checkbox" checked={dontAskAgain} onChange={event => setDontAskAgain(event.target.checked)} />

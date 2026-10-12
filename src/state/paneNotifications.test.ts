@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('./claudeStatus', () => ({ getClaudeStatus: () => 'idle', subscribeClaudeStatus: () => () => {} }))
+const system = vi.hoisted(() => ({ send: vi.fn() }))
+vi.mock('../lib/systemNotifications', () => ({ sendSystemNotification: system.send }))
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setBadgeCount: vi.fn(async () => {}) }) }))
 
 import { activeTerminalTabId, activeTabRoot, leavesOf, locatePane, newTab, setActiveProject, splitActive, switchTab, focusPane } from './termPanes'
-import { __resetPaneNotificationsForTest, clearAllPaneNotifications, getPaneNotifications, jumpToLatestPaneNotification, notifiedWorkspaceIds, notifyPane } from './paneNotifications'
+import { __resetPaneNotificationsForTest, setWorkspaceNameLookup, clearAllPaneNotifications, getPaneNotifications, jumpToLatestPaneNotification, notifiedWorkspaceIds, notifyPane } from './paneNotifications'
 import { setNotificationPreferences } from './notificationPreferences'
 import { setSkin } from './skin'
 
@@ -24,7 +26,8 @@ beforeEach(() => {
   focused = true
   vi.spyOn(document, 'hasFocus').mockImplementation(() => focused)
   setSkin('terminal')
-  setNotificationPreferences({ enabled: true, notifyOnQuiet: true, autoSwitch: false, dockBadge: true })
+  setNotificationPreferences({ enabled: true, notifyOnQuiet: true, autoSwitch: false, dockBadge: true, systemNotifications: false })
+  system.send.mockClear()
   __resetPaneNotificationsForTest()
 })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
@@ -118,5 +121,21 @@ describe('pane notifications', () => {
     expect(locatePane(first)?.active).toBe(true)
     expect(getPaneNotifications().size).toBe(0)
     switchTab(0)
+  })
+  it('posts to Notification Center only when asked to and only while the app is in the background', () => {
+    const { id, first } = twoPanes()
+    setWorkspaceNameLookup(projectId => projectId === id ? 'sample-project' : null)
+    notifyPane(first, 'osc', 'Build finished')
+    expect(system.send).not.toHaveBeenCalled()
+
+    setNotificationPreferences({ systemNotifications: true })
+    clearAllPaneNotifications()
+    notifyPane(first, 'osc', 'Build finished')
+    expect(system.send).not.toHaveBeenCalled()
+
+    focused = false
+    clearAllPaneNotifications()
+    notifyPane(first, 'osc', 'Build finished')
+    expect(system.send).toHaveBeenCalledWith('Beads Station · sample-project', 'Build finished')
   })
 })

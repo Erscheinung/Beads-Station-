@@ -5,7 +5,9 @@ import type { Page } from '@playwright/test'
 // the bundled Nerd Font and the release check, driven in Chromium against the
 // mock IPC. Packaged WKWebView behaviour is covered by the release checklist.
 
-const SHOTS = 'docs/images/releases/v0.1.5'
+// Release screenshots are committed; a normal test run must not rewrite them.
+// Set BS_SHOTS_DIR to docs/images/releases/<version> when preparing a release.
+const SHOTS = process.env.BS_SHOTS_DIR ?? 'test-results/screenshots'
 
 test.beforeEach(async ({ page }) => {
   await seedConfirmed(page)
@@ -148,7 +150,7 @@ test('About checks for a newer release and downloads it only on request', async 
   await page.getByTitle('Open settings', { exact: true }).click()
   await page.getByRole('button', { name: 'About', exact: true }).click()
   const status = page.getByTestId('update-status')
-  await expect(page.getByRole('button', { name: /^Download/ })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /^(Download|Install)/ })).toHaveCount(0)
 
   await page.evaluate(() => {
     (window as any).__bsMockUpdate = { current: '0.1.5', latest: 'v9.9.9', newer: true, url: 'https://example.invalid/v9.9.9', asset: 'Beads.Station_9.9.9_aarch64.dmg' }
@@ -158,9 +160,50 @@ test('About checks for a newer release and downloads it only on request', async 
   await page.screenshot({ path: `${SHOTS}/about-update.png` })
   expect(await calls(page, 'app_download_update')).toHaveLength(0)
 
-  await page.getByRole('button', { name: 'Download v9.9.9', exact: true }).click()
+  expect(await calls(page, 'app_prepare_update')).toHaveLength(0)
+
+  await page.getByRole('button', { name: 'Download only', exact: true }).click()
   await expect(status).toHaveText('v9.9.9 downloaded and opened in Finder')
   expect((await calls(page, 'app_download_update'))[0].args).toEqual({ tag: 'v9.9.9' })
   await page.getByRole('button', { name: 'Close settings' }).click()
   await expect(page.getByRole('button', { name: 'Update v9.9.9' })).toBeVisible()
+})
+
+test('Install prepares the update and replaces nothing until Restart to update', async ({ page }) => {
+  await page.getByTitle('Open settings', { exact: true }).click()
+  await page.getByRole('button', { name: 'About', exact: true }).click()
+  await page.evaluate(() => {
+    (window as any).__bsMockUpdate = { current: '0.1.5', latest: 'v9.9.9', newer: true, url: 'https://example.invalid/v9.9.9', asset: 'Beads.Station_9.9.9_aarch64.dmg' }
+  })
+  await page.getByRole('button', { name: 'Check for updates', exact: true }).click()
+  await page.getByRole('button', { name: 'Install v9.9.9', exact: true }).click()
+  await expect(page.getByTestId('update-status')).toHaveText('v9.9.9 is ready to install')
+  expect((await calls(page, 'app_prepare_update'))[0].args).toEqual({ tag: 'v9.9.9' })
+  expect(await calls(page, 'app_apply_update')).toHaveLength(0)
+  await page.getByRole('button', { name: 'Restart to update', exact: true }).click()
+  await expect.poll(async () => (await calls(page, 'app_apply_update')).length).toBe(1)
+})
+
+test('the waiting-panes panel lists each waiting pane, jumps to one and dismisses another', async ({ page }) => {
+  await split(page)
+  await output(page, 0, '\u001b]777;notify;Build;finished\u0007')
+  const waiting = page.getByRole('button', { name: /^Waiting 1/ })
+  await expect(waiting).toBeVisible()
+  await waiting.click()
+
+  const panel = page.getByRole('dialog', { name: 'Waiting panes' })
+  await expect(panel).toContainText('Build: finished')
+  await expect(panel).toContainText('terminal · tab 1')
+  await panel.getByRole('button', { name: /^Dismiss notification/ }).click()
+  await expect(panel).toContainText('Nothing is waiting for you.')
+  await expect(page.locator('[data-pane-notification]')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(panel).toHaveCount(0)
+
+  // Jumping focuses the pane that notified and closes the panel.
+  await output(page, 0, '\u0007')
+  await page.keyboard.press('Meta+i')
+  await page.getByRole('dialog', { name: 'Waiting panes' }).locator('.bs-notification-panel__jump').click()
+  await expect(page.getByRole('dialog', { name: 'Waiting panes' })).toHaveCount(0)
+  await expect(page.locator('[data-pane-notification]')).toHaveCount(0)
 })
