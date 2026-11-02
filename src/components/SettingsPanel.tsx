@@ -37,7 +37,7 @@ function updateSummary(update: UpdateState): string {
   }
 }
 
-const RELEASE_NOTES_URL = 'https://github.com/Erscheinung/Beads-Station/releases'
+const RELEASE_NOTES_URL = 'https://github.com/Erscheinung/Beads-Station-/releases'
 
 const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close nerd icons editing shortcuts command arrow option click shift enter', Notifications: 'pane notification ring bell done finished waiting attention auto switch dock badge quiet', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents confirm confirmation destructive close launch command flags yolo skip permissions', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station update download check' }
 const sections = ['General', 'Appearance', 'Terminal', 'Notifications', 'Keyboard shortcuts', 'Sessions', 'Recipes', 'About'] as const
@@ -320,7 +320,7 @@ export function SettingsPanel() {
             </>}
             {update.status === 'ready' && <button onClick={() => void restartToUpdate()}>Restart to update</button>}
           </div>
-          <label className="bs-settings__row"><span>Check for updates when the app starts<small>Reads this project’s GitHub releases once per launch. While the repository is private this uses your own <code>gh</code> CLI login. Nothing is installed automatically.</small></span><input aria-label="Check for updates when the app starts" type="checkbox" checked={checkOnLaunch} onChange={e => setCheckForUpdatesOnLaunch(e.target.checked)} /></label>
+          <label className="bs-settings__row"><span>Check for updates when the app starts<small>Reads this project’s GitHub releases once per launch. Nothing is installed automatically.</small></span><input aria-label="Check for updates when the app starts" type="checkbox" checked={checkOnLaunch} onChange={e => setCheckForUpdatesOnLaunch(e.target.checked)} /></label>
           {crashLog && <details className="bs-settings__note"><summary>Recent problems the app recovered from</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', userSelect: 'text', WebkitUserSelect: 'text' }}>{crashLog}</pre></details>}
           <p className="bs-settings__note">This version is read from the application package metadata used to build the frontend.</p>
         </>}
