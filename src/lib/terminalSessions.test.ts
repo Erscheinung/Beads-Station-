@@ -421,8 +421,8 @@ describe('terminal keys and fonts', () => {
     const session = getTerminalSession('pane', '/repo', vi.fn())
     await session.ready
     mock.invoke.mockClear()
-    // Mod+Alt+ArrowLeft is "Focus terminal pane left".
-    expect(mock.keyHandler?.(press({ key: 'ArrowLeft', metaKey: true, altKey: true }))).toBe(false)
+    // Mod+Shift+ArrowLeft is "Focus terminal pane left".
+    expect(mock.keyHandler?.(press({ key: 'ArrowLeft', metaKey: true, shiftKey: true }))).toBe(false)
     expect(mock.invoke).not.toHaveBeenCalledWith('pty_write', expect.anything())
   })
   it('puts the bundled Nerd Font behind every terminal font choice', async () => {

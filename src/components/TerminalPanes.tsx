@@ -7,7 +7,7 @@
 // wrapper is promoted to position:absolute/inset:0 over the region while
 // siblings are visually hidden. Nothing unmounts.
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import './TerminalPanes.css'
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
@@ -17,7 +17,7 @@ import { BrowserPane } from './BrowserPane'
 import { useClaudeStatus } from '../state/claudeStatus'
 import {
   useTermPanes,
-  closeActivePane, unsplitToTabs, splitActive, toggleZoom, leavesOf,
+  closeActivePane, unsplitToTabs, joinTabs, splitActive, toggleZoom, leavesOf,
   useZoom,
   registerPty,
   updatePaneScreen,
@@ -39,6 +39,8 @@ import { requestDestructiveAction } from '../state/destructiveActions'
 import { clearPaneNotification, usePaneNotifications, type PaneNotification } from '../state/paneNotifications'
 import { runInTerminalSession } from '../lib/terminalSessions'
 import { AGENT_CLI_LABEL, useAgentHooks } from '../state/agentHooks'
+import { startPointerDrag, startPointerReorder } from '../lib/pointerDrag'
+import { PaneBoundary } from './PaneBoundary'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
@@ -238,6 +240,7 @@ function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
           background: STATUS_DOT[status] ?? STATUS_DOT.idle, flexShrink: 0,
         }} />
         <span>agent · {a.projectId} · {leaf.restored ? 'saved context' : status}</span>
+        <button className="bs-pane-close" aria-label="Close agent pane" title="Stop this agent and close the pane" onClick={closeFocusedPane}><span className="codicon codicon-close" aria-hidden /></button>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {leaf.restored ? <div data-restored-provider={a.bridgeId} style={{ height: '100%', display: 'grid', placeContent: 'center', gap: 10, padding: 20, textAlign: 'center', color: 'var(--bs-fg-muted)' }}>
@@ -331,7 +334,7 @@ function BrowserPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
         boxShadow: isActive && ctx.termFocused ? 'inset 0 0 0 1px var(--bs-blue)' : undefined,
       }}
     >
-      <BrowserPane paneId={leaf.paneId} url={leaf.browser!.url} active={isActive && ctx.termFocused} />
+      <BrowserPane paneId={leaf.paneId} url={leaf.browser!.url} active={isActive && ctx.termFocused} onClose={closeFocusedPaneNow} />
     </div>
   )
 }
@@ -350,24 +353,21 @@ function startSeamDrag(splitId: string, isRow: boolean, e: React.MouseEvent): vo
   e.stopPropagation()
   const container = (e.currentTarget as HTMLElement).parentElement
   if (!container) return
-  const onMove = (ev: MouseEvent) => {
-    const rect = container.getBoundingClientRect()
-    const ratio = isRow
-      ? (ev.clientX - rect.left) / rect.width
-      : (ev.clientY - rect.top) / rect.height
-    if (Number.isFinite(ratio)) setRatio(splitId, ratio)
-  }
-  const onUp = () => {
-    window.removeEventListener('mousemove', onMove)
-    window.removeEventListener('mouseup', onUp)
-  }
-  window.addEventListener('mousemove', onMove)
-  window.addEventListener('mouseup', onUp)
+  startPointerDrag({
+    cursor: isRow ? 'col-resize' : 'row-resize',
+    onMove: ev => {
+      const rect = container.getBoundingClientRect()
+      const ratio = isRow
+        ? (ev.clientX - rect.left) / rect.width
+        : (ev.clientY - rect.top) / rect.height
+      if (Number.isFinite(ratio)) setRatio(splitId, ratio)
+    },
+  })
 }
 
 function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
   if (node.kind === 'leaf') {
-    return <PaneLeaf key={node.paneId} leaf={node} ctx={ctx} />
+    return <PaneBoundary key={node.paneId} paneId={node.paneId}><PaneLeaf leaf={node} ctx={ctx} /></PaneBoundary>
   }
   // dir 'v' = vertical seam = children side-by-side (row).
   // dir 'h' = horizontal seam = children stacked (column).
@@ -423,7 +423,6 @@ function renderNode(node: Node, ctx: RenderCtx): React.ReactNode {
 
 export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused: boolean; fullscreen?: boolean }) {
   const { tabs, activeTabId, insert } = useTermPanes()
-  const draggedTab = useRef<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
   const zoomed = useZoom()
   const notifications = usePaneNotifications()
@@ -444,6 +443,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
         <button onClick={() => { splitActive('v'); setFocused('terminal'); setInsert(true) }} title="Split side by side">Split right</button>
         <button onClick={() => { splitActive('h'); setFocused('terminal'); setInsert(true) }} title="Split top and bottom">Split down</button>
         <button onClick={unsplitToTabs} disabled={tab.root.kind === 'leaf'} title="Remove splits and keep every session in its own tab">Unsplit to tabs</button>
+        <button onClick={() => { joinTabs(); setFocused('terminal'); typeIntoActiveShell() }} disabled={tabs.length < 2} title="Put every terminal tab back side by side">Join tabs</button>
         <button onClick={toggleZoom} disabled={tab.root.kind === 'leaf'}>{visibleZoom ? 'Restore panes' : 'Zoom pane'}</button>
         <button onClick={() => { spawnBrowser(''); setFocused('terminal') }} title="Open a web page beside this pane">Browser</button>
         <button onClick={closeFocusedPane} title="Close the focused pane and stop its shell or agent">Close pane</button>
@@ -477,7 +477,14 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
                 aria-selected={selected}
                 aria-posinset={i + 1}
                 aria-setsize={tabs.length}
-                draggable
+                data-terminal-tab={t.id}
+                onPointerDown={event => startPointerReorder(event, t.id, 'data-terminal-tab', (from, to) => {
+                  const fromIndex = tabs.findIndex(candidate => candidate.id === from)
+                  const toIndex = tabs.findIndex(candidate => candidate.id === to)
+                  if (fromIndex < 0 || toIndex < 0) return
+                  reorderTab(fromIndex, toIndex)
+                  setAnnouncement(`Terminal tab ${fromIndex + 1} moved ${fromIndex < toIndex ? 'after' : 'before'} terminal tab ${toIndex + 1}`)
+                })}
                 onClick={() => { switchTab(i); setFocused('terminal'); typeIntoActiveShell() }}
                 onKeyDown={event => {
                   if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return
@@ -488,28 +495,6 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
                   reorderTab(i, target)
                   setAnnouncement(`${name} moved ${event.key === 'ArrowLeft' ? 'before' : 'after'} terminal tab ${target + 1}`)
                 }}
-                onDragStart={event => {
-                  draggedTab.current = t.id
-                  event.dataTransfer.effectAllowed = 'move'
-                  event.dataTransfer.setData('text/plain', t.id)
-                }}
-                onDragOver={event => {
-                  if (draggedTab.current && draggedTab.current !== t.id) {
-                    event.preventDefault()
-                    event.dataTransfer.dropEffect = 'move'
-                  }
-                }}
-                onDrop={event => {
-                  event.preventDefault()
-                  const fromId = draggedTab.current ?? event.dataTransfer.getData('text/plain')
-                  const fromIndex = tabs.findIndex(tab => tab.id === fromId)
-                  if (fromIndex >= 0 && fromIndex !== i) {
-                    reorderTab(fromIndex, i)
-                    setAnnouncement(`Terminal tab ${fromIndex + 1} moved ${fromIndex < i ? 'after' : 'before'} terminal tab ${i + 1}`)
-                  }
-                  draggedTab.current = null
-                }}
-                onDragEnd={() => { draggedTab.current = null }}
                 style={{
                   padding: '2px 10px',
                   fontSize: 10,
@@ -547,7 +532,7 @@ export function closeFocusedPane(): void {
   })
 }
 
-function closeFocusedPaneNow(): void {
+export function closeFocusedPaneNow(): void {
   const { killPtyId, killBridgeId } = closeActivePane()
   if (killPtyId !== null) killPty(killPtyId)
   if (killBridgeId) void invoke('claude_kill', { projectId: killBridgeId }).catch(() => {})

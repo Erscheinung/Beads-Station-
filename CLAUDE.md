@@ -229,6 +229,18 @@ repo, porting Napkin's `snapshot.rs` and its `claude --settings` hooks (which
 also gives `Code-270` exact waiting signals); (3) the paper look as a Designer
 theme. The older JSON chat (`ClaudeChat`) still exists beside it.
 
+## v0.1.7 (epic `Code-07u`)
+
+Crash guard, flow control, Designer rebuild and the 0.1.6 hands-on fixes. Automated evidence only; `docs/releases/v0.1.7.md` has the hands-on list.
+
+- **Crash guard** (`src-tauri/src/crash_guard.rs`, `Code-07u.1`). tao's `sendEvent:` is `extern "C"`, so anything unwinding into it aborts. It is replaced after the event loop exists. `catch_unwind` must stay outside `objc2::exception::catch`: it aborts on foreign exceptions. Panics and dropped events go to `~/Library/Logs/ai.beads-station.desktop/crash.log`, shown in About. The trigger of the 0.1.6 aborts is unknown; read that log when one recurs. Godot's own abort (`RegisterApplication`, parent `codex`) is a separate crash.
+- **Flow control** (`OutputFlow` in `pty.rs`, `Code-07u.2`). Each data event carries `ack`, the exact byte count; the frontend returns it through `pty_ack` after xterm parses. The reader pauses at 2 MB in flight and resumes at 512 KB, waiting at most 250 ms per read so a dead view only slows it. Hosted panes send `ack: 0` and have no back-pressure yet.
+- **Drags** go through `src/lib/pointerDrag.ts`. HTML5 drag events do not reach the page while native file drops are on, and iframes swallow pointer events (`.bs-dragging iframe`).
+- **macOS drop positions are points.** wry reads `draggingLocation`; Tauri labels it Physical. See `dropPoint`.
+- **Binding keys** come from `event.code` when Shift or Option is held. `RETIRED_DEFAULTS` migrates saved old defaults; add to it when a default changes.
+- **Bead map** (`src/components/designer/beadMap.ts`): parent-child is a lane, `blocks` is an arrow, anything else is listed in the inspector. Never treat all dependencies as blockers.
+- `npx playwright test readme-shots` with `BS_SHOTS=<folder>` regenerates README screenshots from a neutral sample project.
+
 ## Future: Svelte migration (`Code-cuh`)
 
 Migrate the React/TSX frontend to Svelte 5 **incrementally and in readable,

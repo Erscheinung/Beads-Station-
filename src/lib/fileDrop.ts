@@ -6,15 +6,23 @@
 // under the pointer, then paste shell-quoted paths into that session exactly
 // like Terminal.app/iTerm do. Nothing is executed — the user still presses
 // Enter.
+//
+// Despite the Physical type, wry reports macOS positions in points (it reads
+// NSDraggingInfo.draggingLocation), so dividing there lands every drop in the
+// left half of the window.
 
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { terminalSessionForNode } from './terminalSessions'
 
 const TARGET_CLASS = 'bs-terminal-drop-target'
 
+export function dropPoint(position: { x: number; y: number }, scale: number, mac: boolean) {
+  return mac ? position : { x: position.x / scale, y: position.y / scale }
+}
+
 function sessionAt(position: { x: number; y: number }) {
-  const scale = window.devicePixelRatio || 1
-  const node = document.elementFromPoint(position.x / scale, position.y / scale)
+  const { x, y } = dropPoint(position, window.devicePixelRatio || 1, /Mac/.test(navigator.platform))
+  const node = document.elementFromPoint(x, y)
   return node ? terminalSessionForNode(node) : null
 }
 

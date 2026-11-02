@@ -592,3 +592,30 @@ describe('kept terminals', () => {
   })
 })
 })
+
+describe('joining terminal tabs', () => {
+  it('reverses unsplit and keeps every pane', async () => {
+    const panes = await import('./termPanes')
+    panes.splitActive('v')
+    panes.splitActive('h')
+    const before = panes.leavesOf(panes.activeTabRoot()).map(leaf => leaf.paneId).sort()
+    panes.unsplitToTabs()
+    expect(panes.terminalTabIds().length).toBeGreaterThanOrEqual(3)
+    panes.joinTabs()
+    expect(panes.terminalTabIds()).toHaveLength(1)
+    const after = panes.leavesOf(panes.activeTabRoot()).map(leaf => leaf.paneId)
+    expect(after).toEqual(expect.arrayContaining(before))
+  })
+})
+
+describe('starting an agent in a terminal pane', () => {
+  it('opens a new shell with the command queued for it, and nothing else', async () => {
+    const panes = await import('./termPanes')
+    const before = panes.leavesOf(panes.activeTabRoot()).length
+    panes.launchInTerminalPane('claude --dangerously-skip-permissions')
+    expect(panes.leavesOf(panes.activeTabRoot())).toHaveLength(before + 1)
+    const pane = panes.activeTerminalPaneId()
+    expect(panes.takePaneStartupCommand(pane)).toBe('claude --dangerously-skip-permissions')
+    expect(panes.takePaneStartupCommand(pane)).toBeNull()
+  })
+})

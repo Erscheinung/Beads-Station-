@@ -33,9 +33,54 @@ pub async fn browser_open_window(app: tauri::AppHandle, url: String) -> Result<(
         .map_err(|error| error.to_string())
 }
 
+/// Whether these response headers forbid showing the page in another app's frame.
+fn forbids_framing(frame_options: Option<&str>, policy: Option<&str>) -> bool {
+    if frame_options.is_some_and(|value| {
+        let value = value.trim().to_ascii_lowercase();
+        value == "deny" || value == "sameorigin"
+    }) {
+        return true;
+    }
+    policy.is_some_and(|policy| {
+        policy.split(';').any(|directive| {
+            let mut parts = directive.split_whitespace();
+            parts.next().is_some_and(|name| name.eq_ignore_ascii_case("frame-ancestors"))
+                && !parts.any(|source| source == "*")
+        })
+    })
+}
+
+/// Lets a pane say why a site is blank instead of showing an empty frame.
+/// False when unknown: a failed check must not hide a page that would load.
+#[tauri::command]
+pub async fn browser_refuses_framing(url: String) -> Result<bool, String> {
+    let url = web_url(&url)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(4)).build();
+        let response = match agent.get(url.as_str()).call() {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => response,
+            Err(_) => return false,
+        };
+        forbids_framing(response.header("x-frame-options"), response.header("content-security-policy"))
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::web_url;
+    use super::{forbids_framing, web_url};
+
+    #[test]
+    fn recognizes_headers_that_forbid_framing() {
+        assert!(forbids_framing(Some("DENY"), None));
+        assert!(forbids_framing(Some(" sameorigin "), None));
+        assert!(forbids_framing(None, Some("default-src 'self'; frame-ancestors 'self'")));
+        assert!(forbids_framing(None, Some("frame-ancestors 'none'")));
+        assert!(!forbids_framing(None, Some("frame-ancestors *")));
+        assert!(!forbids_framing(None, Some("default-src 'self'")));
+        assert!(!forbids_framing(None, None));
+    }
 
     #[test]
     fn opens_only_http_and_https_addresses() {

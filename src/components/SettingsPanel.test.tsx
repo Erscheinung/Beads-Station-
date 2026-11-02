@@ -115,9 +115,9 @@ describe('SettingsPanel shortcut recorder', () => {
     const focusLeft = screen.getByRole('button', { name: 'Shortcut for Focus terminal pane left' })
     expect(focusLeft).toHaveTextContent('Change')
     fireEvent.click(focusLeft)
-    act(() => fireEvent.keyDown(document.body, { key: '1', metaKey: true, bubbles: true }))
+    act(() => fireEvent.keyDown(document.body, { key: '!', code: 'Digit1', shiftKey: true, metaKey: true, bubbles: true }))
 
-    await waitFor(() => expect(getBinding('focusLeft')).toBe('Mod+1'))
+    await waitFor(() => expect(getBinding('focusLeft')).toBe('Mod+Shift+1'))
     expect(focusLeft).toHaveTextContent('1')
   })
 })

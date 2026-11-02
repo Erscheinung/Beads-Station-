@@ -76,6 +76,11 @@ const NATIVE_RESIZE_SETTLE_MS = 90
 const BUSY_GAP_MS = 1500
 const BUSY_MIN_MS = 4000
 const QUIET_MS = 3000
+// Flow control: acknowledge parsed output in batches, and promptly when it stops.
+const ACK_BATCH_BYTES = 256 * 1024
+const ACK_IDLE_MS = 50
+// Saved screens rewrite the whole workspace store, so keep them occasional.
+const SCREEN_CHECKPOINT_MS = 5000
 // Output this soon after a keystroke is echo, not work.
 const ECHO_WINDOW_MS = 300
 
@@ -232,6 +237,9 @@ export class TerminalSession {
   // A program that sends its own notifications does not need the quiet-after-work guess.
   private selfReporting = false
   private replaying = false
+  private unacknowledged = 0
+  private ackTimer: ReturnType<typeof setTimeout> | null = null
+  private lastCheckpoint = ''
 
   constructor(
     readonly paneId: string,
@@ -241,7 +249,7 @@ export class TerminalSession {
   ) {
     this.element.style.cssText = 'width:100%;height:100%;'
     this.terminal.loadAddon(this.fit)
-    this.terminal.loadAddon(new WebLinksAddon((_event, uri) => openTerminalLink(uri)))
+    this.terminal.loadAddon(new WebLinksAddon((event, uri) => openTerminalLink(uri, event)))
     this.terminal.open(this.element)
     this.terminal.attachCustomKeyEventHandler(e => this.handleKey(e))
     this.registerNotificationSources()
@@ -283,6 +291,22 @@ export class TerminalSession {
       this.requestNativeRedraw()
     }))
     this.ready = this.start(cwd, onSpawn)
+  }
+
+  /** Tell the reader how much xterm has parsed. Batched: this is the hot path. */
+  private acknowledge(bytes: number, id: number) {
+    this.unacknowledged += bytes
+    if (this.unacknowledged < ACK_BATCH_BYTES && this.ackTimer === null) {
+      this.ackTimer = setTimeout(() => this.flushAcknowledgement(id), ACK_IDLE_MS)
+      return
+    }
+    if (this.unacknowledged >= ACK_BATCH_BYTES) this.flushAcknowledgement(id)
+  }
+  private flushAcknowledgement(id: number) {
+    if (this.ackTimer !== null) { clearTimeout(this.ackTimer); this.ackTimer = null }
+    const bytes = this.unacknowledged
+    this.unacknowledged = 0
+    if (bytes > 0 && !this.closed) void invoke('pty_ack', { id, bytes }).catch(() => {})
   }
 
   private send(data: string) {
@@ -455,12 +479,12 @@ export class TerminalSession {
   private notify() { this.listeners.forEach(listener => listener()) }
   private scheduleScreenCheckpoint() {
     if (!this.onScreen || this.screenTimer !== null) return
-    // Output can be byte-dense. One bounded checkpoint every two seconds keeps
+    // Output can be byte-dense. One bounded checkpoint every few seconds keeps
     // persistence off the PTY hot path while still recovering useful context.
     this.screenTimer = setTimeout(() => {
       this.screenTimer = null
       this.checkpointScreen()
-    }, 2000)
+    }, SCREEN_CHECKPOINT_MS)
   }
   checkpointScreen() {
     if (!this.onScreen || this.closed) return
@@ -474,15 +498,20 @@ export class TerminalSession {
       lines.push(bounded)
       chars += bounded.length
     }
-    this.onScreen(this.paneId, {
-      lines,
-      cols: this.terminal.cols,
-      rows: this.terminal.rows,
-      buffer: buffer.type,
-      cursorX: buffer.cursorX,
-      cursorY: buffer.cursorY,
-      capturedAt: Date.now(),
-    })
+    // A redraw of the same screen is not worth another store write.
+    const fingerprint = lines.join('\n')
+    if (fingerprint !== this.lastCheckpoint) {
+      this.lastCheckpoint = fingerprint
+      this.onScreen(this.paneId, {
+        lines,
+        cols: this.terminal.cols,
+        rows: this.terminal.rows,
+        buffer: buffer.type,
+        cursorX: buffer.cursorX,
+        cursorY: buffer.cursorY,
+        capturedAt: Date.now(),
+      })
+    }
     this.observeForeground()
   }
   /** Remember which agent CLI (and, for Codex, which session) owns this shell, for an explicit resume after a restart. */
@@ -535,7 +564,7 @@ export class TerminalSession {
     // prevent spawning; a shell with no output listener is not usable.
     const eventKey = crypto.randomUUID()
     try {
-      const output = await listen<{ id: number; data: string; replay?: boolean }>(`pty_data:${eventKey}`, event => {
+      const output = await listen<{ id: number; data: string; replay?: boolean; ack?: number }>(`pty_data:${eventKey}`, event => {
         if (!this.closed) {
           const data = this.outputNormalizer.push(event.payload.data)
           if (event.payload.replay) {
@@ -548,7 +577,10 @@ export class TerminalSession {
             this.sawOutput = true
             return
           }
-          if (data) this.terminal.write(data)
+          const ack = event.payload.ack ?? 0
+          if (!ack) { if (data) this.terminal.write(data) }
+          else if (data) this.terminal.write(data, () => this.acknowledge(ack, event.payload.id))
+          else this.acknowledge(ack, event.payload.id)
           this.sawOutput = true
           this.noteOutput()
           this.flushStartupCommand()
@@ -695,7 +727,9 @@ export class TerminalSession {
     const active = document.activeElement
     if (active instanceof Element) {
       if (active.closest('dialog[open], [role="dialog"]')) return false
-      if (!this.element.contains(active) && (active.matches('input, textarea, select') || (active as HTMLElement).isContentEditable)) return false
+      // Another pane's xterm input is a textarea too, and must not block the move.
+      const typing = active.matches('input, textarea, select') || (active as HTMLElement).isContentEditable
+      if (!this.element.contains(active) && typing && !active.classList.contains('xterm-helper-textarea')) return false
     }
     this.terminal.focus()
     return true
@@ -742,6 +776,7 @@ export class TerminalSession {
     this.attachment++
     if (this.repaintFrame !== null) cancelAnimationFrame(this.repaintFrame)
     if (this.screenTimer !== null) clearTimeout(this.screenTimer)
+    if (this.ackTimer !== null) clearTimeout(this.ackTimer)
     if (this.nativeResizeTimer !== null) clearTimeout(this.nativeResizeTimer)
     if (this.quietTimer !== null) clearTimeout(this.quietTimer)
     this.disposeViewportMarker()
@@ -758,8 +793,9 @@ export class TerminalSession {
  * server a command just printed) opens in a browser pane beside the terminal;
  * everything else opens as it always has.
  */
-export function openTerminalLink(uri: string) {
-  if (isLocalUrl(uri) && showInBrowserPane(uri)) return
+export function openTerminalLink(uri: string, event?: Pick<MouseEvent, 'metaKey'>) {
+  // Command+click always means the embedded browser; a plain click only for local pages.
+  if ((event?.metaKey || isLocalUrl(uri)) && showInBrowserPane(uri)) return
   const opened = window.open()
   if (!opened) return
   try { opened.opener = null } catch { /* cross-origin window */ }

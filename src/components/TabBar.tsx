@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Project } from '../state/projects'
 import { useClaudeStatus, type ClaudeStatus } from '../state/claudeStatus'
 import { notifiedWorkspaceIds, usePaneNotifications } from '../state/paneNotifications'
+import { startPointerReorder } from '../lib/pointerDrag'
 
 interface TabBarProps {
   projects: Project[]
@@ -49,7 +50,6 @@ function TabStatusDot({ projectId }: { projectId: string }) {
  */
 export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClose }: TabBarProps) {
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map())
-  const draggedId = useRef<string | null>(null)
   const [announcement, setAnnouncement] = useState('')
   // A workspace is marked while one of its panes is waiting. The visible
   // workspace shows the pane's own ring instead.
@@ -94,7 +94,15 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
         return (
           <div key={p.id} style={{ display: 'flex', flexShrink: 0, background: active ? 'var(--bs-bg-elev)' : 'transparent' }}>
           <button
-            draggable={Boolean(onReorder)}
+            data-workspace-tab={p.id}
+            onPointerDown={onReorder ? event => startPointerReorder(event, p.id, 'data-workspace-tab', (from, to) => {
+              const fromProject = projects.find(project => project.id === from)
+              const toProject = projects.find(project => project.id === to)
+              if (!fromProject || !toProject) return
+              const relation = projects.indexOf(fromProject) < projects.indexOf(toProject) ? 'after' : 'before'
+              onReorder(from, to)
+              setAnnouncement(`${fromProject.name} moved ${relation} ${toProject.name}`)
+            }) : undefined}
             ref={el => {
               if (el) tabRefs.current.set(p.id, el)
               else tabRefs.current.delete(p.id)
@@ -106,29 +114,6 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
               event.preventDefault()
               moveWithKeyboard(p.id, event.key === 'ArrowLeft' ? -1 : 1)
             }}
-            onDragStart={event => {
-              draggedId.current = p.id
-              event.dataTransfer.effectAllowed = 'move'
-              event.dataTransfer.setData('text/plain', p.id)
-            }}
-            onDragOver={event => {
-              if (draggedId.current && draggedId.current !== p.id) {
-                event.preventDefault()
-                event.dataTransfer.dropEffect = 'move'
-              }
-            }}
-            onDrop={event => {
-              event.preventDefault()
-              const from = draggedId.current ?? event.dataTransfer.getData('text/plain')
-              if (from && from !== p.id && onReorder) {
-                const fromProject = projects.find(project => project.id === from)
-                const relation = projects.findIndex(project => project.id === from) < projects.indexOf(p) ? 'after' : 'before'
-                onReorder(from, p.id)
-                setAnnouncement(`${fromProject?.name ?? 'Workspace'} moved ${relation} ${p.name}`)
-              }
-              draggedId.current = null
-            }}
-            onDragEnd={() => { draggedId.current = null }}
             aria-posinset={projects.indexOf(p) + 1}
             aria-setsize={projects.length}
             title={p.path}

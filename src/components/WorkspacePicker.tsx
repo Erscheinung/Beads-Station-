@@ -4,8 +4,7 @@ import {
   cancelFolderDiscovery,
   discoverUnderFolder,
   type Project,
-  useProjects,
-} from '../state/projects'
+  useProjects, cloneRepository } from '../state/projects'
 import { setSkin, useSkin } from '../state/skin'
 import './WorkspacePicker.css'
 
@@ -97,6 +96,7 @@ export function WorkspacePicker({ onClose }: { onClose?: () => void }) {
   const requestSequence = useRef(0)
   const activeRequest = useRef<string | null>(null)
   const [entry, setEntry] = useState('')
+  const [cloneUrl, setCloneUrl] = useState('')
   const [scope, setScope] = useState<PickerScope>('known')
   const [scopeRoot, setScopeRoot] = useState(roots[0] ?? '')
   const [scopeProjects, setScopeProjects] = useState<Project[]>([])
@@ -296,6 +296,14 @@ export function WorkspacePicker({ onClose }: { onClose?: () => void }) {
       {scopeTruncated && <span>Showing the first 500 folders.</span>}
       {scopeWarnings.map((warning, index) => <span key={index}>{warning}</span>)}
     </div>}
+    <details className="workspace-picker__settings workspace-picker__clone">
+      <summary>Clone a repository</summary>
+      <p>Clones into {roots[0] ?? '~/Desktop/Code'} and opens it. Uses your own git login.</p>
+      <form onSubmit={event => { event.preventDefault(); if (cloneUrl.trim()) void run(() => cloneRepository(cloneUrl.trim(), roots[0] ?? '~/Desktop/Code'), true) }}>
+        <input aria-label="Repository address" value={cloneUrl} onChange={event => setCloneUrl(event.target.value)} placeholder="https://github.com/owner/repo.git" spellCheck={false} autoComplete="off" />
+        <button disabled={busy || !cloneUrl.trim()} className="workspace-picker__primary">Clone</button>
+      </form>
+    </details>
     <details className="workspace-picker__settings">
       <summary>Discovery roots {warnings.length > 0 && <span className="workspace-picker__warning">· {warnings.length} unavailable</span>}</summary>
       <p>Known projects are cached from these folders. Under folder is a bounded, ignore-aware search and never opens workspaces while indexing.</p>

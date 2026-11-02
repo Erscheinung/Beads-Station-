@@ -372,6 +372,58 @@ pub async fn projects_open(app: AppHandle, path: String) -> Result<Project, Stri
         .map_err(|e| e.to_string())?
 }
 
+/// The folder `git clone` would create: the last path segment without `.git`.
+fn clone_folder_name(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let last = trimmed.rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    (!name.is_empty() && name != "." && name != "..").then(|| name.to_string())
+}
+
+/// Only remote forms git treats as data. `ext::` and a leading dash run commands.
+fn valid_clone_url(url: &str) -> bool {
+    let url = url.trim();
+    !url.is_empty()
+        && !url.starts_with('-')
+        && !url.chars().any(char::is_whitespace)
+        && (url.starts_with("https://")
+            || url.starts_with("http://")
+            || url.starts_with("ssh://")
+            || url.starts_with("git@"))
+}
+
+/// Clone a repository into `parent` and open the result as a workspace.
+#[tauri::command]
+pub async fn projects_git_clone(app: AppHandle, url: String, parent: String) -> Result<Project, String> {
+    if !valid_clone_url(&url) {
+        return Err("Enter an https, ssh or git@ repository address.".into());
+    }
+    let name = clone_folder_name(&url).ok_or("Could not tell the folder name from that address.")?;
+    let parent = expand_path(&parent)?;
+    let target = parent.join(&name);
+    if target.exists() {
+        return Err(format!("{} already exists.", target.display()));
+    }
+    let output = tokio::process::Command::new(crate::binresolve::resolve_bin("git")?)
+        // A clone must not sit waiting for a password nobody can type.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .arg("clone")
+        .arg("--")
+        .arg(url.trim())
+        .arg(&target)
+        .output()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(detail.trim().lines().last().unwrap_or("git clone failed").to_string());
+    }
+    let path = target.to_string_lossy().into_owned();
+    tauri::async_runtime::spawn_blocking(move || open_project(&app, &path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 fn open_project(app: &AppHandle, path: &str) -> Result<Project, String> {
     let mut project = project_at(&expand_path(&path)?)?;
     let sessions = app.store(PROJECTS_STORE).map_err(|e| e.to_string())?;
@@ -415,6 +467,29 @@ pub async fn projects_set_claude_session(
     let store = app.store(PROJECTS_STORE).map_err(|e| e.to_string())?;
     store.set(&id, serde_json::json!(session_id));
     store.save().map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod clone_tests {
+    use super::{clone_folder_name, valid_clone_url};
+
+    #[test]
+    fn accepts_only_plain_remote_addresses() {
+        assert!(valid_clone_url("https://github.com/owner/repo.git"));
+        assert!(valid_clone_url("git@github.com:owner/repo.git"));
+        assert!(valid_clone_url("ssh://git@host/owner/repo"));
+        assert!(!valid_clone_url("ext::sh -c touch%20x"));
+        assert!(!valid_clone_url("--upload-pack=touch"));
+        assert!(!valid_clone_url("file:///etc"));
+        assert!(!valid_clone_url("https://host/a b"));
+    }
+
+    #[test]
+    fn names_the_folder_after_the_repository() {
+        assert_eq!(clone_folder_name("https://github.com/owner/repo.git/").as_deref(), Some("repo"));
+        assert_eq!(clone_folder_name("git@github.com:repo.git").as_deref(), Some("repo"));
+        assert_eq!(clone_folder_name("https://host/..").as_deref(), None);
+    }
 }
 
 #[cfg(test)]

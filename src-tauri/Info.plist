@@ -20,5 +20,14 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Browser panes show dev servers (plain http on localhost) and ordinary
+	     web pages. This loosens the web view only, not the app's own requests. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+	</dict>
 </dict>
 </plist>

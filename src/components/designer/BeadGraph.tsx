@@ -1,463 +1,181 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Issue } from '../../types/issue'
 import { BdLiveProvider } from '../../lib/BdLiveProvider'
 import { useBdSnapshot } from '../../lib/bdCache'
 import { useProjects } from '../../state/projects'
+import { beadCounts, beadRelations, chain, layoutBeadMap, NODE_WIDTH, type BeadState, type MapNode } from './beadMap'
+import { BeadInspector } from './BeadInspector'
+import { STATE_LABEL, StatePill } from './beadPresentation'
 
-// Bead graph — the Designer UI centerpiece. Nodes are beads; edges are bd
-// dependency links from each Issue's `dependencies` array (a blocker edge
-// `depends_on_id -> issue_id`: the blocker sits one column left of the bead it
-// blocks). Layout is a hand-rolled left-to-right DAG. "Claude walks the graph,
-// not a list" — the next-pickable node (a ready bead with no open blockers,
-// i.e. what bd_ready returns) is highlighted.
+// The bead map. Lanes are epics, arrows are blockers, and a selected bead lights
+// up what it waits for and what it holds up. One click inspects; a double click
+// or Return opens the bead. DesignerShell owns what happens after opening.
 
-const NODE_W = 190
-const NODE_MIN_H = 64
-const COL_GAP = 72
-const ROW_GAP = 24
-const PAD = 32
-// The usable title width is 168px (190px card minus horizontal padding).  This
-// is deliberately conservative: it keeps a wrapped title inside its own node
-// instead of relying on a hover-only third line.
-const TITLE_CHARS_PER_LINE = 23
+const FILTERS: BeadState[] = ['ready', 'in_progress', 'blocked']
 
-type NodeState = 'ready' | 'in_progress' | 'blocked' | 'closed'
+function MapInner({ repoPath, onOpen, onOpenSession }: { repoPath: string; onOpen: (issue: Issue) => void; onOpenSession?: (issue: Issue) => void }) {
+  const snap = useBdSnapshot(repoPath)
+  const [query, setQuery] = useState('')
+  const [showDone, setShowDone] = useState(false)
+  const [states, setStates] = useState<ReadonlySet<BeadState>>(new Set())
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const canvas = useRef<HTMLDivElement>(null)
 
-interface Placed {
-  issue: Issue
-  state: NodeState
-  next: boolean
-  col: number
-  row: number
-  x: number
-  y: number
-  height: number
-}
+  const readyIds = useMemo(() => new Set(snap.ready.map(issue => issue.id)), [snap.ready])
+  const relations = useMemo(() => beadRelations(snap.all), [snap.all])
+  const counts = useMemo(() => beadCounts(snap.all, readyIds), [snap.all, readyIds])
+  const map = useMemo(() => layoutBeadMap(snap.all, readyIds, { query, showDone, states }), [snap.all, readyIds, query, showDone, states])
+  const nodeById = useMemo(() => new Map(map.nodes.map(node => [node.issue.id, node])), [map.nodes])
+  const selected = selectedId ? snap.all.find(issue => issue.id === selectedId) ?? null : null
 
-const STATE_TOKEN: Record<NodeState, string> = {
-  ready: 'var(--du-status-ready)',
-  in_progress: 'var(--du-status-in_progress)',
-  blocked: 'var(--du-status-blocked)',
-  closed: 'var(--du-status-closed)',
-}
+  const focusId = hoveredId ?? selectedId
+  const focus = useMemo(() => {
+    if (!focusId || !relations.has(focusId)) return null
+    return { upstream: chain(focusId, relations, 'blockedBy'), downstream: chain(focusId, relations, 'blocks') }
+  }, [focusId, relations])
 
-const STATE_LABEL: Record<NodeState, string> = {
-  ready: 'Ready',
-  in_progress: 'In progress',
-  blocked: 'Blocked',
-  closed: 'Done',
-}
+  // Picking a bead from the inspector can land it off screen.
+  useEffect(() => {
+    if (!selectedId) return
+    canvas.current?.querySelector(`[data-bs-bead-node="${CSS.escape(selectedId)}"]`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'smooth' })
+  }, [selectedId])
 
-const LEGEND: NodeState[] = ['ready', 'in_progress', 'blocked', 'closed']
+  if (!snap.loaded) return <div className="du-map__hint">Loading beads…</div>
+  if (snap.error) return <div className="du-map__hint">bd error: {snap.error}</div>
+  if (snap.all.length === 0) return <div className="du-map__hint">No beads yet. Capture a request to start the map.</div>
 
-function classify(issue: Issue, readyIds: Set<string>): NodeState {
-  if (issue.status === 'closed') return 'closed'
-  if (issue.status === 'in_progress') return 'in_progress'
-  if (issue.status === 'blocked') return 'blocked'
-  // Open: ready if bd_ready surfaced it, otherwise it has open blockers.
-  return readyIds.has(issue.id) ? 'ready' : 'blocked'
-}
-
-// Assign each issue a DAG column = 1 + max(blocker columns) (roots at 0). Rows
-// are packed per column so nodes stack without overlap. Blockers come from the
-// `dependencies` edges (depends_on_id blocks issue_id); an issue with no
-// in-graph blocker is a root. Cycles are broken by the `seen` guard.
-function blockersOf(issues: Issue[]): Map<string, string[]> {
-  const ids = new Set(issues.map(i => i.id))
-  const map = new Map<string, string[]>()
-  for (const issue of issues) {
-    for (const dep of issue.dependencies ?? []) {
-      // Edge: dep.depends_on_id blocks dep.issue_id. Record the blocker on the
-      // blocked node, keeping only edges where both ends are in the graph.
-      if (dep.issue_id !== issue.id) continue
-      if (!ids.has(dep.depends_on_id)) continue
-      const arr = map.get(dep.issue_id) ?? []
-      arr.push(dep.depends_on_id)
-      map.set(dep.issue_id, arr)
-    }
-  }
-  return map
-}
-
-function titleLineCount(title: string): number {
-  // Account for normal word wrapping while ensuring a long unbroken bead ID or
-  // URL still reserves enough vertical space (the CSS uses overflow-wrap).
-  const words = title.trim().split(/\s+/).filter(Boolean)
-  if (words.length === 0) return 1
-  let lines = 1
-  let lineLength = 0
-  for (const word of words) {
-    const wordLines = Math.ceil(word.length / TITLE_CHARS_PER_LINE)
-    if (wordLines > 1) {
-      if (lineLength > 0) lines++
-      lines += wordLines - 1
-      lineLength = word.length % TITLE_CHARS_PER_LINE || TITLE_CHARS_PER_LINE
-      continue
-    }
-    const nextLength = lineLength === 0 ? word.length : lineLength + 1 + word.length
-    if (nextLength > TITLE_CHARS_PER_LINE) {
-      lines++
-      lineLength = word.length
-    } else {
-      lineLength = nextLength
-    }
-  }
-  return lines
-}
-
-function nodeHeight(title: string): number {
-  // 16px vertical padding + borders + ~13px heading + 4px gap + 16.9px/title
-  // line, rounded up with a small pixel buffer for the actual font metrics.
-  return Math.max(NODE_MIN_H, Math.ceil(36 + titleLineCount(title) * 17))
-}
-
-function layout(issues: Issue[], readyIds: Set<string>): { nodes: Placed[]; width: number; height: number } {
-  const byId = new Map(issues.map(i => [i.id, i]))
-  const blockers = blockersOf(issues)
-  const colCache = new Map<string, number>()
-
-  const colOf = (id: string, seen: Set<string>): number => {
-    const cached = colCache.get(id)
-    if (cached !== undefined) return cached
-    let col = 0
-    for (const blocker of blockers.get(id) ?? []) {
-      if (!byId.has(blocker) || seen.has(blocker)) continue
-      seen.add(blocker)
-      col = Math.max(col, colOf(blocker, seen) + 1)
-      seen.delete(blocker)
-    }
-    colCache.set(id, col)
-    return col
-  }
-
-  const columnHeights = new Map<number, number>()
-  const nodes: Placed[] = issues.map(issue => {
-    const col = colOf(issue.id, new Set([issue.id]))
-    const yOffset = columnHeights.get(col) ?? 0
-    const height = nodeHeight(issue.title)
-    columnHeights.set(col, yOffset + height + ROW_GAP)
-    return {
-      issue,
-      state: classify(issue, readyIds),
-      next: false,
-      col,
-      row: 0,
-      x: PAD + col * (NODE_W + COL_GAP),
-      y: PAD + yOffset,
-      height,
-    }
+  const toggleState = (state: BeadState) => setStates(current => {
+    const next = new Set(current)
+    if (!next.delete(state)) next.add(state)
+    return next
   })
 
-  // Next-pickable: the first ready node (bd_ready order preserved by input).
-  const firstReady = nodes.find(n => n.state === 'ready')
-  if (firstReady) firstReady.next = true
-
-  const maxCol = nodes.reduce((m, n) => Math.max(m, n.col), 0)
-  const graphHeight = Math.max(0, ...Array.from(columnHeights.values()))
-  return {
-    nodes,
-    width: PAD * 2 + (maxCol + 1) * NODE_W + maxCol * COL_GAP,
-    height: PAD * 2 + Math.max(0, graphHeight - ROW_GAP),
+  const edgeClass = (from: string, to: string) => {
+    if (!focus || !focusId) return ''
+    if ((focus.upstream.has(from) || from === focusId) && (focus.upstream.has(to) || to === focusId)) return ' is-upstream'
+    if ((focus.downstream.has(to) || to === focusId) && (focus.downstream.has(from) || from === focusId)) return ' is-downstream'
+    return ' is-dim'
   }
-}
-
-function isToday(iso: string | null): boolean {
-  if (!iso) return false
-  const d = new Date(iso)
-  const now = new Date()
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  )
-}
-
-function GraphInner({ repoPath, onSelect }: { repoPath: string; onSelect: (issue: Issue) => void }) {
-  const snap = useBdSnapshot(repoPath)
-
-  const readyIds = useMemo(() => new Set(snap.ready.map(i => i.id)), [snap.ready])
-  const { nodes, width, height } = useMemo(
-    () => layout(snap.all, readyIds),
-    [snap.all, readyIds],
-  )
-
-  const nodeById = useMemo(() => new Map(nodes.map(n => [n.issue.id, n])), [nodes])
-
-  // Edges: blocker -> blocked, from each issue's dependency list. Both ends
-  // must be placed nodes in the graph.
-  const edges = useMemo(
-    () =>
-      nodes.flatMap(n =>
-        (n.issue.dependencies ?? [])
-          .filter(d => d.issue_id === n.issue.id && nodeById.has(d.depends_on_id))
-          .map(d => ({ from: nodeById.get(d.depends_on_id)!, to: n })),
-      ),
-    [nodes, nodeById],
-  )
-
-  const counts = useMemo(() => {
-    let ready = 0
-    let inProgress = 0
-    let blocked = 0
-    let doneToday = 0
-    for (const n of nodes) {
-      if (n.state === 'ready') ready++
-      else if (n.state === 'in_progress') inProgress++
-      else if (n.state === 'blocked') blocked++
-      else if (n.state === 'closed' && isToday(n.issue.closed_at)) doneToday++
-    }
-    return { ready, inProgress, blocked, doneToday }
-  }, [nodes])
-
-  if (!snap.loaded) return <div style={styles.hint}>Loading graph…</div>
-  if (snap.error) return <div style={styles.hint}>bd error: {snap.error}</div>
-  if (nodes.length === 0) return <div style={styles.hint}>No beads to graph.</div>
-
-  // Selecting work keeps the designer in this surface. DesignerShell owns the
-  // explicit provider launch so the issue id/title/description reach the run.
-  const onActivate = onSelect
 
   return (
-    <div style={styles.wrap}>
-      {/* Count strip */}
-      <div style={styles.strip}>
-        <Stat label="Ready" value={counts.ready} tint="var(--du-status-ready)" />
-        <Stat label="In progress" value={counts.inProgress} tint="var(--du-status-in_progress)" />
-        <Stat label="Blocked" value={counts.blocked} tint="var(--du-status-blocked)" />
-        <Stat label="Done today" value={counts.doneToday} tint="var(--du-status-closed)" />
-      </div>
-
-      {/* Scrollable graph canvas */}
-      <div style={styles.canvas}>
-        <div style={{ position: 'relative', width, height }}>
-          <svg width={width} height={height} style={styles.svg}>
-            {edges.map(({ from, to }, i) => {
-              const x1 = from.x + NODE_W
-              const y1 = from.y + from.height / 2
-              const x2 = to.x
-              const y2 = to.y + to.height / 2
-              const mid = (x1 + x2) / 2
-              return (
-                <path
-                  key={i}
-                  d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
-                  fill="none"
-                  stroke="var(--bs-border)"
-                  strokeWidth={1.5}
-                />
-              )
-            })}
-          </svg>
-          {nodes.map(n => (
-            <Node key={n.issue.id} node={n} onActivate={onActivate} />
-          ))}
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div style={styles.legend}>
-        {LEGEND.map(s => (
-          <span key={s} style={styles.legendItem}>
-            <span style={{ ...styles.legendDot, background: STATE_TOKEN[s] }} />
-            {STATE_LABEL[s]}
-          </span>
+    <div className="du-map">
+      <div className="du-map__toolbar">
+        <input aria-label="Search beads" className="du-input" type="search" placeholder="Search beads" value={query} onChange={event => setQuery(event.target.value)} />
+        {FILTERS.map(state => (
+          <button key={state} className={`du-chip${states.has(state) ? ' is-on' : ''}`} aria-pressed={states.has(state)} onClick={() => toggleState(state)}>
+            <span className={`du-dot du-dot--${state}`} />{STATE_LABEL[state]} <strong>{counts[state]}</strong>
+          </button>
         ))}
-        <span style={styles.legendItem}>
-          <span style={{ ...styles.legendDot, ...styles.nextRing }} />
-          Next pickable
-        </span>
+        <button className={`du-chip${showDone ? ' is-on' : ''}`} aria-pressed={showDone} onClick={() => setShowDone(value => !value)}>
+          <span className="du-dot du-dot--closed" />Done <strong>{counts.closed}</strong>
+        </button>
       </div>
+      <div className={`du-map__body${selected ? ' has-inspector' : ''}`}>
+        <div className="du-map__canvas" ref={canvas} onClick={event => { if (event.target === event.currentTarget) setSelectedId(null) }}>
+          {map.nodes.length === 0
+            ? <div className="du-map__hint">Nothing matches. {showDone ? '' : 'Finished beads are hidden; turn on Done to include them.'}</div>
+            : <div className="du-map__surface" style={{ width: map.width, height: map.height }}>
+                {map.lanes.map(lane => (
+                  <section key={lane.id} className="du-lane" style={{ top: lane.y, height: lane.height, width: map.width - 24 }} aria-label={lane.title}>
+                    <button className="du-lane__head" disabled={!lane.epic} onClick={() => lane.epic && setSelectedId(lane.epic.id)} onDoubleClick={() => lane.epic && onOpen(lane.epic)}>
+                      <span className="du-lane__title">{lane.title}</span>
+                      {lane.epic && <span className="du-lane__id">{lane.epic.id}</span>}
+                      <span className="du-progress" aria-label={`${lane.done} of ${lane.total} done`}><span style={{ width: `${lane.total ? (lane.done / lane.total) * 100 : 0}%` }} /></span>
+                      <span className="du-lane__count">{lane.done}/{lane.total}</span>
+                    </button>
+                  </section>
+                ))}
+                <svg className="du-map__edges" width={map.width} height={map.height} aria-hidden>
+                  <defs>
+                    {['rest', 'upstream', 'downstream'].map(kind => (
+                      <marker key={kind} id={`du-arrow-${kind}`} className={`du-arrow du-arrow--${kind}`} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+                        <path d="M0,0 L8,4 L0,8 z" />
+                      </marker>
+                    ))}
+                  </defs>
+                  {map.edges.map(edge => {
+                    const from = nodeById.get(edge.from)!
+                    const to = nodeById.get(edge.to)!
+                    const x1 = from.x + NODE_WIDTH
+                    const y1 = from.y + from.height / 2
+                    const x2 = to.x - 2
+                    const y2 = to.y + to.height / 2
+                    const bend = Math.max(28, Math.abs(x2 - x1) / 2)
+                    const kind = edgeClass(edge.from, edge.to)
+                    const marker = kind.includes('upstream') ? 'upstream' : kind.includes('downstream') ? 'downstream' : 'rest'
+                    return <path key={`${edge.from}-${edge.to}`} className={`du-edge${kind}`} markerEnd={`url(#du-arrow-${marker})`} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} />
+                  })}
+                </svg>
+                {map.nodes.map(node => (
+                  <BeadCard
+                    key={node.issue.id}
+                    node={node}
+                    selected={node.issue.id === selectedId}
+                    role={!focus || !focusId ? null : node.issue.id === focusId ? 'self' : focus.upstream.has(node.issue.id) ? 'upstream' : focus.downstream.has(node.issue.id) ? 'downstream' : 'other'}
+                    onSelect={() => setSelectedId(node.issue.id)}
+                    onOpen={() => onOpen(node.issue)}
+                    onHover={hover => setHoveredId(hover ? node.issue.id : null)}
+                  />
+                ))}
+              </div>}
+        </div>
+        <BeadInspector repoPath={repoPath} issue={selected} issues={snap.all} relations={relations} readyIds={readyIds} onSelect={setSelectedId} onOpen={onOpen} onOpenSession={onOpenSession} onClose={() => setSelectedId(null)} />
+      </div>
+      <p className="du-map__legend">
+        <span>Lanes are epics.</span>
+        <span><i className="du-key du-key--rest" /> must finish first</span>
+        <span><i className="du-key du-key--upstream" /> what this bead waits for</span>
+        <span><i className="du-key du-key--downstream" /> what it holds up</span>
+        <span>Click to inspect, double-click to open.</span>
+      </p>
     </div>
   )
 }
 
-function Node({ node, onActivate }: { node: Placed; onActivate?: (issue: Issue) => void }) {
+function BeadCard({ node, selected, role, onSelect, onOpen, onHover }: {
+  node: MapNode
+  selected: boolean
+  role: 'self' | 'upstream' | 'downstream' | 'other' | null
+  onSelect: () => void
+  onOpen: () => void
+  onHover: (hover: boolean) => void
+}) {
   const { issue, state, next, x, y, height } = node
-  const [hover, setHover] = useState(false)
-  const clickable = state === 'ready' && onActivate != null
   return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onClick={clickable ? () => onActivate!(issue) : undefined}
+    <button
+      className={`du-bead du-bead--${state}${selected ? ' is-selected' : ''}${role ? ` is-${role}` : ''}`}
       data-bs-bead-node={issue.id}
       data-bs-bead-state={state}
-      style={{
-        ...styles.node,
-        left: x,
-        top: y,
-        height,
-        cursor: clickable ? 'pointer' : 'default',
-        borderColor: next || hover ? 'var(--bs-orange)' : 'var(--bs-border)',
-        boxShadow: next
-          ? '0 0 0 2px color-mix(in srgb, var(--bs-orange) 35%, transparent)'
-          : hover
-            ? '0 4px 14px color-mix(in srgb, var(--bs-orange) 22%, transparent)'
-            : 'var(--bs-shadow-card)',
-        transform: hover ? 'translateY(-2px)' : 'translateY(0)',
-        // DU4 motion polish — lift + accent on hover; keeps the NEXT ring.
-        transition: 'transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease',
-      }}
-      title={clickable ? `${issue.title} — click to spawn an agent` : issue.title}
+      style={{ left: x, top: y, width: NODE_WIDTH, height }}
+      title={`${issue.title}\nDouble-click to open`}
+      onClick={onSelect}
+      onDoubleClick={onOpen}
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+      onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); onOpen() } }}
     >
-      <div style={styles.nodeHead}>
-        <span style={{ ...styles.statusDot, background: STATE_TOKEN[state] }} />
-        <span style={styles.nodeId}>{issue.id}</span>
-        {next && <span style={styles.nextTag}>NEXT</span>}
-      </div>
-      <div style={styles.nodeTitle}>{issue.title}</div>
-    </div>
-  )
-}
-
-function Stat({ label, value, tint }: { label: string; value: number; tint: string }) {
-  return (
-    <div style={styles.stat}>
-      <span style={{ ...styles.statDot, background: tint }} />
-      <span style={styles.statValue}>{value}</span>
-      <span style={styles.statLabel}>{label}</span>
-    </div>
+      <span className="du-bead__head">
+        <span className={`du-dot du-dot--${state}`} />
+        <span className="du-bead__id">{issue.id}</span>
+        {next ? <span className="du-bead__next">NEXT</span> : <StatePill state={state} quiet />}
+      </span>
+      <span className="du-bead__title">{issue.title}</span>
+    </button>
   )
 }
 
 /**
- * Entry point mounted into DesignerShell's graph slot. It supplies its own
- * BdLiveProvider (the designer shell renders outside App's provider) and
- * resolves the active project's repoPath the same way App does.
+ * Mounted into DesignerShell. It supplies its own BdLiveProvider (the designer
+ * shell renders outside App's) and uses the active project as App does.
  */
-export function BeadGraph({ onSelect = () => {} }: { onSelect?: (issue: Issue) => void }) {
+export function BeadGraph({ onSelect = () => {}, onOpenSession }: { onSelect?: (issue: Issue) => void; onOpenSession?: (issue: Issue) => void }) {
   const { projects, activeId } = useProjects()
-  const active = projects.find(p => p.id === activeId) ?? projects[0] ?? null
-
-  if (!active) return <div style={styles.hint}>No project selected.</div>
-
+  const active = projects.find(project => project.id === activeId) ?? projects[0] ?? null
+  if (!active) return <div className="du-map__hint">No project selected.</div>
   return (
     <BdLiveProvider>
-      <GraphInner repoPath={active.path} onSelect={onSelect} />
+      <MapInner repoPath={active.path} onOpen={onSelect} onOpenSession={onOpenSession} />
     </BdLiveProvider>
   )
-}
-
-const styles: Record<string, React.CSSProperties> = {
-  wrap: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: '100%',
-    minHeight: 0,
-  },
-  strip: {
-    display: 'flex',
-    gap: 20,
-    padding: '16px 24px',
-    borderBottom: '1px solid var(--bs-border)',
-    flexShrink: 0,
-  },
-  stat: {
-    display: 'flex',
-    alignItems: 'baseline',
-    gap: 6,
-  },
-  statDot: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    alignSelf: 'center',
-  },
-  statValue: {
-    fontSize: 18,
-    fontWeight: 700,
-    color: 'var(--bs-fg)',
-  },
-  statLabel: {
-    fontSize: 12,
-    color: 'var(--bs-fg-muted)',
-  },
-  canvas: {
-    flex: 1,
-    minHeight: 0,
-    overflow: 'auto',
-    background: 'var(--bs-bg-dark)',
-  },
-  svg: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    pointerEvents: 'none',
-  },
-  node: {
-    position: 'absolute',
-    width: NODE_W,
-    padding: '8px 10px',
-    background: 'var(--bs-bg-float)',
-    border: '1px solid var(--bs-border)',
-    borderRadius: 10,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    overflow: 'hidden',
-  },
-  nodeHead: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    flexShrink: 0,
-  },
-  nodeId: {
-    fontSize: 11,
-    fontWeight: 600,
-    color: 'var(--bs-fg-muted)',
-    fontFamily: 'var(--du-font-mono)',
-  },
-  nextTag: {
-    marginLeft: 'auto',
-    fontSize: 9,
-    fontWeight: 700,
-    letterSpacing: '0.08em',
-    color: 'var(--bs-orange)',
-  },
-  nodeTitle: {
-    fontSize: 13,
-    fontWeight: 500,
-    color: 'var(--bs-fg)',
-    lineHeight: 1.3,
-    overflowWrap: 'anywhere',
-  },
-  legend: {
-    display: 'flex',
-    gap: 18,
-    padding: '10px 24px',
-    borderTop: '1px solid var(--bs-border)',
-    flexShrink: 0,
-    flexWrap: 'wrap',
-  },
-  legendItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    fontSize: 12,
-    color: 'var(--bs-fg-muted)',
-  },
-  legendDot: {
-    width: 10,
-    height: 10,
-    borderRadius: '50%',
-    flexShrink: 0,
-  },
-  nextRing: {
-    background: 'transparent',
-    border: '2px solid var(--bs-orange)',
-  },
-  hint: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100%',
-    color: 'var(--bs-fg-muted)',
-    fontSize: 13,
-  },
 }

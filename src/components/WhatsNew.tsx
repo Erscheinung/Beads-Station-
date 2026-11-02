@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { markVersionSeen, unseenHighlights } from '../state/whatsNew'
 
 /** Shown once, on the first launch after an update. */
@@ -31,6 +32,7 @@ export function WhatsNew() {
         </ul>
       </section>)}
       <div className="bs-modal-actions" style={{ marginTop: 16 }}>
+        <button type="button" className="bs-modal-btn" onClick={() => void openUrl('https://github.com/Erscheinung/Beads-Station/releases')}>Full release notes</button>
         <button autoFocus type="button" className="bs-modal-btn bs-modal-btn--primary" onClick={() => { markVersionSeen(); setReleases([]) }}>Got it <kbd aria-hidden>↵</kbd></button>
       </div>
     </div>

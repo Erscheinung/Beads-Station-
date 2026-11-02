@@ -27,8 +27,8 @@ async function bootReview(page: import('@playwright/test').Page, verified = true
   }, { identity, revision, approval, verified })
   await page.goto('/?ui=designer')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
-  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
-  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().click()
+  await page.getByRole('button', { name: 'Bead map', exact: true }).click()
+  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().dblclick()
   await expect(page.getByTestId('designer-ticket-run')).toBeVisible()
 }
 

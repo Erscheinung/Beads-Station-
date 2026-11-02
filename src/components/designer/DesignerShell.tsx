@@ -2,6 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import '../../theme/designer-light.css'
 import { BeadGraph } from './BeadGraph'
+import { BeadLinks } from './BeadInspector'
+import { RequestBoard } from './RequestBoard'
+import { beadRelations, classifyBead } from './beadMap'
+import { PRIORITY_LABEL, StatePill } from './beadPresentation'
+import { useBdSnapshot } from '../../lib/bdCache'
+import { BdLiveProvider } from '../../lib/BdLiveProvider'
+import { PaneBoundary } from '../PaneBoundary'
 import { GateCockpit } from './GateCockpit'
 import { SensorsPanel } from './SensorsPanel'
 import { ConductorControl } from './ConductorControl'
@@ -14,7 +21,7 @@ import { useProjects } from '../../state/projects'
 import { setSkin } from '../../state/skin'
 import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
-import { bdCreate, bdNote, type Issue } from '../../types/issue'
+import { bdCreate, bdNote, bdShow, type Issue } from '../../types/issue'
 import { cancelNativeRun, reconcileNativeRuns, startNativeRun, useNativeRun, type NativeProvider } from './nativeRuns'
 import { approveArtifact, captureArtifact, requestArtifactChanges, useArtifactReview, type ArtifactRevision } from './artifacts'
 import { openPalette } from '../../state/palette'
@@ -32,7 +39,7 @@ interface ProviderAvailability {
 const NAV_ITEMS: { id: NavItem; label: string }[] = [
   { id: 'requests', label: 'Requests' },
   { id: 'session',  label: 'Session' },
-  { id: 'graph',    label: 'Bead graph' },
+  { id: 'graph',    label: 'Bead map' },
   { id: 'agents',   label: 'Agents' },
   { id: 'timeline', label: 'Timeline' },
 ]
@@ -181,7 +188,9 @@ export function DesignerShell() {
 
         {/* Center — main view */}
         <main style={styles.main}>
-          <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} sessionIssue={sessionIssue} onSessionIssue={setSessionIssue} onOpenSession={openSession} />
+          <PaneBoundary paneId="designer-center">
+            <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} sessionIssue={sessionIssue} onSessionIssue={setSessionIssue} onOpenSession={openSession} />
+          </PaneBoundary>
         </main>
 
         {/* Right — gate cockpit (RV5.0) + sensors (RV5.1) + conductor (Code-9ud) + agents placeholder (DU3) */}
@@ -276,10 +285,10 @@ function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSession
     return (
       <div id="du-bead-graph" style={styles.graphSlot}>
         {selectedIssue
-          ? <TicketRun issue={selectedIssue} onBack={() => onSelectIssue(null)} onOpenSession={onOpenSession} />
+          ? <BdLiveProvider><TicketRun key={selectedIssue.id} issue={selectedIssue} onBack={() => onSelectIssue(null)} onOpenSession={onOpenSession} onSelectIssue={onSelectIssue} /></BdLiveProvider>
           : nav === 'requests'
             ? <RequestBrowser onSelect={onSelectIssue} />
-            : <BeadGraph onSelect={onSelectIssue} />}
+            : <BeadGraph onSelect={onSelectIssue} onOpenSession={onOpenSession} />}
       </div>
     )
   }
@@ -311,7 +320,7 @@ function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
   }
   return <div style={styles.requestBrowser}>
     <div style={styles.requestBrowserHeader}>
-      <div><h2 style={styles.requestTitle}>Requests</h2><p style={styles.requestMeta}>Choose a ready request or capture a new outcome.</p></div>
+      <div><h2 style={styles.requestTitle}>Requests</h2><p style={styles.requestMeta}>Open anything to read it or start work, or capture a new outcome.</p></div>
       <button style={styles.primaryBtn} onClick={() => setCreating(v => !v)}>New request</button>
     </div>
     {creating && <div style={styles.reviewBox}>
@@ -320,13 +329,26 @@ function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
       {error && <span style={{ color: 'var(--bs-red)' }}>{error}</span>}
       <button style={styles.primaryBtn} disabled={!title.trim()} onClick={create}>Create request</button>
     </div>}
-    <div className="du-request-graph" style={{ flex: 1, minHeight: 0 }}><BeadGraph onSelect={onSelect} /></div>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}><RequestBoard onOpen={onSelect} /></div>
   </div>
 }
 
-function TicketRun({ issue, onBack, onOpenSession }: { issue: Issue; onBack: () => void; onOpenSession: (issue: Issue) => void }) {
+function TicketRun({ issue: summary, onBack, onOpenSession, onSelectIssue }: { issue: Issue; onBack: () => void; onOpenSession: (issue: Issue) => void; onSelectIssue: (issue: Issue) => void }) {
   const { projects, activeId } = useProjects()
   const project = projects.find(p => p.id === activeId) ?? projects[0] ?? null
+  const snap = useBdSnapshot(project?.path ?? '')
+  const readyIds = useMemo(() => new Set(snap.ready.map(item => item.id)), [snap.ready])
+  const relations = useMemo(() => beadRelations(snap.all), [snap.all])
+  // The list has the summary; the prompt and the page want the notes and criteria too.
+  const [detail, setDetail] = useState<Issue | null>(null)
+  useEffect(() => {
+    if (!project) return
+    let cancelled = false
+    bdShow(project.path, summary.id).then(value => { if (!cancelled) setDetail(value) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [project?.path, summary.id])
+  const issue = useMemo(() => (detail ? { ...summary, ...detail } : summary), [summary, detail])
+  const beadState = classifyBead(snap.all.find(item => item.id === summary.id) ?? summary, readyIds)
   const [provider, setProvider] = useState<NativeProvider>('claude')
   const [providers, setProviders] = useState<ProviderAvailability[]>([])
   const [feedback, setFeedback] = useState('')
@@ -408,12 +430,19 @@ function TicketRun({ issue, onBack, onOpenSession }: { issue: Issue; onBack: () 
 
   return (
     <section style={styles.requestDetail} data-testid="designer-ticket-run">
-      <button style={styles.skinBtn} onClick={onBack}>← Back to requests</button>
+      <button style={{ ...styles.skinBtn, alignSelf: 'flex-start' }} onClick={onBack}>← Back</button>
       <div>
-        <p style={styles.requestEyebrow}>REQUEST · {issue.id}</p>
+        <div className="du-request-head">
+          <span style={styles.requestEyebrow}>REQUEST · {issue.id}</span>
+          <StatePill state={beadState} />
+          <span style={styles.requestMeta}>{PRIORITY_LABEL[issue.priority] ?? `P${issue.priority}`} priority</span>
+        </div>
         <h2 style={styles.requestTitle}>{issue.title}</h2>
         <p className="du-request-body" style={styles.requestBody}>{issue.description || 'No additional request context was provided.'}</p>
+        {issue.acceptance_criteria && <p className="du-request-body" style={styles.requestBody}><strong>Acceptance</strong>{'\n'}{issue.acceptance_criteria}</p>}
       </div>
+      <BeadLinks issue={summary} issues={snap.all} relations={relations} readyIds={readyIds} onSelect={id => { const next = snap.all.find(item => item.id === id); if (next) onSelectIssue(next) }} />
+      {beadState === 'blocked' && <p style={styles.requestMeta}>This request is waiting on the items above. You can still start it, but they may need to land first.</p>}
       <div style={styles.providerRow}>
         <label htmlFor="designer-provider">Run with</label>
         <select id="designer-provider" disabled={status === 'running' || status === 'starting'} value={status === 'running' || status === 'starting' ? run.provider : provider} onChange={e => setProvider(e.target.value as NativeProvider)} style={styles.providerSelect}>
@@ -682,7 +711,7 @@ const styles: Record<string, React.CSSProperties> = {
   requestDetail: { display: 'flex', flexDirection: 'column', gap: 20, padding: 28, maxWidth: 900, width: '100%', margin: '0 auto', boxSizing: 'border-box' },
   requestBrowser: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
   requestBrowserHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 8px' },
-  requestEyebrow: { margin: '0 0 6px', fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--bs-orange)' },
+  requestEyebrow: { fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--bs-orange)' },
   requestTitle: { margin: 0, fontSize: 24, color: 'var(--bs-fg)' },
   requestBody: { margin: '10px 0 0', whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--bs-fg-muted)' },
   requestMeta: { fontSize: 12, color: 'var(--bs-fg-muted)' },

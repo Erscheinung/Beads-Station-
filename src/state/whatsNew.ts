@@ -7,6 +7,17 @@ import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 export const LAST_SEEN_VERSION_KEY = 'beads-station.last-seen-version'
 
 export const RELEASE_HIGHLIGHTS: Record<string, readonly string[]> = {
+  '0.1.7': [
+    'Far fewer crashes: one bad event no longer takes the whole app and its terminals down. Settings → About lists anything it recovered from.',
+    'A program that floods its terminal now slows down instead of filling memory, and a blank web page reloads itself.',
+    'Designer: Requests is a board, and the Bead map groups beads into epics with real blocker arrows. Click to inspect, double-click to open any bead.',
+    'New shortcuts without Option: Cmd Shift arrows move between panes and take the cursor with them, Cmd 1–9 picks a workspace, Cmd [ and ] step through them, Cmd Shift W closes one. Control Shift 1–9 picks a terminal tab.',
+    'Start Claude chat now opens the real CLI in a terminal pane. Settings → Sessions sets the command, for example claude --dangerously-skip-permissions.',
+    'Dropped files land in the pane under the pointer. Tabs and workspaces can be dragged to reorder.',
+    'Chats and browser panes have a close button, and Join tabs undoes Unsplit.',
+    'Dragging a split no longer sticks to the cursor over a browser pane. Cmd+click a link opens it in the browser pane, and sites that refuse to appear there say so.',
+    'Open workspace can clone a git repository. The 16-terminal limit is gone.',
+  ],
   '0.1.6': [
     'Terminal rows no longer hide under the status bar in the Terminal only view.',
     'Switching terminal tabs or panes puts the cursor in the shell. A plain shell starts again by itself after a restart.',

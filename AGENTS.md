@@ -614,6 +614,10 @@ CLAUDE.md's `~/...` cwd, Obsidian mirror, daily writer, and mandatory push recip
 | Designer | `src/components/designer/DesignerShell.tsx`, `BeadGraph.tsx`, `GateCockpit.tsx`, `SensorsPanel.tsx` | Selected issue discarded when opening agent; no end-to-end request/preview/sync flow |
 | Themes and updates | `src/lib/themeImport.ts`, `src/state/palette.ts`, `src/lib/bdCache.ts`, `BdLiveProvider.tsx` | Theme import and snapshot/listener dedup already exist |
 
+## v0.1.7 handoff (2026-11-02)
+
+Crash guard, PTY flow control, Designer board and bead map, and the 0.1.6 hands-on fixes. Epic `Code-07u`; details in `CLAUDE.md` and `docs/releases/v0.1.7.md`. None of it has been run in the packaged app. Next step: run the hands-on list, then read `~/Library/Logs/ai.beads-station.desktop/crash.log` if the app recovered from anything.
+
 ## Verification and efficient sessions
 
 For model responsibilities and escalation rules, read

@@ -102,9 +102,9 @@ test('directional tiling chords focus adjacent panes and resize their split', as
   expect(paneIds).toHaveLength(2)
   expect(await activePaneId()).toBe(paneIds[1])
 
-  // The default Mod+Alt+ArrowLeft focus command selects the geometric left
+  // The default Mod+Shift+ArrowLeft focus command selects the geometric left
   // pane, even though the active pane started on the right side of the split.
-  await page.keyboard.press('Control+Alt+ArrowLeft')
+  await page.keyboard.press('Meta+Shift+ArrowLeft')
   await expect.poll(activePaneId).toBe(paneIds[0])
 
   const firstHalfBasis = () => page.locator('[data-bs-split-seam]').evaluate(seam => {
@@ -115,13 +115,13 @@ test('directional tiling chords focus adjacent panes and resize their split', as
 
   // Shift adds resize semantics: left moves the seam one 5% step, while the
   // retained pane DOM/PTY identity remains unchanged.
-  await page.keyboard.press('Control+Alt+Shift+ArrowLeft')
+  await page.keyboard.press('Control+Shift+ArrowLeft')
   await expect.poll(firstHalfBasis).toBe('45%')
   expect(await page.locator('[data-terminal-pane]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-terminal-pane')))).toEqual(paneIds)
 
   // The corresponding right chord restores the ratio, proving rebound-style
   // command routing reaches the same split store used by pointer resizing.
-  await page.keyboard.press('Control+Alt+Shift+ArrowRight')
+  await page.keyboard.press('Control+Shift+ArrowRight')
   await expect.poll(firstHalfBasis).toBe('50%')
 })
 

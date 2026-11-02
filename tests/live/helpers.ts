@@ -14,6 +14,8 @@ export async function seedConfirmed(page: Page): Promise<void> {
     const d = new Date()
     const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     for (const id of ids) localStorage.setItem('beads-station.lastConfirmed.' + id, ymd)
+    // These specs drive the chat panel; agents otherwise start in a terminal pane.
+    if (localStorage.getItem('beads-station.session-preferences') === null) localStorage.setItem('beads-station.session-preferences', JSON.stringify({ chatSurface: 'panel' }))
   }, PROJECT_IDS)
 }
 

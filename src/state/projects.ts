@@ -139,6 +139,12 @@ export async function openFolder(path: string): Promise<void> {
   persistSelection()
 }
 
+/** Clone a repository under `parent` and open it as a workspace. */
+export async function cloneRepository(url: string, parent: string): Promise<void> {
+  const project = await invoke<Project>('projects_git_clone', { url, parent })
+  await openFolder(project.path)
+}
+
 /**
  * Open the folders the operating system handed to the app (Finder "Open With",
  * a drop on the Dock icon). Choosing a folder there is an explicit open.

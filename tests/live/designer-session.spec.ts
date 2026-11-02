@@ -38,8 +38,8 @@ test('shows changed files without starting a process, and starts one only on req
 
 test('a ticket can be handed to the session, which still waits for a click', async ({ page }) => {
   await openDesigner(page)
-  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
-  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().click()
+  await page.getByRole('button', { name: 'Bead map', exact: true }).click()
+  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().dblclick()
   await page.getByRole('button', { name: 'Open in a live session', exact: true }).click()
 
   await expect(page.getByTestId('designer-session-ticket')).toBeVisible()
@@ -51,8 +51,8 @@ test('a ticket can be handed to the session, which still waits for a click', asy
 
 test('a session ticket can be captured, approved and closed without leaving the session', async ({ page }) => {
   await openDesigner(page)
-  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
-  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().click()
+  await page.getByRole('button', { name: 'Bead map', exact: true }).click()
+  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().dblclick()
   await page.getByRole('button', { name: 'Open in a live session', exact: true }).click()
   await page.getByRole('button', { name: 'Start Claude Code on it', exact: true }).click()
 
@@ -78,8 +78,8 @@ test('a session ticket can be captured, approved and closed without leaving the 
 
 test('requesting changes starts a new attempt, so the old capture cannot be approved', async ({ page }) => {
   await openDesigner(page)
-  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
-  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().click()
+  await page.getByRole('button', { name: 'Bead map', exact: true }).click()
+  await page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first().dblclick()
   await page.getByRole('button', { name: 'Open in a live session', exact: true }).click()
   await page.getByRole('button', { name: 'Start Claude Code on it', exact: true }).click()
   const review = page.getByTestId('designer-session-review')

@@ -14,6 +14,7 @@ mod claude;
 mod codex;
 mod conductor;
 mod conductors;
+mod crash_guard;
 mod daily;
 mod envloader;
 mod fs;
@@ -74,6 +75,7 @@ fn run_as_pty_host_if_asked() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    crash_guard::install_panic_hook();
     raise_fd_limit();
     run_as_pty_host_if_asked();
 
@@ -97,6 +99,12 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(app_lifecycle::CloseCoordinator::default())
         .manage(app_lifecycle::OpenRequests::default())
+        // Memory pressure or a WebKit bug can kill the page while Rust lives on.
+        // Reload rather than leave a blank window; the panes restore themselves.
+        .on_web_content_process_terminate(|webview| {
+            crash_guard::record("web content process ended; reloading the page");
+            let _ = webview.reload();
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
@@ -207,6 +215,7 @@ pub fn run() {
             projects::projects_open,
             projects::projects_set_roots,
             projects::projects_set_claude_session,
+            pty::pty_ack,
             pty::pty_foreground,
             pty::pty_kill,
             pty::pty_persisted,
@@ -231,6 +240,9 @@ pub fn run() {
             app_lifecycle::app_recover_stale_sessions,
             app_lifecycle::app_take_open_requests,
             browser::browser_open_window,
+            browser::browser_refuses_framing,
+            projects::projects_git_clone,
+            crash_guard::app_last_crash,
             agent_hooks::agent_hooks_status,
             agent_hooks::agent_hooks_set_installed,
             artifacts::artifact_capture,
@@ -245,6 +257,8 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
+
+    crash_guard::guard_event_dispatch();
 
     app.run(|app_handle, event| match event {
         tauri::RunEvent::ExitRequested { api, .. } => {

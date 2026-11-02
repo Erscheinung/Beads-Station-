@@ -952,6 +952,12 @@ export function splitActive(dir: SplitDir): void {
   emit()
 }
 
+/** Open a shell beside the active pane and run an agent CLI in it. Explicit intent only. */
+export function launchInTerminalPane(command: string): void {
+  splitActive('v')
+  startupCommands.set(activeTab(state).activePaneId, command)
+}
+
 /**
  * RV2 — split the active pane and put a fresh AGENT leaf in the new half.
  * Mirrors splitActive exactly but (a) inserts an agent leaf and (b) takes cwd
@@ -1111,6 +1117,21 @@ export function unsplitToTabs(): void {
   const kept = { ...tab, root: selected }
   const others = leaves.filter(l => l !== selected).map(root => ({ id: uid('tab'), root, activePaneId: root.paneId }))
   state = { ...state, tabs: state.tabs.flatMap(t => t.id === tab.id ? [kept, ...others] : [t]) }
+  if (_zoomed) toggleZoom()
+  emit()
+}
+
+/** Put every terminal tab back side by side; the reverse of unsplitToTabs. */
+export function joinTabs(): void {
+  if (state.tabs.length < 2) return
+  const current = activeTab(state)
+  const build = (nodes: Node[]): Node => {
+    if (nodes.length === 1) return nodes[0]
+    const middle = Math.ceil(nodes.length / 2)
+    return { kind: 'split', splitId: uid('split'), dir: 'v', ratio: middle / nodes.length, a: build(nodes.slice(0, middle)), b: build(nodes.slice(middle)) }
+  }
+  const joined: Tab = { ...current, root: build(state.tabs.map(tab => tab.root)) }
+  state = { ...state, tabs: [joined], activeTabId: joined.id }
   if (_zoomed) toggleZoom()
   emit()
 }
@@ -1307,6 +1328,10 @@ export function typeIntoActiveShell(): void {
   const tab = activeTab(state)
   const leaf = findLeaf(tab.root, tab.activePaneId)
   if (leaf && !leaf.agent && !leaf.fileNav && !leaf.browser) setInsert(true)
+}
+
+export function activeTerminalPaneId(): string {
+  return activeTab(state).activePaneId
 }
 
 export function setInsert(b: boolean): void {

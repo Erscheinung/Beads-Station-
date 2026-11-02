@@ -13,7 +13,8 @@ import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPrefe
 import { closeFocusedPane } from './TerminalPanes'
 import { toggleNotificationPanel } from '../state/notificationPanel'
 import { stepTerminalFontSize } from '../state/terminalAppearance'
-import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell } from '../state/termPanes'
+import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell, joinTabs, launchInTerminalPane } from '../state/termPanes'
+import { agentLaunchCommand } from '../state/sessionPreferences'
 import { initializeBeads } from '../lib/beadsInit'
 import { setFocused } from '../state/vim'
 import { dispatchSemanticCommand } from '../state/recipeIntegration'
@@ -172,6 +173,11 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'splitH': dispatchSemanticCommand('terminal.split', { direction: 'right' }, { kind: 'active-terminal' }); break
       case 'splitV': dispatchSemanticCommand('terminal.split', { direction: 'down' }, { kind: 'active-terminal' }); break
       case 'unsplit': setSkin('terminal'); unsplitToTabs(); break
+      case 'joinTabs': setSkin('terminal'); joinTabs(); setFocused('terminal'); typeIntoActiveShell(); break
+      case 'launchClaude': setSkin('terminal'); launchInTerminalPane(agentLaunchCommand('claude')); setFocused('terminal'); typeIntoActiveShell(); break
+      case 'launchCodex': setSkin('terminal'); launchInTerminalPane(agentLaunchCommand('codex')); setFocused('terminal'); typeIntoActiveShell(); break
+      case 'chatPanel': setSkin('terminal'); window.dispatchEvent(new Event('chat:open-panel')); break
+      case 'closeWorkspace': window.dispatchEvent(new CustomEvent('workspace:navigate', { detail: { action: 'close' } })); break
       case 'closePane': setSkin('terminal'); closeFocusedPane(); break
       case 'zoomPane': setSkin('terminal'); toggleZoom(); break
       case 'fullscreen': setSkin('terminal'); window.dispatchEvent(new CustomEvent('terminal:focus-toggle')); break

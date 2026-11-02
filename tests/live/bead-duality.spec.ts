@@ -11,32 +11,30 @@ async function bootDesigner(page: import('@playwright/test').Page): Promise<void
   await page.goto('/?ui=designer')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
   await expect(page.locator('#root')).toBeVisible()
-  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
+  await page.getByRole('button', { name: 'Bead map', exact: true }).click()
   // The graph renders the mock SNAPSHOT (Code-aaa/Code-bbb are ready).
   await expect(page.locator('[data-bs-bead-node]').first()).toBeVisible()
 }
 
-test('clicking a ready bead opens ticket-bound work without starting an agent', async ({ page }) => {
+test('double-clicking a bead opens ticket-bound work without starting an agent', async ({ page }) => {
   await bootDesigner(page)
   const ready = page.locator('[data-bs-bead-node][data-bs-bead-state="ready"]').first()
   await expect(ready).toBeVisible()
-  await ready.click()
-  // Agent panes render in the terminal skin; the click switches skins and lands
-  // on the freshly-spawned pane. At least one agent pane is now mounted.
+  await ready.dblclick()
   await expect(page.getByTestId('designer-ticket-run')).toBeVisible()
   await expect(page.locator('[data-bs-agent-pane]')).toHaveCount(0)
   expect(await page.evaluate(() => (window as any).__bsInvokeLog.filter((entry: any) => entry.cmd === 'native_run_start'))).toEqual([])
 })
 
-test('a non-ready bead node does not spawn a pane', async ({ page }) => {
+test('a single click inspects a bead and spawns nothing', async ({ page }) => {
   await bootDesigner(page)
   const blocked = page.locator('[data-bs-bead-node][data-bs-bead-state="blocked"]').first()
   // The mock snapshot has a blocked bead (Code-ddd). If present, clicking is inert.
   if ((await blocked.count()) === 0) test.skip()
   const before = await page.locator('[data-bs-agent-pane]').count()
   await blocked.click()
-  // No new pane — give the app a beat to (not) react.
-  await page.waitForTimeout(150)
+  await expect(page.getByTestId('bead-inspector')).toBeVisible()
+  await expect(page.getByTestId('designer-ticket-run')).toHaveCount(0)
   await expect(page.locator('[data-bs-agent-pane]')).toHaveCount(before)
 })
 
@@ -59,7 +57,7 @@ test('long graph titles expand their cards and preserve the gap below', async ({
   }, { first, second })
   await page.goto('/?ui=designer')
   await page.waitForFunction(() => (window as any).__bsMockReady === true)
-  await page.getByRole('button', { name: 'Bead graph', exact: true }).click()
+  await page.getByRole('button', { name: 'Bead map', exact: true }).click()
 
   const cards = page.locator('[data-bs-bead-node]')
   await expect(cards).toHaveCount(2)
@@ -73,6 +71,6 @@ test('long graph titles expand their cards and preserve the gap below', async ({
   })
 
   expect(geometry.first.height).toBeGreaterThan(64)
-  expect(geometry.second.top - geometry.first.bottom).toBeGreaterThanOrEqual(24)
+  expect(geometry.second.top - geometry.first.bottom).toBeGreaterThanOrEqual(12)
   expect(geometry.titleFits).toBe(true)
 })

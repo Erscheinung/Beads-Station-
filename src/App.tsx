@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges, splitActive, focusPaneDirection, typeIntoActiveShell } from './state/termPanes'
+import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges, splitActive, focusPaneDirection, typeIntoActiveShell, launchInTerminalPane, activeTerminalPaneId } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -19,15 +19,15 @@ import { useSkin, setSkin } from './state/skin'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
-import { DesignerShell } from './components/designer/DesignerShell'
 import { openPalette } from './state/palette'
 import { openSettings } from './state/settings'
 import { openNotificationPanel } from './state/notificationPanel'
-import { usePaneNotifications } from './state/paneNotifications'
+import { clearPaneNotification, usePaneNotifications } from './state/paneNotifications'
+import { startPointerDrag } from './lib/pointerDrag'
 import { useCommandBindings, shortcutLabel } from './state/commands'
 import { setBeadsView, setUiPreferences, useUiPreferences, type BeadsView } from './state/uiPreferences'
-import { clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
-import { providerAvailability, providerLabel, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from './state/chatProviders'
+import { agentLaunchCommand, clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
+import { getInteractiveChatProvider, providerAvailability, providerLabel, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from './state/chatProviders'
 import { reorderWorkspace, useWorkspaceOrder } from './state/workspaceOrder'
 import { dispatchSemanticCommand, getRecipeRuntimeContext, setRecipeRuntimeContext, useRecipeRecording } from './state/recipeIntegration'
 import { requestDestructiveAction } from './state/destructiveActions'
@@ -54,6 +54,9 @@ function loadTerminalHeight(projectId: string | undefined): number {
   }
   return TERM_H_DEFAULT
 }
+
+// Terminal-only days never pay to parse the Designer.
+const DesignerShell = lazy(() => import('./components/designer/DesignerShell').then(module => ({ default: module.DesignerShell })))
 
 export default function App() {
   useVimNav()
@@ -175,6 +178,7 @@ export default function App() {
           setSkin('terminal')
           setFocused('terminal')
           focusPaneDirection(direction)
+          { const pane = activeTerminalPaneId(); if (pane) clearPaneNotification(pane) }
           return
         }
         case 'view.show': {
@@ -241,6 +245,7 @@ export default function App() {
         const target = orderedProjects[index + (action === 'move-left' ? -1 : 1)]
         if (target) reorderWorkspace(activeId, target.id)
       }
+      if (action === 'close' && activeId) requestCloseWorkspace(activeId)
     }
     window.addEventListener('workspace:navigate', onCommand)
     return () => window.removeEventListener('workspace:navigate', onCommand)
@@ -342,16 +347,10 @@ export default function App() {
     e.preventDefault()
     const startX = e.clientX
     const startW = sidebarWidth
-    const onMove = (ev: MouseEvent) => {
-      const next = Math.min(640, Math.max(180, startW + (ev.clientX - startX)))
-      setSidebarWidth(next)
-    }
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    startPointerDrag({
+      cursor: 'col-resize',
+      onMove: ev => setSidebarWidth(Math.min(640, Math.max(180, startW + (ev.clientX - startX)))),
+    })
   }, [sidebarWidth])
 
   const startTerminalResize = useCallback((e: React.MouseEvent) => {
@@ -363,14 +362,12 @@ export default function App() {
     const contentH = (e.currentTarget as HTMLElement).closest('main')?.clientHeight ?? window.innerHeight
     const SNAP_PX = 24
     let last = startH
-    const onMove = (ev: MouseEvent) => {
+    const onMove = (ev: PointerEvent) => {
       // Dragging up (negative delta) grows the terminal.
       last = Math.min(700, Math.max(80, startH - (ev.clientY - startY)))
       setTerminalHeight(last)
     }
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+    const onEnd = () => {
       // Snap to 25% / 50% of the content area when released within SNAP_PX.
       // Fullscreen stays the Cmd/Ctrl+Shift+Enter path, not a drag target.
       for (const frac of [0.25, 0.5]) {
@@ -381,8 +378,7 @@ export default function App() {
         }
       }
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    startPointerDrag({ cursor: 'row-resize', onMove, onEnd })
   }, [terminalHeight])
 
   // RV2 — <leader>a spawns a new agent pane on the active project. useVimNav
@@ -442,6 +438,39 @@ export default function App() {
     return () => window.clearTimeout(t)
   }, [termSig, active])
 
+  const requestCloseWorkspace = useCallback((id: string) => {
+    const project = projects.find(candidate => candidate.id === id)
+    if (!project) return
+    requestDestructiveAction({
+      kind: 'workspace',
+      title: `Close ${project.name}?`,
+      detail: 'This closes the workspace tab and stops its terminal and provider sessions.',
+      onConfirm: async () => {
+        setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
+        await closeProject(id)
+      },
+    })
+  }, [projects, closeProject])
+
+  const openChatPanel = useCallback(() => {
+    if (!active) return
+    setRequestedChats(prev => {
+      if (prev.has(active.id)) return prev
+      const next = new Map(prev)
+      next.set(active.id, getInteractiveChatProvider())
+      return next
+    })
+  }, [active])
+  useEffect(() => {
+    window.addEventListener('chat:open-panel', openChatPanel)
+    return () => window.removeEventListener('chat:open-panel', openChatPanel)
+  }, [openChatPanel])
+
+  const closeChatPanel = useCallback((projectId: string, provider: InteractiveChatProvider) => {
+    setRequestedChats(prev => { const next = new Map(prev); next.delete(projectId); return next })
+    void invoke(provider === 'codex' ? 'codex_chat_kill' : 'claude_kill', { projectId }).catch(() => {})
+  }, [])
+
   // Memoized so their identity is stable across renders. Declared BEFORE the
   // early returns below (Rules of Hooks — a useCallback after a conditional
   // return throws "Rendered more hooks than during the previous render"). They
@@ -492,7 +521,7 @@ export default function App() {
   }
 
   if (skin === 'designer') {
-    return <BdLiveProvider><DesignerShell /><CommandPalette repoPath={active.path} /><IssueDetail repoPath={active.path} /><DestructiveActionGuard />{pickerOpen && <WorkspacePicker onClose={closePicker} />}</BdLiveProvider>
+    return <BdLiveProvider><Suspense fallback={null}><DesignerShell /></Suspense><CommandPalette repoPath={active.path} /><IssueDetail repoPath={active.path} /><DestructiveActionGuard />{pickerOpen && <WorkspacePicker onClose={closePicker} />}</BdLiveProvider>
   }
 
   const activeTerminalHeight = terminalCollapsed ? 24 : terminalHeight
@@ -557,12 +586,12 @@ export default function App() {
           <button
             disabled={chatRequested || chatProviderUnavailable}
             title={chatProviderUnavailable ? `${providerLabel(interactiveChatProvider)} is unavailable` : undefined}
-            onClick={() => setRequestedChats(prev => {
-              if (prev.has(active.id)) return prev
-              const next = new Map(prev)
-              next.set(active.id, interactiveChatProvider)
-              return next
-            })}
+            onClick={() => {
+              if (sessionPrefs.chatSurface === 'panel') { openChatPanel(); return }
+              launchInTerminalPane(agentLaunchCommand(interactiveChatProvider))
+              setFocused('terminal')
+              typeIntoActiveShell()
+            }}
           >{chatRequested ? `${providerLabel(activeChatProvider)} chat running` : `Start ${providerLabel(interactiveChatProvider)} chat`}</button>
           {waitingPanes > 0 && <button className="bs-toolbar__waiting" onClick={openNotificationPanel} title="Show waiting panes">Waiting {waitingPanes} <kbd>{shortcutLabel(commandBindings.notificationPanel)}</kbd></button>}
           <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
@@ -573,19 +602,7 @@ export default function App() {
           )}
         </header>
         <div className="bs-app-chrome">
-          <TabBar projects={orderedProjects} activeId={activeId} onSelect={selectWorkspace} onReorder={reorderWorkspace} onOpen={() => setPickerOpen(true)} onClose={id => {
-            const project = projects.find(candidate => candidate.id === id)
-            if (!project) return
-            requestDestructiveAction({
-              kind: 'workspace',
-              title: `Close ${project.name}?`,
-              detail: 'This closes the workspace tab and stops its terminal and provider sessions.',
-              onConfirm: async () => {
-                setRequestedChats(prev => { const next = new Map(prev); next.delete(id); return next })
-                await closeProject(id)
-              },
-            })
-          }} />
+          <TabBar projects={orderedProjects} activeId={activeId} onSelect={selectWorkspace} onReorder={reorderWorkspace} onOpen={() => setPickerOpen(true)} onClose={requestCloseWorkspace} />
         </div>
         <div className="bs-terminal-content" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', position: 'relative' }}>
           {/* Board stays MOUNTED under the fullscreen terminal (no remount /
@@ -668,14 +685,22 @@ export default function App() {
             awaiting confirmation
           </div>
         ) : (
-          <ClaudeChat
-            key={active.id}
-            projectId={active.id}
-            cwd={active.path}
-            sessionId={active.claudeSessionId}
-            permissionMode={permissionApi.mode}
-            provider={activeChatProvider}
-          />
+          <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+            <button
+              className="bs-chat-panel-close"
+              aria-label={`Close ${providerLabel(activeChatProvider)} chat`}
+              title="Stop this chat and close the panel"
+              onClick={() => closeChatPanel(active.id, activeChatProvider)}
+            ><span className="codicon codicon-close" aria-hidden /></button>
+            <ClaudeChat
+              key={active.id}
+              projectId={active.id}
+              cwd={active.path}
+              sessionId={active.claudeSessionId}
+              permissionMode={permissionApi.mode}
+              provider={activeChatProvider}
+            />
+          </div>
         ))}
       </section>
       <div className="bs-app-statusline" style={{ gridColumn: '1 / span 2', gridRow: 3 }}>

@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { closeSettings, useSettingsOpen } from '../state/settings'
@@ -35,7 +37,9 @@ function updateSummary(update: UpdateState): string {
   }
 }
 
-const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close nerd icons editing shortcuts command arrow option click shift enter', Notifications: 'pane notification ring bell done finished waiting attention auto switch dock badge quiet', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents confirm confirmation destructive close', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station update download check' }
+const RELEASE_NOTES_URL = 'https://github.com/Erscheinung/Beads-Station/releases'
+
+const sectionKeywords: Record<string, string> = { General: 'workspace developer explorer board', Appearance: 'theme colors designer developer interface scale density compact comfortable reset font size line height', Terminal: 'font size line height cursor blink scrollback history split unsplit zoom close nerd icons editing shortcuts command arrow option click shift enter', Notifications: 'pane notification ring bell done finished waiting attention auto switch dock badge quiet', 'Keyboard shortcuts': 'commands bindings keys reset terminal pane focus switch resize fullscreen arrow tiling', Sessions: 'claude codex provider chat resume agents confirm confirmation destructive close launch command flags yolo skip permissions', Recipes: 'recording replay interaction recipe steps binding import export undo', About: 'version release build beads station update download check' }
 const sections = ['General', 'Appearance', 'Terminal', 'Notifications', 'Keyboard shortcuts', 'Sessions', 'Recipes', 'About'] as const
 const TERMINAL_PANE_COMMAND_IDS = new Set([
   'fullscreen',
@@ -58,6 +62,11 @@ export function SettingsPanel() {
   const [search, setSearch] = useState('')
   const [recording, setRecording] = useState<string | null>(null)
   const [systemDenied, setSystemDenied] = useState(false)
+  const [crashLog, setCrashLog] = useState<string | null>(null)
+  useEffect(() => {
+    if (!open) return
+    invoke<string | null>('app_last_crash').then(value => setCrashLog(typeof value === 'string' ? value : null)).catch(() => {})
+  }, [open])
   const agentHooks = useAgentHooks()
   const [error, setError] = useState('')
   const bindings = useCommandBindings()
@@ -274,6 +283,9 @@ export function SettingsPanel() {
           <p className="bs-settings__intro">Agents start when you ask them to. Interactive chat uses the selected local adapter.</p>
           <label className="bs-settings__row"><span>Restore saved context on launch<small>Restores workspaces, layout, selected panes and bounded screen context. It never attaches a live process or starts a provider turn.</small></span><input aria-label="Restore saved context on launch" type="checkbox" checked={session.restoreContextOnLaunch} onChange={e => setSessionPreferences({ restoreContextOnLaunch: e.target.checked })} /></label>
           <label className="bs-settings__row"><span>Keep terminals running when Beads Station quits (experimental)<small>Shells started after you turn this on live in a small background process instead of the app. Quitting, a crash or an update leaves them running, with Claude Code, Codex or a dev server still inside, and the next launch reattaches each pane with its history. They do not survive logging out or restarting the Mac; then a pane falls back to its saved screen and the resume offer. Closing a pane or workspace still stops its shell.</small></span><input aria-label="Keep terminals running when Beads Station quits" type="checkbox" checked={session.keepTerminalsRunning} onChange={e => setSessionPreferences({ keepTerminalsRunning: e.target.checked })} /></label>
+          <label className="bs-settings__row"><span>Start agents in<small>A terminal pane runs the real CLI beside your other panes. The chat panel is the older view at the bottom of the window.</small></span><select aria-label="Start agents in" value={session.chatSurface} onChange={e => setSessionPreferences({ chatSurface: e.target.value === 'panel' ? 'panel' : 'terminal' })}><option value="terminal">Terminal pane</option><option value="panel">Chat panel</option></select></label>
+          <label className="bs-settings__row"><span>Claude Code command<small>Typed into the new pane exactly as written, for example <code>claude --dangerously-skip-permissions</code>.</small></span><input aria-label="Claude Code command" spellCheck={false} value={session.claudeCommand} onChange={e => setSessionPreferences({ claudeCommand: e.target.value })} /></label>
+          <label className="bs-settings__row"><span>Codex command<small>For example <code>codex --yolo</code>.</small></span><input aria-label="Codex command" spellCheck={false} value={session.codexCommand} onChange={e => setSessionPreferences({ codexCommand: e.target.value })} /></label>
           <label className="bs-settings__row"><span>Interactive chat provider<small>Choose a supported provider for the developer chat pane. Availability checks only whether its CLI is installed; login stays owned by that CLI.</small></span><select aria-label="Interactive chat provider" value={interactiveProvider} onChange={e => setInteractiveChatProvider(e.target.value as InteractiveChatProvider)}>
             {(['claude', 'codex'] as const).map(name => {
               const status = providerAvailability(providerStatuses, name)
@@ -300,6 +312,7 @@ export function SettingsPanel() {
           {update.status === 'ready' && <p className="bs-settings__note">The new version was downloaded, matched its published SHA-256 and signature check, and is waiting next to the installed app. Restart to update asks before closing your terminals and agents, then replaces the app and opens it again. Settings and shortcuts are kept. Nothing changes until you restart.</p>}
           {update.status === 'downloaded' && <p className="bs-settings__note">Saved to {update.path}{update.checksumVerified ? ' (SHA-256 verified)' : ' (no published checksum to verify)'}. Quit Beads Station after saving your work, then drag the new app into Applications. Settings and shortcuts are kept.</p>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={() => void openUrl(RELEASE_NOTES_URL)}>Release notes</button>
             <button disabled={update.status === 'checking' || update.status === 'downloading' || update.status === 'preparing' || update.status === 'ready'} onClick={() => void checkForUpdates()}>Check for updates</button>
             {(update.status === 'available' || (update.status === 'error' && update.info?.newer)) && update.info?.asset && <>
               <button onClick={() => void prepareUpdate()}>Install {update.info.latest}</button>
@@ -308,6 +321,7 @@ export function SettingsPanel() {
             {update.status === 'ready' && <button onClick={() => void restartToUpdate()}>Restart to update</button>}
           </div>
           <label className="bs-settings__row"><span>Check for updates when the app starts<small>Reads this project’s GitHub releases once per launch. While the repository is private this uses your own <code>gh</code> CLI login. Nothing is installed automatically.</small></span><input aria-label="Check for updates when the app starts" type="checkbox" checked={checkOnLaunch} onChange={e => setCheckForUpdatesOnLaunch(e.target.checked)} /></label>
+          {crashLog && <details className="bs-settings__note"><summary>Recent problems the app recovered from</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', userSelect: 'text', WebkitUserSelect: 'text' }}>{crashLog}</pre></details>}
           <p className="bs-settings__note">This version is read from the application package metadata used to build the frontend.</p>
         </>}
       </main>

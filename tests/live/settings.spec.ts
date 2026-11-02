@@ -45,7 +45,7 @@ test('terminal pane controls are grouped and can be rebound to easier shortcuts'
   const focusLeft = group.getByRole('button', { name: 'Shortcut for Focus terminal pane left', exact: true })
   await expect(focusLeft).toContainText('Change')
   await focusLeft.click()
-  await page.keyboard.press('Meta+1')
+  await page.keyboard.press('Meta+Shift+1')
   await expect(focusLeft).toContainText('1')
 
   await page.getByRole('button', { name: 'Close settings' }).click()

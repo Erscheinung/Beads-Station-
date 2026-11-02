@@ -204,14 +204,14 @@ describe('useVimNav — Phase 9 palette open', () => {
     window.addEventListener('bs:command', onCommand)
 
     const focus = new KeyboardEvent('keydown', {
-      key: 'ArrowLeft', metaKey: true, altKey: true, bubbles: true, cancelable: true,
+      key: 'ArrowLeft', metaKey: true, shiftKey: true, bubbles: true, cancelable: true,
     })
     document.body.dispatchEvent(focus)
     expect(focus.defaultPrevented).toBe(true)
     expect(received).toEqual(['focusLeft'])
 
     const composing = new KeyboardEvent('keydown', {
-      key: 'ArrowLeft', metaKey: true, altKey: true, isComposing: true, bubbles: true, cancelable: true,
+      key: 'ArrowLeft', metaKey: true, shiftKey: true, isComposing: true, bubbles: true, cancelable: true,
     })
     document.body.dispatchEvent(composing)
     expect(composing.defaultPrevented).toBe(false)

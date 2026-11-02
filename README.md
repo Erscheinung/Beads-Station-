@@ -2,15 +2,31 @@
 
 A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
-> **Early preview — v0.1.5.** The Developer workspace is usable for local evaluation. Designer supports local artifact revision review, but the complete provider-to-approval workflow remains unverified.
+> **Early preview — v0.1.7.** The Developer workspace is usable for local evaluation. Designer supports local artifact revision review, but the complete provider-to-approval workflow remains unverified in the packaged app.
 
 ## Preview
 
-### v0.1.4 packaged About
+Screens below are from the v0.1.7 frontend running in the browser test harness with a sample project.
 
-![Beads Station v0.1.4 About](docs/images/releases/v0.1.4/about.png)
+### Designer — requests
 
-The following workspace screenshots are retained from v0.1.0.
+![Designer requests board](docs/images/releases/v0.1.7/designer-requests.png)
+
+### Designer — bead map
+
+Each epic is a lane, arrows mean "must finish first", and selecting a bead lights up what it waits for and what it holds up.
+
+![Designer bead map with a bead selected](docs/images/releases/v0.1.7/designer-bead-map.png)
+
+### Terminal workspace
+
+![Split terminals](docs/images/releases/v0.1.7/terminal-splits.png)
+
+### About
+
+![Beads Station v0.1.7 About](docs/images/releases/v0.1.7/about.png)
+
+The following screenshots are retained from v0.1.0.
 
 ### Developer workspace — Fahrenheit theme
 
@@ -18,17 +34,21 @@ The following workspace screenshots are retained from v0.1.0.
 
 ![Workspace picker over the Fahrenheit theme](docs/images/releases/v0.1.0/workspace-picker-fahrenheit.png)
 
-### Designer workspace — prototype
+## Install the v0.1.7 preview
 
-![Designer workspace prototype](docs/images/releases/v0.1.0/designer-prototype.png)
+The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.7_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
 
-The Designer screenshot demonstrates the intended information architecture and visual direction, including graph cards that expand for wrapped titles while preserving spacing and connector alignment. Its controls and workflow should not be treated as production-ready behavior.
+Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.7 release notes](docs/releases/v0.1.7.md) for the verified feature list, known limitations, test checklist, and future plans.
 
-## Install the v0.1.5 preview
+## v0.1.7 changes
 
-The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.5_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+- **Crash resistance:** one failing event no longer aborts the app. Terminal output has back-pressure, so a noisy program cannot fill memory, and a killed web view reloads itself.
+- **Designer:** Requests is a board by state. The bead map groups beads into epics with real blocker arrows, highlights what a bead waits for and holds up, and opens any bead on double-click.
+- **Keyboard:** new defaults without Option; pane focus moves the cursor; a shortcut closes a workspace.
+- **Terminals:** agents start in a terminal pane with a configurable command; dropped files land under the pointer; tabs drag to reorder; Join tabs undoes Unsplit.
+- **Browser pane:** a close button, Cmd+click from the terminal, and a clear message for sites that refuse to be framed.
 
-Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.5 release notes](docs/releases/v0.1.5.md) for the verified feature list, known limitations, test checklist, and future plans.
+None of this has been exercised in the packaged app yet; the [release notes](docs/releases/v0.1.7.md) carry the hands-on checklist.
 
 ## v0.1.5 changes
 

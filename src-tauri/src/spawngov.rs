@@ -30,7 +30,7 @@ static POOLS: Lazy<Pools> = Lazy::new(|| {
     Pools::new(
         limit("BS_MAX_SPAWNS", 3, 16),
         limit("BS_MAX_AGENTS", 4, 32),
-        limit("BS_MAX_TERMINALS", 16, 64),
+        limit("BS_MAX_TERMINALS", 128, 512),
     )
 });
 

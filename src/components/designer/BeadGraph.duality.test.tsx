@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 // A ready request must retain its issue identity when activated; non-ready
@@ -33,6 +33,8 @@ vi.mock('../../lib/BdLiveProvider', () => ({
 
 // Snapshot: both beads present; only Code-ready is in `ready` (Code-blocked has
 // an open blocker so it classifies as blocked).
+vi.mock('../../types/issue', () => ({ bdShow: () => new Promise(() => {}) }))
+
 vi.mock('../../lib/bdCache', () => ({
   useBdSnapshot: () => ({
     ready: [READY],
@@ -50,31 +52,29 @@ if (!globalThis.crypto?.randomUUID) {
 
 import { BeadGraph } from './BeadGraph'
 
-describe('BeadGraph request selection', () => {
-
-  it('clicking a READY node passes the concrete issue to the designer flow', () => {
+describe('Bead map activation', () => {
+  it('double-click opens any bead with its identity, whatever its state', () => {
     const onSelect = vi.fn()
     render(<BeadGraph onSelect={onSelect} />)
-    const node = document.querySelector('[data-bs-bead-node="Code-ready"]') as HTMLElement
-    expect(node).toBeTruthy()
-    expect(node.getAttribute('data-bs-bead-state')).toBe('ready')
-    node.click()
-    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'Code-ready', title: 'Ready bead' }))
+    for (const id of ['Code-ready', 'Code-blocked']) {
+      fireEvent.doubleClick(document.querySelector(`[data-bs-bead-node="${id}"]`) as HTMLElement)
+      expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({ id }))
+    }
   })
 
-  it('clicking a BLOCKED node is inert (no spawn)', () => {
+  it('a single click inspects without opening', () => {
     const onSelect = vi.fn()
     render(<BeadGraph onSelect={onSelect} />)
-    const node = document.querySelector('[data-bs-bead-node="Code-blocked"]') as HTMLElement
-    expect(node).toBeTruthy()
-    expect(node.getAttribute('data-bs-bead-state')).toBe('blocked')
-    node.click()
+    fireEvent.click(document.querySelector('[data-bs-bead-node="Code-blocked"]') as HTMLElement)
     expect(onSelect).not.toHaveBeenCalled()
+    expect(screen.getByTestId('bead-inspector').textContent).toContain('Blocked bead')
+    expect(screen.getByTestId('bead-inspector').textContent).toContain('Waiting for')
   })
 
   it('renders the state locator attr on every node', () => {
     render(<BeadGraph />)
-    expect(screen.getByText('Ready bead')).toBeTruthy()
     expect(document.querySelectorAll('[data-bs-bead-node]').length).toBe(2)
+    expect(document.querySelector('[data-bs-bead-node="Code-ready"]')!.getAttribute('data-bs-bead-state')).toBe('ready')
+    expect(document.querySelector('[data-bs-bead-node="Code-blocked"]')!.getAttribute('data-bs-bead-state')).toBe('blocked')
   })
 })

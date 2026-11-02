@@ -15,6 +15,7 @@ struct PtyHandle {
     child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
     pid: Option<u32>,
     size: Mutex<(u16, u16)>,
+    flow: Arc<OutputFlow>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 static PTYS: Lazy<Mutex<HashMap<u32, Arc<PtyHandle>>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -27,6 +28,54 @@ struct PtyDataPayload {
     /// History replayed on attach to a kept terminal: not new output.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     replay: bool,
+    /// Bytes to acknowledge with `pty_ack` once parsed. Zero when no ack is wanted.
+    #[serde(skip_serializing_if = "is_zero")]
+    ack: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
+}
+
+/// Output a pane may have on its way to the web view before its reader pauses.
+const FLOW_HIGH_WATER: usize = 2 * 1024 * 1024;
+const FLOW_LOW_WATER: usize = 512 * 1024;
+/// A pane whose view stopped acknowledging slows down; it never hangs.
+const FLOW_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Back-pressure from xterm to the program writing to it.
+///
+/// Without this a program that floods stdout (an engine log, `yes`, a build)
+/// queues events in the web view faster than xterm can parse them, and that
+/// memory is unbounded. Pausing the reader fills the kernel's PTY buffer, which
+/// blocks the writer, exactly as a slow real terminal does. No byte is dropped.
+#[derive(Default)]
+struct OutputFlow {
+    in_flight: Mutex<usize>,
+    drained: std::sync::Condvar,
+}
+
+impl OutputFlow {
+    fn sent(&self, bytes: usize) {
+        *self.in_flight.lock().unwrap_or_else(|e| e.into_inner()) += bytes;
+    }
+    fn acknowledged(&self, bytes: usize) {
+        let mut in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        *in_flight = in_flight.saturating_sub(bytes);
+        if *in_flight <= FLOW_LOW_WATER {
+            self.drained.notify_all();
+        }
+    }
+    /// Called by the reader between reads.
+    fn wait_for_room(&self, max_wait: std::time::Duration) {
+        let in_flight = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if *in_flight < FLOW_HIGH_WATER {
+            return;
+        }
+        let _ = self
+            .drained
+            .wait_timeout_while(in_flight, max_wait, |in_flight| *in_flight > FLOW_LOW_WATER);
+    }
 }
 
 /// A terminal owned by the terminal host (pty_host.rs) rather than this process.
@@ -169,12 +218,12 @@ fn spawn_hosted(
         use crate::pty_host::HostEvent;
         let ended = match event {
             HostEvent::Data { data, replay } => {
-                let _ = window.emit(&data_channel, PtyDataPayload { id, data, replay });
+                let _ = window.emit(&data_channel, PtyDataPayload { id, data, replay, ack: 0 });
                 false
             }
             HostEvent::Taken => {
                 let data = "\r\n[this terminal was opened in another Beads Station window]\r\n".to_string();
-                let _ = window.emit(&data_channel, PtyDataPayload { id, data, replay: false });
+                let _ = window.emit(&data_channel, PtyDataPayload { id, data, replay: false, ack: 0 });
                 true
             }
             HostEvent::Exit => true,
@@ -263,6 +312,8 @@ pub async fn pty_spawn(
         let pid = child.process_id();
         drop(pair.slave);
         let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        let flow = Arc::new(OutputFlow::default());
+        let reader_flow = flow.clone();
         let mut map = PTYS.lock().unwrap_or_else(|e| e.into_inner());
         map.insert(
             id,
@@ -272,23 +323,26 @@ pub async fn pty_spawn(
                 child: Mutex::new(child),
                 pid,
                 size: Mutex::new((cols.max(1), rows.max(1))),
+                flow,
                 _permit: permit,
             }),
         );
         drop(map);
         std::thread::spawn(move || {
             let mut decoder = Utf8Stream::default();
-            let mut buf = [0u8; 16384];
+            let channel = format!("pty_data:{event_key}");
+            // Larger reads mean fewer events into the web view during a flood.
+            let mut buf = vec![0u8; 64 * 1024];
             loop {
+                reader_flow.wait_for_room(FLOW_MAX_WAIT);
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let data = decoder.push(&buf[..n]);
                         if !data.is_empty() {
-                            let _ = window.emit(
-                                &format!("pty_data:{event_key}"),
-                                PtyDataPayload { id, data, replay: false },
-                            );
+                            let ack = data.len();
+                            reader_flow.sent(ack);
+                            let _ = window.emit(&channel, PtyDataPayload { id, data, replay: false, ack });
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -297,10 +351,7 @@ pub async fn pty_spawn(
             }
             let data = decoder.finish();
             if !data.is_empty() {
-                let _ = window.emit(
-                    &format!("pty_data:{event_key}"),
-                    PtyDataPayload { id, data, replay: false },
-                );
+                let _ = window.emit(&channel, PtyDataPayload { id, data, replay: false, ack: 0 });
             }
             let _ = window.emit(&format!("pty_exit:{event_key}"), PtyExitPayload { id });
             let handle = PTYS.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
@@ -336,6 +387,14 @@ pub async fn pty_write(id: u32, data: String) -> Result<(), String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// xterm has parsed this much of a pane's output.
+#[tauri::command]
+pub fn pty_ack(id: u32, bytes: usize) {
+    if let Ok(handle) = handle(id) {
+        handle.flow.acknowledged(bytes);
+    }
 }
 
 #[tauri::command]
@@ -611,6 +670,46 @@ fn kill_local_ptys() -> usize {
 pub fn active_pty_count() -> usize {
     let local = PTYS.lock().unwrap_or_else(|e| e.into_inner()).len();
     local + if keeps_terminals_running() { 0 } else { hosted_pty_count() }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn reader_runs_freely_below_the_high_water_mark() {
+        let flow = OutputFlow::default();
+        flow.sent(FLOW_HIGH_WATER - 1);
+        let started = Instant::now();
+        flow.wait_for_room(Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn reader_resumes_when_the_view_catches_up() {
+        let flow = Arc::new(OutputFlow::default());
+        flow.sent(FLOW_HIGH_WATER * 2);
+        let acknowledging = flow.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            acknowledging.acknowledged(FLOW_HIGH_WATER * 2);
+        });
+        let started = Instant::now();
+        flow.wait_for_room(Duration::from_secs(5));
+        let waited = started.elapsed();
+        thread.join().unwrap();
+        assert!(waited >= Duration::from_millis(20) && waited < Duration::from_secs(4), "{waited:?}");
+    }
+
+    #[test]
+    fn a_silent_view_only_slows_the_reader() {
+        let flow = OutputFlow::default();
+        flow.sent(FLOW_HIGH_WATER * 2);
+        let started = Instant::now();
+        flow.wait_for_room(Duration::from_millis(30));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 }
 
 #[cfg(test)]

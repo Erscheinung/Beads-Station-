@@ -7,10 +7,15 @@ export interface SessionPreferences {
   confirmDestructiveActions: boolean
   /** Shells live in a background terminal host and survive quitting the app. */
   keepTerminalsRunning: boolean
+  /** Where a started agent lives: a terminal pane, or the bottom chat panel. */
+  chatSurface: 'terminal' | 'panel'
+  /** What is typed into the pane to start each CLI, flags included. */
+  claudeCommand: string
+  codexCommand: string
 }
 
 const STORAGE_KEY = 'beads-station.session-preferences'
-const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false }
+const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false, chatSurface: 'terminal', claudeCommand: 'claude', codexCommand: 'codex' }
 
 function load(): SessionPreferences {
   try {
@@ -20,6 +25,9 @@ function load(): SessionPreferences {
       restoreContextOnLaunch: parsed.restoreContextOnLaunch !== false,
       confirmDestructiveActions: parsed.confirmDestructiveActions !== false,
       keepTerminalsRunning: parsed.keepTerminalsRunning === true,
+      chatSurface: parsed.chatSurface === 'panel' ? 'panel' : 'terminal',
+      claudeCommand: typeof parsed.claudeCommand === 'string' ? parsed.claudeCommand : DEFAULTS.claudeCommand,
+      codexCommand: typeof parsed.codexCommand === 'string' ? parsed.codexCommand : DEFAULTS.codexCommand,
     }
   } catch {
     return { ...DEFAULTS }
@@ -44,7 +52,7 @@ export function useSessionPreferences(): SessionPreferences {
 
 export function setSessionPreferences(next: Partial<SessionPreferences>): void {
   const updated = { ...state, ...next }
-  if (updated.askBeforeResume === state.askBeforeResume && updated.restoreContextOnLaunch === state.restoreContextOnLaunch && updated.confirmDestructiveActions === state.confirmDestructiveActions && updated.keepTerminalsRunning === state.keepTerminalsRunning) return
+  if ((Object.keys(updated) as (keyof SessionPreferences)[]).every(key => updated[key] === state[key])) return
   state = updated
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* optional */ }
   persistDurableUserConfigKey(STORAGE_KEY)
@@ -54,6 +62,11 @@ export function setSessionPreferences(next: Partial<SessionPreferences>): void {
 /** Synchronous boot-time read used before React mounts the workspace stores. */
 export function shouldRestoreContextOnLaunch(): boolean {
   return state.restoreContextOnLaunch
+}
+
+/** The command line for an agent CLI. An empty setting means the plain CLI. */
+export function agentLaunchCommand(provider: 'claude' | 'codex'): string {
+  return (provider === 'claude' ? state.claudeCommand : state.codexCommand).trim() || provider
 }
 
 /** Synchronous read used when a pane's shell is about to start. */

@@ -1,3 +1,4 @@
+import { startPointerDrag } from '../../lib/pointerDrag'
 import { clampColumn, DEFAULT_DESIGNER_LAYOUT, type DesignerLayout } from './designerLayout'
 
 const KEY_STEP = 16
@@ -28,19 +29,14 @@ export function ColumnResizer({ side, width, label, onResize, onCommit }: Column
     const startX = event.clientX
     const startWidth = width
     let latest = width
-    const onMove = (move: PointerEvent) => {
-      latest = clampColumn(side, startWidth + direction * (move.clientX - startX))
-      onResize(latest)
-    }
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      document.body.style.cursor = ''
-      onCommit(latest)
-    }
-    document.body.style.cursor = 'col-resize'
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
+    startPointerDrag({
+      cursor: 'col-resize',
+      onMove: move => {
+        latest = clampColumn(side, startWidth + direction * (move.clientX - startX))
+        onResize(latest)
+      },
+      onEnd: () => onCommit(latest),
+    })
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {

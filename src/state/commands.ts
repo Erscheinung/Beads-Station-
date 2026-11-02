@@ -22,17 +22,18 @@ export const COMMANDS = [
   { id: 'splitH', label: 'Split terminal horizontally', repo: true },
   { id: 'splitV', label: 'Split terminal vertically', repo: true },
   { id: 'unsplit', label: 'Unsplit terminal to tabs (keep sessions)', repo: true },
+  { id: 'joinTabs', label: 'Join terminal tabs into splits (keep sessions)', repo: true },
   { id: 'closePane', label: 'Close focused terminal pane', repo: true },
   { id: 'zoomPane', label: 'Zoom / restore terminal pane', repo: true },
   { id: 'fullscreen', label: 'Fullscreen terminal focus', binding: 'Mod+Shift+Enter', repo: true },
-  { id: 'focusLeft', label: 'Focus terminal pane left', binding: 'Mod+Alt+ArrowLeft', repo: true },
-  { id: 'focusRight', label: 'Focus terminal pane right', binding: 'Mod+Alt+ArrowRight', repo: true },
-  { id: 'focusUp', label: 'Focus terminal pane up', binding: 'Mod+Alt+ArrowUp', repo: true },
-  { id: 'focusDown', label: 'Focus terminal pane down', binding: 'Mod+Alt+ArrowDown', repo: true },
-  { id: 'resizeLeft', label: 'Resize terminal split left', binding: 'Mod+Alt+Shift+ArrowLeft', repo: true },
-  { id: 'resizeRight', label: 'Resize terminal split right', binding: 'Mod+Alt+Shift+ArrowRight', repo: true },
-  { id: 'resizeUp', label: 'Resize terminal split up', binding: 'Mod+Alt+Shift+ArrowUp', repo: true },
-  { id: 'resizeDown', label: 'Resize terminal split down', binding: 'Mod+Alt+Shift+ArrowDown', repo: true },
+  { id: 'focusLeft', label: 'Focus terminal pane left', binding: 'Mod+Shift+ArrowLeft', repo: true },
+  { id: 'focusRight', label: 'Focus terminal pane right', binding: 'Mod+Shift+ArrowRight', repo: true },
+  { id: 'focusUp', label: 'Focus terminal pane up', binding: 'Mod+Shift+ArrowUp', repo: true },
+  { id: 'focusDown', label: 'Focus terminal pane down', binding: 'Mod+Shift+ArrowDown', repo: true },
+  { id: 'resizeLeft', label: 'Resize terminal split left', binding: 'Ctrl+Shift+ArrowLeft', repo: true },
+  { id: 'resizeRight', label: 'Resize terminal split right', binding: 'Ctrl+Shift+ArrowRight', repo: true },
+  { id: 'resizeUp', label: 'Resize terminal split up', binding: 'Ctrl+Shift+ArrowUp', repo: true },
+  { id: 'resizeDown', label: 'Resize terminal split down', binding: 'Ctrl+Shift+ArrowDown', repo: true },
   { id: 'terminalFontLarger', label: 'Terminal text larger', binding: 'Mod+=' },
   { id: 'terminalFontSmaller', label: 'Terminal text smaller', binding: 'Mod+-' },
   { id: 'terminalFontReset', label: 'Terminal text default size', binding: 'Mod+0' },
@@ -40,14 +41,18 @@ export const COMMANDS = [
   { id: 'notificationPanel', label: 'Show waiting panes', binding: 'Mod+I' },
   { id: 'notificationsClear', label: 'Clear pane notifications' },
   { id: 'checkForUpdates', label: 'Check for updates' },
+  { id: 'launchClaude', label: 'Start Claude Code in a terminal pane', repo: true },
+  { id: 'launchCodex', label: 'Start Codex in a terminal pane', repo: true },
+  { id: 'chatPanel', label: 'Open the chat panel', repo: true },
   { id: 'agent', label: 'New Claude agent pane', repo: true },
   { id: 'files', label: 'Open files explorer', repo: true },
   { id: 'browser', label: 'Open browser pane', binding: 'Mod+Shift+L', repo: true },
   { id: 'expand', label: 'Expand all beads', repo: true },
   { id: 'collapse', label: 'Collapse bead groups', repo: true },
   { id: 'hideExplorer', label: 'Collapse explorer' },
-  { id: 'workspacePrevious', label: 'Previous workspace', binding: 'Mod+Alt+[' },
-  { id: 'workspaceNext', label: 'Next workspace', binding: 'Mod+Alt+]' },
+  { id: 'workspacePrevious', label: 'Previous workspace', binding: 'Mod+[' },
+  { id: 'workspaceNext', label: 'Next workspace', binding: 'Mod+]' },
+  { id: 'closeWorkspace', label: 'Close workspace', binding: 'Mod+Shift+W', repo: true },
   { id: 'workspaceMoveLeft', label: 'Move workspace tab left', repo: true },
   { id: 'workspaceMoveRight', label: 'Move workspace tab right', repo: true },
   { id: 'terminalPrevious', label: 'Previous terminal tab', binding: 'Mod+Shift+[', repo: true },
@@ -57,12 +62,13 @@ export const COMMANDS = [
   ...Array.from({ length: 9 }, (_, index) => ({
     id: `workspaceSelect${index + 1}`,
     label: `Select workspace ${index + 1}`,
-    binding: `Mod+Alt+${index + 1}`,
+    binding: `Mod+${index + 1}`,
   })),
   ...Array.from({ length: 9 }, (_, index) => ({
     id: `terminalSelect${index + 1}`,
     label: `Select terminal tab ${index + 1}`,
-    binding: `Mod+Shift+${index + 1}`,
+    // Command+Shift+3/4/5 are the macOS screenshot keys.
+    binding: `Ctrl+Shift+${index + 1}`,
     repo: true,
   })),
 ] satisfies { id: string; label: string; binding?: string; repo?: boolean }[]
@@ -103,6 +109,15 @@ export const LEADER_SHORTCUTS: Record<'global' | 'terminal', readonly LeaderShor
   ],
 }
 const KEY = 'beads-station.command-bindings.v1'
+// Defaults before 0.1.7. Option changes the character a key reports on macOS
+// and Shift changes it on digits and punctuation, so several of these could
+// never fire. A saved copy of one is not a user choice: it moves to the new default.
+const RETIRED_DEFAULTS = new Set([
+  ...['Left', 'Right', 'Up', 'Down'].flatMap(side => [`Mod+Alt+Arrow${side}`, `Mod+Alt+Shift+Arrow${side}`]),
+  'Mod+Alt+[', 'Mod+Alt+]',
+  ...Array.from({ length: 9 }, (_, index) => `Mod+Alt+${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `Mod+Shift+${index + 1}`),
+])
 const RECIPE_KEY = 'beads-station.recipe-bindings.v1'
 const defaults: Record<string, string> = Object.fromEntries(COMMANDS.map(c => [c.id, ('binding' in c ? c.binding : '') || '']))
 let bindings = { ...defaults }
@@ -113,6 +128,7 @@ try {
   const saved = JSON.parse(localStorage.getItem(KEY) || '{}')
   for (const id of Object.keys(defaults)) {
     if (typeof saved[id] !== 'string') continue
+    if (RETIRED_DEFAULTS.has(saved[id]) && saved[id] !== defaults[id]) continue
     bindings[id] = saved[id]
     unsavedIds.delete(id)
   }
@@ -154,10 +170,26 @@ export function shortcutLabel(binding: string) {
  * friends belong to the system and never reach the app, so Control is the
  * only way to bind Tab there.
  */
+const PUNCTUATION_CODES: Record<string, string> = {
+  BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '=', Comma: ',', Period: '.',
+  Slash: '/', Backslash: '\\', Semicolon: ';', Quote: "'", Backquote: '`',
+}
+/** The key's own name. Shift and Option rewrite `key` (Shift+1 is `!`, Option+[ is a quote mark). */
+function bindingKey(e: KeyboardEvent): string {
+  const code = e.code ?? ''
+  const digit = /^Digit(\d)$/.exec(code)?.[1]
+  if (e.shiftKey || e.altKey) {
+    if (digit) return digit
+    if (PUNCTUATION_CODES[code]) return PUNCTUATION_CODES[code]
+  }
+  const letter = /^Key([A-Z])$/.exec(code)?.[1]
+  if (e.altKey && letter) return letter
+  return e.key.length === 1 ? e.key.toUpperCase() : e.key
+}
 export function eventBinding(e: KeyboardEvent, mac = isMac()): string {
   if (!(e.metaKey || e.ctrlKey) || (e.metaKey && e.ctrlKey) || ['Control', 'Meta', 'Alt', 'Shift'].includes(e.key)) return ''
   const modifier = mac && e.ctrlKey ? 'Ctrl' : 'Mod'
-  return [modifier, ...(e.altKey ? ['Alt'] : []), ...(e.shiftKey ? ['Shift'] : []), e.key.length === 1 ? e.key.toUpperCase() : e.key].join('+')
+  return [modifier, ...(e.altKey ? ['Alt'] : []), ...(e.shiftKey ? ['Shift'] : []), bindingKey(e)].join('+')
 }
 export function bindingError(id: string, binding: string): string | null {
   if (!binding) return null
