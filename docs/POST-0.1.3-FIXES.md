@@ -34,7 +34,7 @@ repair packaging in a future higher patch, without overwriting v0.1.3.
 ## Future updater constraints
 
 The user reports two remotes; `git remote -v` currently exposes only
-`origin` at `https://github.com/Erscheinung/Beads-Station.git`.
+`origin` at `https://github.com/Erscheinung/Beads-Station-.git`.
 Resolve the second endpoint and source/channel selection before implementation.
 Design version discovery, signed update manifests and artifact verification,
 download/install recovery, explicit handling of active terminals/provider runs,

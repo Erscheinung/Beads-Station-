@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-const DEFAULT_REPOSITORY: &str = "Erscheinung/Beads-Station";
+const DEFAULT_REPOSITORY: &str = "Erscheinung/Beads-Station-";
 
 /// `owner/name` on github.com. `BS_UPDATE_REPO` points a checkout that tracks
 /// a different remote at its own releases.

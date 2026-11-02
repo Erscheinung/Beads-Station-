@@ -26,14 +26,6 @@ Each epic is a lane, arrows mean "must finish first", and selecting a bead light
 
 ![Beads Station v0.1.7 About](docs/images/releases/v0.1.7/about.png)
 
-The following screenshots are retained from v0.1.0.
-
-### Developer workspace — Fahrenheit theme
-
-![Developer workspace using the Fahrenheit theme](docs/images/releases/v0.1.0/developer-fahrenheit.png)
-
-![Workspace picker over the Fahrenheit theme](docs/images/releases/v0.1.0/workspace-picker-fahrenheit.png)
-
 ## Install the v0.1.7 preview
 
 The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.7_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
