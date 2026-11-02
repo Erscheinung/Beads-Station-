@@ -22,6 +22,12 @@ Each epic is a lane, arrows mean "must finish first", and selecting a bead light
 
 ![Split terminals](docs/images/releases/v0.1.7/terminal-splits.png)
 
+### Fahrenheit theme
+
+![Developer board and terminal in the Fahrenheit theme](docs/images/releases/v0.1.7/developer-fahrenheit.png)
+
+![Workspace picker in the Fahrenheit theme](docs/images/releases/v0.1.7/workspace-picker-fahrenheit.png)
+
 ### About
 
 ![Beads Station v0.1.7 About](docs/images/releases/v0.1.7/about.png)

@@ -65,3 +65,23 @@ test('capture the terminal workspace and About', async ({ page }) => {
   await page.getByTestId('app-version').waitFor()
   await page.screenshot({ path: `${out}/about.png` })
 })
+
+test('capture the Fahrenheit theme', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.addInitScript(({ all, ready }) => {
+    localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a', 'proj-b'], activeId: 'proj-a' }))
+    localStorage.setItem('beads-station.lastConfirmed.proj-a', new Date().toISOString().slice(0, 10))
+    localStorage.setItem('beads-station.themePaletteId', 'fahrenheit')
+    ;(window as any).__bsMockOverride = { bd_snapshot: { ready, all, no_db: false } }
+  }, { all, ready })
+  await page.goto('/')
+  await page.waitForFunction(() => (window as any).__bsMockReady === true)
+  await page.getByLabel('Beads view').selectOption('board')
+  await expect(page.getByText('Design the plan cards').first()).toBeVisible()
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/developer-fahrenheit.png` })
+  await page.getByRole('button', { name: 'Open workspace', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'Open workspace' })).toBeVisible()
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/workspace-picker-fahrenheit.png` })
+})
