@@ -154,3 +154,7 @@ Old DMG artifacts may predate the native file-limit repair and can produce repea
 ## Agent workflow
 
 Read [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md), and the [implementation plan](docs/ASTRA-DAILY-DRIVER-PLAN.md). `BEADS-CONTEXT.md` records historical work and should not be treated as a current machine setup guide. Track implementation with bd from this repository, using verified writes; do not edit the database or passive JSONL export by hand.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The bundled font is under the SIL Open Font License; see `src/assets/fonts/OFL.txt`.
