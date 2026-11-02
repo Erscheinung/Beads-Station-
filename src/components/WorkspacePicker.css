@@ -50,6 +50,8 @@
 .workspace-picker__settings summary { cursor: pointer; }
 .workspace-picker__settings p { line-height: 1.6; overflow-wrap: anywhere; }
 .workspace-picker__settings form { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.workspace-picker__settings.workspace-picker__clone form { flex-direction: row; align-items: stretch; }
+.workspace-picker__clone input { flex: 1; min-width: 0; padding: 8px 10px; background: var(--bs-bg); color: var(--bs-fg); border: 1px solid var(--bs-border); border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 .workspace-picker__settings textarea { width: 100%; box-sizing: border-box; resize: vertical; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
 .workspace-picker__warning { color: var(--bs-orange); }
 .workspace-picker__footer { margin-top: 30px; font-size: 11px; color: var(--bs-fg-muted); opacity: .65; }

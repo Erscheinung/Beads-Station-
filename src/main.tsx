@@ -38,6 +38,7 @@ async function mount() {
       void projects.openRequestedFolders().catch(() => {});
       void registry.safeListen("app:open-folders", () => { void projects.openRequestedFolders().catch(() => {}) }).catch(() => {});
     }).catch(() => {});
+    void import("./lib/nativeMenu").then(m => m.installNativeMenu()).catch(() => {});
   }
 }
 

@@ -17,8 +17,11 @@ mod conductors;
 mod crash_guard;
 mod daily;
 mod envloader;
+#[cfg(target_os = "macos")]
+mod finder_service;
 mod fs;
 mod herdr_bridge;
+mod menu;
 mod projects;
 mod pty;
 #[cfg(unix)]
@@ -96,29 +99,40 @@ pub fn run() {
     let keys = envloader::install_into_process_env(&map);
     eprintln!("{}", envloader::loaded_summary(&keys));
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Must come first. On Windows and Linux a right-click launches the binary
+    // again; this hands the folder to the running app instead.
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+        let folders = app_lifecycle::folder_paths(argv.iter().skip(1).map(std::path::PathBuf::from));
+        let requests = app.state::<app_lifecycle::OpenRequests>();
+        app_lifecycle::queue_open_requests(app, &requests, folders);
+    }));
+    // Memory pressure or a WebKit bug can kill the page while Rust lives on.
+    // Reload rather than leave a blank window; the panes restore themselves.
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        crash_guard::record("web content process ended; reloading the page");
+        let _ = webview.reload();
+    });
+    let app = builder
         .manage(app_lifecycle::CloseCoordinator::default())
         .manage(app_lifecycle::OpenRequests::default())
-        // Memory pressure or a WebKit bug can kill the page while Rust lives on.
-        // Reload rather than leave a blank window; the panes restore themselves.
-        .on_web_content_process_terminate(|webview| {
-            crash_guard::record("web content process ended; reloading the page");
-            let _ = webview.reload();
-        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {
-                use tauri::menu::{Menu, MenuItem, MenuItemKind};
-                let menu = Menu::default(app.handle())?;
-                if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.first() {
-                    // Shortcut dispatch stays in the shared, rebindable frontend
-                    // registry. A fixed native accelerator would override it.
-                    app_menu.insert(&MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?, 1)?;
-                }
-                app.set_menu(menu)?;
+                app.set_menu(menu::build(app.handle())?)?;
+                finder_service::install(app.handle());
+            }
+            // Windows and Linux hand a folder to a first launch on the command line.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let folders = app_lifecycle::folder_paths(std::env::args_os().skip(1).map(std::path::PathBuf::from));
+                let requests = app.state::<app_lifecycle::OpenRequests>();
+                app_lifecycle::queue_open_requests(app.handle(), &requests, folders);
             }
             telemetry::start(app.handle().clone());
             // RV3.2 debug — open the Web Inspector on launch so bd invoke
@@ -140,10 +154,7 @@ pub fn run() {
             Ok(())
         })
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == "settings" {
-                use tauri::Emitter;
-                let _ = app.emit("settings:open", ());
-            }
+            menu::on_event(app, event.id().as_ref());
         })
         .on_window_event(|window, event| {
             // Only the main window owns sessions; a browser window just closes.

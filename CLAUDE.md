@@ -241,6 +241,10 @@ Crash guard, flow control, Designer rebuild and the 0.1.6 hands-on fixes. Automa
 - **Bead map** (`src/components/designer/beadMap.ts`): parent-child is a lane, `blocks` is an arrow, anything else is listed in the inspector. Never treat all dependencies as blockers.
 - `npx playwright test readme-shots` with `BS_SHOTS=<folder>` regenerates README screenshots from a neutral sample project.
 
+## v0.1.8 (rolling, `Code-3lq`, branch `next/0.1.8`)
+
+Not released; `docs/releases/v0.1.8.md` collects it and version files stay at 0.1.7. `src-tauri/src/menu.rs` holds the native menu, whose items have no accelerators and emit command ids. `finder_service.rs` is the Finder service (`NSServices` in Info.plist). Windows and Linux hooks (`windows/hooks.nsh`, `linux/beads-station.desktop`, single-instance) have never been compiled. A test copy of the app must not rely on `HOME` to isolate data: it still writes to the real app-support folder.
+
 ## Future: Svelte migration (`Code-cuh`)
 
 Migrate the React/TSX frontend to Svelte 5 **incrementally and in readable,

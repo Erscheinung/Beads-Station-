@@ -25,7 +25,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["dmg", "app"],
+    "targets": [
+      "dmg",
+      "app"
+    ],
     "category": "DeveloperTool",
     "icon": [
       "icons/32x32.png",
@@ -36,6 +39,19 @@
     ],
     "macOS": {
       "signingIdentity": "-"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      }
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/beads-station.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "linux/beads-station.desktop"
+      }
     }
   }
 }
