@@ -60,8 +60,8 @@ const WINDOW: Entries = &[
     SEPARATOR,
 ];
 const HELP: Entries = &[
-    ("link:https://github.com/Erscheinung/Beads-Station/releases", "Release Notes"),
-    ("link:https://github.com/Erscheinung/Beads-Station/issues/new", "Report a Bug or Request a Feature"),
+    ("link:https://github.com/Erscheinung/Beads-Station-/releases", "Release Notes"),
+    ("link:https://github.com/Erscheinung/Beads-Station-/issues/new", "Report a Bug or Request a Feature"),
     ("cmd:checkForUpdates", "Check for Updates…"),
 ];
 
