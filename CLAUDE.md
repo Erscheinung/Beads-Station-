@@ -11,6 +11,14 @@ contract), then `docs/roadmap-0.2/MASTER-PLAN.md`. Older plans,
 `BEADS-CONTEXT.md` and historical handoffs describe earlier machines and states;
 current source, reproduced behavior and the current user's scope win.
 
+## Public repository
+
+`https://github.com/Erscheinung/Beads-Station-.git` is public; its local clone is `~/Documents/Beads-Station-`. Nothing reaches it without the user's explicit confirmation for that specific push or release.
+
+- Before asking, scan everything being published: all commits, messages, tags and refs, plus images by eye and release binaries with `strings`. The deny-list is in the gitignored `CLAUDE.local.md`. Never put its terms in a tracked file.
+- Never push `.beads/`, Dolt refs, `release-assets/` or screenshots of real projects. Screenshots come from the sample project (`readme-shots`).
+- Release builds for it use `RUSTFLAGS="--remap-path-prefix=$HOME=~"`, so binaries carry no home path.
+
 ## Identity and privacy (every commit)
 
 - Commit identity is **machine-local**. Before committing, read the gitignored
