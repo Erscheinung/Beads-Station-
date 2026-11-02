@@ -3,6 +3,7 @@ name = "beads-station"
 version = "0.1.7"
 description = "Beads Station — Phase 1 Tauri shell"
 authors = ["beads-station"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
