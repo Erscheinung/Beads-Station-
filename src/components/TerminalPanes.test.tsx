@@ -127,7 +127,8 @@ describe('TerminalPanes tab accessibility', () => {
     expect(screen.getAllByRole('button', { name: 'Start new shell' })).toHaveLength(1)
     const resume = screen.getByRole('button', { name: 'Start shell and resume Codex' })
     // The pane knew its Codex session, so that exact one is reopened.
-    expect(screen.getByText('codex resume 01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e -c tui.notifications=true -c tui.notification_method=osc9')).toBeInTheDocument()
+    expect(resume).toHaveAttribute('title', expect.stringContaining('codex resume 01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e'))
+    expect(screen.getByText(/Reopens this exact conversation/)).toBeInTheDocument()
 
     act(() => fireEvent.click(resume))
 

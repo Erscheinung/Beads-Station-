@@ -1,6 +1,6 @@
 [package]
 name = "beads-station"
-version = "0.1.7"
+version = "0.2.0"
 description = "Beads Station — Phase 1 Tauri shell"
 authors = ["beads-station"]
 license = "MIT"
@@ -50,6 +50,9 @@ tauri-plugin-notification = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # crash_guard.rs: catch NSExceptions before they reach tao's extern "C" sendEvent.

@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { safeInvoke } from '../lib/invokeErrorBoundary'
+import { abbreviatePath } from '../lib/abbreviatePath'
 import { useBdSnapshot } from '../lib/bdCache'
 
 declare global {
@@ -28,15 +29,6 @@ interface BdCounts {
 interface Props {
   repoPath: string
   projectPath: string
-}
-
-function abbreviatePath(p: string): string {
-  // Collapse $HOME → ~. We can't read process.env at runtime in renderer,
-  // but the convention on macOS is /Users/<name>/... — match the leading
-  // /Users/<segment>/ and replace with ~/.
-  const m = p.match(/^\/Users\/[^/]+(\/.*)?$/)
-  if (m) return '~' + (m[1] ?? '')
-  return p
 }
 
 function nowHHMM(): string {

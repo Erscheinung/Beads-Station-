@@ -2,41 +2,80 @@
 
 A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
-> **Early preview — v0.1.7.** The Developer workspace is usable for local evaluation. Designer supports local artifact revision review, but the complete provider-to-approval workflow remains unverified in the packaged app.
+
+> **Early preview — v0.2.0.** The Developer workspace is usable for local evaluation. The new Designer Desk features are covered by automated browser tests only; none has been confirmed by hand in the packaged app yet. The complete provider-to-approval workflow also remains unverified there.
 
 ## Preview
 
-Screens below are from the v0.1.7 frontend running in the browser test harness with a sample project.
+The screenshots below were taken from the v0.2.0 frontend running in the Chromium test harness with mock data and a made-up sample project. They are not screenshots of the packaged app.
 
-### Designer — requests
+### Designer Desk — History
 
-![Designer requests board](docs/images/releases/v0.1.7/designer-requests.png)
+Every Claude Code and Codex session that ran in the folder, read as a formatted conversation with collapsed tool calls. The usage card sits at the bottom of the left column.
 
-### Designer — bead map
+![Designer History with a session open and the usage card](docs/images/releases/v0.2.0/designer-history.png)
+
+### Designer Desk — Shelf
+
+A tray for text, file paths and markdown notes that you can type into a running agent.
+
+![Designer Shelf with a note, a markdown path and a file path](docs/images/releases/v0.2.0/designer-shelf.png)
+
+### Designer — ticket with its sessions
+
+A ticket lists the sessions whose opening prompt names it.
+
+![A ticket page with Sessions on this ticket](docs/images/releases/v0.2.0/designer-ticket-sessions.png)
+
+### Designer — requests and bead map
+
+![Designer requests board](docs/images/releases/v0.2.0/designer-requests.png)
 
 Each epic is a lane, arrows mean "must finish first", and selecting a bead lights up what it waits for and what it holds up.
 
-![Designer bead map with a bead selected](docs/images/releases/v0.1.7/designer-bead-map.png)
+![Designer bead map with a bead selected](docs/images/releases/v0.2.0/designer-bead-map.png)
 
 ### Terminal workspace
 
-![Split terminals](docs/images/releases/v0.1.7/terminal-splits.png)
+![Split terminals](docs/images/releases/v0.2.0/terminal-splits.png)
 
-### Fahrenheit theme
+After Unsplit to tabs, Restore split brings the layout back:
 
-![Developer board and terminal in the Fahrenheit theme](docs/images/releases/v0.1.7/developer-fahrenheit.png)
-
-![Workspace picker in the Fahrenheit theme](docs/images/releases/v0.1.7/workspace-picker-fahrenheit.png)
+![Restore split button after Unsplit](docs/images/releases/v0.2.0/terminal-restore-split.png)
 
 ### About
 
-![Beads Station v0.1.7 About](docs/images/releases/v0.1.7/about.png)
+![Beads Station v0.2.0 About](docs/images/releases/v0.2.0/about.png)
 
-## Install the v0.1.7 preview
+### Developer workspace — Fahrenheit theme
 
-The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.1.7_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+![Developer workspace using the Fahrenheit theme](docs/images/releases/v0.2.0/developer-fahrenheit.png)
 
-Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.1.7 release notes](docs/releases/v0.1.7.md) for the verified feature list, known limitations, test checklist, and future plans.
+![Workspace picker over the Fahrenheit theme](docs/images/releases/v0.2.0/workspace-picker-fahrenheit.png)
+
+The v0.1.0 screenshots of this theme are kept in `docs/images/releases/v0.1.0/`.
+
+## Install the v0.2.0 preview
+
+The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.2.0_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+
+Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.2.0 release notes](docs/releases/v0.2.0.md) for the feature list, known limitations and test checklist.
+
+## Designer Desk (v0.2.0)
+
+The terminal is where you act; the Designer is where you read, gather and decide. The plan is in [`docs/DESIGNER-DESK.md`](docs/DESIGNER-DESK.md).
+
+- **History:** every Claude Code and Codex session that ran in a folder, shown as a readable conversation with search. It reads the CLIs' own session files, so it uses no tokens and still works after a restart. **Resume in Session** is an explicit click that continues exactly the session you were reading.
+- **Shelf:** paste text, a file path or a markdown note path (an Obsidian note works), or pin an agent's answer from History, then type it into the Designer session or the active terminal pane. It never presses Enter.
+- **Usage meter:** Codex 5-hour and weekly windows against an even pace, and Claude output tokens per day for a week. It reads local files only, and the Codex figures are a snapshot, not live.
+- **Session usage:** each session's tokens (new, out, cached) for both Claude Code and Codex, in History and as a small chip on a live agent pane. After a restart a pane that ran Claude or Codex shows that conversation read-only.
+- **Ticket and session links:** a ticket lists the sessions whose opening prompt names it; click one to read it in History.
+- **Restore split:** undoes Unsplit to tabs without restarting any terminal.
+- **Cmd+click links:** a web link opens the browser in a new tab, and a markdown path opens its folder in a file tab. Only http and https links open.
+
+Also in v0.2.0 (from the 0.1.8 work): native menus and a Finder right-click action to open a folder. Windows and Linux hooks are written but have never been built.
+
+Not confirmed by hand in the packaged app: all of the above, plus the native menus and the Finder action. Whether resuming costs tokens before you type was not measured, and there are no cost figures. Shelf items are kept per workspace in the app's browser storage.
 
 ## v0.1.7 changes
 

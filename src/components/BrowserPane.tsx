@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { isLocalUrl, normalizeBrowserUrl, setBrowserUrl } from '../state/termPanes'
+import { normalizeBrowserUrl, setBrowserUrl } from '../state/termPanes'
 
 function hostOf(url: string): string {
   try { return new URL(url).hostname } catch { return 'This site' }
@@ -26,7 +26,7 @@ export function BrowserPane({ paneId, url, active, onClose }: { paneId: string; 
   useEffect(() => { setAddress(url) }, [url])
   useEffect(() => {
     setRefused(false)
-    if (!url || isLocalUrl(url)) return
+    if (!url) return
     let cancelled = false
     invoke<boolean>('browser_refuses_framing', { url })
       .then(value => { if (!cancelled) setRefused(value === true) })

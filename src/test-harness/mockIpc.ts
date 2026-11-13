@@ -64,8 +64,12 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return SNAPSHOT.ready
     case 'bd_list':
       return SNAPSHOT.all
-    case 'bd_show':
-      return SNAPSHOT.all.find(i => i.id === (args?.id as string)) ?? SNAPSHOT.all[0]
+    case 'bd_show': {
+      // A spec that seeds its own snapshot (README screenshots) gets its own tickets back.
+      const seeded = (window.__bsMockOverride?.bd_snapshot as { all?: typeof SNAPSHOT.all } | undefined)?.all
+      const pool = Array.isArray(seeded) ? seeded : SNAPSHOT.all
+      return pool.find(i => i.id === (args?.id as string)) ?? pool[0]
+    }
     case 'bd_git_branch':
       return 'main'
     case 'bd_prime':
@@ -244,6 +248,34 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return []
     case 'pty_foreground':
       return { cli: null, sessionId: null }
+    case 'meter_summary': {
+      const now = Date.now()
+      const day = (back: number, out: number) => ({ day: new Date(now - back * 86_400_000).toISOString().slice(0, 10), input: out / 100, output: out, cacheRead: out * 90, cacheCreate: out / 10 })
+      return {
+        incomplete: false,
+        codex: { plan: 'plus', observedAt: new Date(now).toISOString(),
+          primary: { usedPercent: 85, windowMinutes: 300, resetsAt: Math.floor(now / 1000) + 90 * 60 },
+          secondary: { usedPercent: 20, windowMinutes: 10080, resetsAt: Math.floor(now / 1000) + 4 * 86_400 } },
+        claudeDays: [6, 5, 4, 3, 2, 1, 0].map((back, i) => day(back, [0, 120_000, 60_000, 310_000, 20_000, 90_000, 140_000][i])),
+      }
+    }
+    case 'transcripts_list':
+      return [
+        { id: 'aaaa1111-0000-4000-8000-000000000001', provider: 'claude', title: 'Fix the header spacing', firstPrompt: 'Work on tickets Code-aaa and Code-bbb: Fix the header spacing. Read them with bd show first.', modifiedMs: Date.now() - 3 * 3_600_000, bytes: 1200 },
+        { id: 'bbbb2222-0000-4000-8000-000000000002', provider: 'codex', title: 'Add a dark mode toggle', firstPrompt: 'Add a dark mode toggle', modifiedMs: Date.now() - 2 * 86_400_000, bytes: 900 },
+      ]
+    case 'transcript_read':
+      return {
+        id: String(args?.sessionId), provider: String(args?.provider), truncated: false,
+        usage: args?.provider === 'claude' ? { input: 120, output: 2400, cacheRead: 1_500_000, cacheCreate: 800 } : null,
+        turns: [
+          { role: 'user', at: null, blocks: [{ kind: 'text', text: 'Fix the header spacing' }], files: [], thinking: 0 },
+          { role: 'assistant', at: null, thinking: 2, files: ['src/Header.tsx'], blocks: [
+            { kind: 'text', text: 'I tightened the **header** padding.' },
+            { kind: 'tool', name: 'Edit', summary: 'src/Header.tsx', result: 'updated' },
+          ] },
+        ],
+      }
     case 'artifact_preview':
       return {
         schemaVersion: 1, revisionId: 'preview', capturedAt: 1, workspaceId: 'preview', ticketId: 'preview', runId: 'preview', attemptId: 'preview',

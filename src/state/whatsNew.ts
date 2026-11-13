@@ -7,6 +7,15 @@ import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 export const LAST_SEEN_VERSION_KEY = 'beads-station.last-seen-version'
 
 export const RELEASE_HIGHLIGHTS: Record<string, readonly string[]> = {
+  '0.2.0': [
+    'Designer → History: every Claude Code and Codex session in a folder, read as a formatted conversation. No resume needed, no tokens used, and it works after a restart.',
+    'Resume in Session starts the CLI on exactly the conversation you were reading. A ticket lists the sessions that worked on it.',
+    'Designer → Shelf: pin text, a file or a markdown note (an Obsidian note works) and type it into any running agent. It never presses Enter.',
+    'A quiet usage meter: Codex 5-hour and weekly limits against an even pace, and Claude output tokens for the week. Read from the CLIs’ own files.',
+    'After a restart, a pane that ran Claude or Codex shows that conversation read-only. Session usage appears for both CLIs, in History and on a live agent pane.',
+    'Restore split undoes Unsplit. Cmd+click a link opens the browser in a new tab, and Cmd+click a markdown path opens its folder.',
+    'Native File, View, Window, Help and Agents menus, and a Finder right-click action: Open Folder in Beads Station.',
+  ],
   '0.1.7': [
     'Far fewer crashes: one bad event no longer takes the whole app and its terminals down. Settings → About lists anything it recovered from.',
     'A program that floods its terminal now slows down instead of filling memory, and a blank web page reloads itself.',

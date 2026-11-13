@@ -22,6 +22,7 @@ export const COMMANDS = [
   { id: 'splitH', label: 'Split terminal horizontally', repo: true },
   { id: 'splitV', label: 'Split terminal vertically', repo: true },
   { id: 'unsplit', label: 'Unsplit terminal to tabs (keep sessions)', repo: true },
+  { id: 'restoreSplit', label: 'Restore the split layout before unsplit (keep sessions)', repo: true },
   { id: 'joinTabs', label: 'Join terminal tabs into splits (keep sessions)', repo: true },
   { id: 'closePane', label: 'Close focused terminal pane', repo: true },
   { id: 'zoomPane', label: 'Zoom / restore terminal pane', repo: true },

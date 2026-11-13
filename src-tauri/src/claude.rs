@@ -66,7 +66,7 @@ pub(crate) fn augmented_path() -> String {
     let inherited = std::env::var("PATH").unwrap_or_default();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out: Vec<String> = Vec::new();
-    // HOME-expanded ~/.local/bin first (was a hardcoded /Users/<dev>/.local/bin —
+    // HOME-expanded ~/.local/bin first (was a hardcoded per-user .local/bin —
     // dead on any other machine / packaged .app). nvm node bin dirs next: an
     // nvm-managed claude/node/git-helpers won't be on the GUI app's launchd PATH
     // otherwise (same gap binresolve closes).

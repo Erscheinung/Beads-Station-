@@ -287,7 +287,7 @@ mod tests {
     fn dolt_internals_are_ignored() {
         // The exact paths observed looping live (2026-08-01).
         assert!(is_dolt_internal(Path::new(
-            "/Users/x/Code/Beads-Station/.beads/embeddeddolt/Code/.dolt/noms/manifest"
+            "/home/x/Code/Beads-Station/.beads/embeddeddolt/Code/.dolt/noms/manifest"
         )));
         assert!(is_dolt_internal(Path::new(
             "/repo/.beads/embeddeddolt/Code/.dolt/noms/journal.idx"

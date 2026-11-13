@@ -26,10 +26,14 @@ import { cancelNativeRun, reconcileNativeRuns, startNativeRun, useNativeRun, typ
 import { approveArtifact, captureArtifact, requestArtifactChanges, useArtifactReview, type ArtifactRevision } from './artifacts'
 import { openPalette } from '../../state/palette'
 import { openSettings } from '../../state/settings'
-import { SessionView } from './SessionView'
+import { SessionView, requestSessionStart, sessionIsRunning } from './SessionView'
+import { HistoryView } from './HistoryView'
+import { listTranscripts, mentionsBead, relativeTime, requestHistoryFocus, type TranscriptSummary } from './transcripts'
+import { ShelfView } from './ShelfView'
+import { agentResumeCommand } from '../../state/agentHooks'
 
 type Tier = 'everyday' | 'heavy'
-type NavItem = 'requests' | 'session' | 'graph' | 'agents' | 'timeline'
+type NavItem = 'requests' | 'session' | 'history' | 'shelf' | 'graph' | 'agents' | 'timeline'
 interface ProviderAvailability {
   provider: NativeProvider
   available: boolean
@@ -39,6 +43,8 @@ interface ProviderAvailability {
 const NAV_ITEMS: { id: NavItem; label: string }[] = [
   { id: 'requests', label: 'Requests' },
   { id: 'session',  label: 'Session' },
+  { id: 'history',  label: 'History' },
+  { id: 'shelf',    label: 'Shelf' },
   { id: 'graph',    label: 'Bead map' },
   { id: 'agents',   label: 'Agents' },
   { id: 'timeline', label: 'Timeline' },
@@ -189,7 +195,7 @@ export function DesignerShell() {
         {/* Center — main view */}
         <main style={styles.main}>
           <PaneBoundary paneId="designer-center">
-            <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} sessionIssue={sessionIssue} onSessionIssue={setSessionIssue} onOpenSession={openSession} />
+            <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} sessionIssue={sessionIssue} onSessionIssue={setSessionIssue} onOpenSession={openSession} onNavigate={setNav} />
           </PaneBoundary>
         </main>
 
@@ -263,13 +269,14 @@ function ConductorFooter() {
   )
 }
 
-function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSessionIssue, onOpenSession }: {
+function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSessionIssue, onOpenSession, onNavigate }: {
   nav: NavItem
   selectedIssue: Issue | null
   onSelectIssue: (issue: Issue | null) => void
   sessionIssue: Issue | null
   onSessionIssue: (issue: Issue | null) => void
   onOpenSession: (issue: Issue) => void
+  onNavigate: (nav: NavItem) => void
 }) {
   const { projects, activeId } = useProjects()
   const project = projects.find(p => p.id === activeId) ?? projects[0] ?? null
@@ -278,6 +285,13 @@ function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSession
       ? <SessionView key={project.id} project={project} issue={sessionIssue} onClearIssue={() => onSessionIssue(null)} />
       : <div style={styles.viewPlaceholder}><p style={styles.graphPlaceholderText}>Session</p><p style={styles.graphPlaceholderSub}>Open a workspace to start a session.</p></div>
   }
+  if (nav === 'history' || nav === 'shelf') {
+    if (!project) return <div style={styles.viewPlaceholder}><p style={styles.graphPlaceholderText}>{nav === 'history' ? 'History' : 'Shelf'}</p><p style={styles.graphPlaceholderSub}>Open a workspace first.</p></div>
+    return nav === 'history'
+      ? <HistoryView key={project.id} project={project} sessionRunning={sessionIsRunning(project.id)}
+          onResume={summary => { requestSessionStart(project.id, agentResumeCommand(summary.provider, summary.id)); onNavigate('session') }} />
+      : <ShelfView key={project.id} project={project} />
+  }
   if (nav === 'agents') {
     return <div style={{ ...styles.graphSlot, padding: 16, overflow: 'auto' }}><ActiveAgents /></div>
   }
@@ -285,7 +299,7 @@ function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSession
     return (
       <div id="du-bead-graph" style={styles.graphSlot}>
         {selectedIssue
-          ? <BdLiveProvider><TicketRun key={selectedIssue.id} issue={selectedIssue} onBack={() => onSelectIssue(null)} onOpenSession={onOpenSession} onSelectIssue={onSelectIssue} /></BdLiveProvider>
+          ? <BdLiveProvider><TicketRun key={selectedIssue.id} issue={selectedIssue} onBack={() => onSelectIssue(null)} onOpenSession={onOpenSession} onSelectIssue={onSelectIssue} onReadSession={summary => { if (project) requestHistoryFocus(project.id, summary); onNavigate('history') }} /></BdLiveProvider>
           : nav === 'requests'
             ? <RequestBrowser onSelect={onSelectIssue} />
             : <BeadGraph onSelect={onSelectIssue} onOpenSession={onOpenSession} />}
@@ -333,7 +347,7 @@ function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
   </div>
 }
 
-function TicketRun({ issue: summary, onBack, onOpenSession, onSelectIssue }: { issue: Issue; onBack: () => void; onOpenSession: (issue: Issue) => void; onSelectIssue: (issue: Issue) => void }) {
+function TicketRun({ issue: summary, onBack, onOpenSession, onSelectIssue, onReadSession }: { issue: Issue; onBack: () => void; onOpenSession: (issue: Issue) => void; onSelectIssue: (issue: Issue) => void; onReadSession: (summary: TranscriptSummary) => void }) {
   const { projects, activeId } = useProjects()
   const project = projects.find(p => p.id === activeId) ?? projects[0] ?? null
   const snap = useBdSnapshot(project?.path ?? '')
@@ -463,6 +477,7 @@ function TicketRun({ issue: summary, onBack, onOpenSession, onSelectIssue }: { i
         <span style={styles.requestMeta}>Status: {status.replace('_', ' ')}</span>
         <button style={styles.skinBtn} onClick={() => onOpenSession(issue)} title="Work on this ticket with the interactive CLI and watch the changed files">Open in a live session</button>
       </div>
+      <TicketSessions workspacePath={project?.path ?? ''} issueId={issue.id} onRead={onReadSession} />
       {status === 'unknown' && <span style={styles.requestMeta}>Backend state unavailable; no new run will start automatically.</span>}
       <div style={styles.runOutput} aria-live="polite">
         {output.length === 0 ? 'Provider output will appear here. No work starts until you choose Start work.' : output.map((line, i) => <p key={i}>{line}</p>)}
@@ -490,6 +505,26 @@ function TicketRun({ issue: summary, onBack, onOpenSession, onSelectIssue }: { i
 }
 
 /** A delegated Codex worker's own activity, read from its session file only while open. */
+/** Past Claude/Codex sessions whose opening prompt names this ticket. Read-only. */
+function TicketSessions({ workspacePath, issueId, onRead }: { workspacePath: string; issueId: string; onRead: (summary: TranscriptSummary) => void }) {
+  const [sessions, setSessions] = useState<TranscriptSummary[]>([])
+  useEffect(() => {
+    if (!workspacePath) return
+    let cancelled = false
+    listTranscripts(workspacePath)
+      .then(all => { if (!cancelled) setSessions(all.filter(item => mentionsBead(item, issueId))) })
+      .catch(() => { if (!cancelled) setSessions([]) })
+    return () => { cancelled = true }
+  }, [workspacePath, issueId])
+  if (sessions.length === 0) return null
+  return <div data-testid="ticket-sessions" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+    <strong style={{ fontSize: 12 }}>Sessions on this ticket</strong>
+    {sessions.map(item => <button key={`${item.provider}:${item.id}`} style={styles.skinBtn} onClick={() => onRead(item)} title="Read this conversation in History">
+      {item.provider === 'claude' ? 'Claude' : 'Codex'} · {relativeTime(item.modifiedMs)} · {item.title}
+    </button>)}
+  </div>
+}
+
 function WorkerActivity({ threadId, label, live }: { threadId: string; label: string; live: boolean }) {
   const [open, setOpen] = useState(false)
   const [lines, setLines] = useState<string[] | null>(null)

@@ -17,7 +17,7 @@ import { BrowserPane } from './BrowserPane'
 import { useClaudeStatus } from '../state/claudeStatus'
 import {
   useTermPanes,
-  closeActivePane, unsplitToTabs, joinTabs, splitActive, toggleZoom, leavesOf,
+  closeActivePane, unsplitToTabs, joinTabs, restoreSplit, canRestoreSplit, splitActive, toggleZoom, leavesOf,
   useZoom,
   registerPty,
   updatePaneScreen,
@@ -41,6 +41,10 @@ import { runInTerminalSession } from '../lib/terminalSessions'
 import { AGENT_CLI_LABEL, useAgentHooks } from '../state/agentHooks'
 import { startPointerDrag, startPointerReorder } from '../lib/pointerDrag'
 import { PaneBoundary } from './PaneBoundary'
+import { SessionUsageChip } from './SessionUsageChip'
+import { TurnView } from './designer/ConversationView'
+import { readTranscript, usageLine, type Transcript } from './designer/transcripts'
+import { abbreviatePathsIn } from '../lib/abbreviatePath'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
@@ -91,21 +95,39 @@ function RestoredShell({ leaf }: { leaf: Leaf }) {
       .catch(() => { if (!cancelled) setChecking(false) })
     return () => { cancelled = true }
   }, [leaf.hostKey, leaf.paneId])
+  // The conversation this pane had, when its exact session is known. Reading the
+  // session file starts nothing; resuming stays an explicit click.
+  const [conversation, setConversation] = useState<Transcript | null>(null)
+  const [showRaw, setShowRaw] = useState(false)
+  const canRead = Boolean(leaf.agentCli && leaf.agentSessionId)
+  useEffect(() => {
+    if (!leaf.agentCli || !leaf.agentSessionId) return
+    let cancelled = false
+    Promise.resolve(readTranscript(leaf.cwd, leaf.agentCli, leaf.agentSessionId)).then(result => { if (!cancelled && result?.turns) setConversation(result) }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [leaf.agentCli, leaf.agentSessionId, leaf.cwd])
+  const showConversation = canRead && conversation && conversation.turns.length > 0 && !showRaw
+  const command = paneResumeCommand(leaf)
   return <div data-restored-pane={leaf.paneId} style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bs-bg)' }}>
-    <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--bs-border)', color: 'var(--bs-yellow)', fontSize: 11 }}>
-      Saved screen · previous shell is stopped · no live process attached
+    <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--bs-border)', color: 'var(--bs-yellow)', fontSize: 11, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span>{showConversation ? 'Earlier conversation · read-only · nothing is running' : 'Saved screen · previous shell is stopped · no live process attached'}</span>
+      {showConversation && conversation && <span style={{ color: 'var(--bs-fg-muted)' }}>{usageLine(conversation.usage)}</span>}
+      {canRead && conversation && conversation.turns.length > 0 && <button style={{ marginLeft: 'auto' }} onClick={() => setShowRaw(value => !value)}>{showRaw ? 'Show conversation' : 'Show saved screen'}</button>}
     </div>
-    <pre aria-label="Saved terminal screen" style={{ flex: 1, minHeight: 0, overflow: 'auto', margin: 0, padding: 10, color: 'var(--bs-fg-muted)', whiteSpace: 'pre-wrap', font: 'inherit' }}>
-      {leaf.savedScreen?.lines.join('\n') || 'No terminal screen was captured before the app stopped.'}
-    </pre>
+    {showConversation
+      ? <div className="bs-saved-screen" aria-label="Earlier conversation" data-testid="restored-conversation" ref={element => { if (element && !element.dataset.scrolled) { element.scrollTop = element.scrollHeight; element.dataset.scrolled = '1' } }}>
+        {conversation.truncated && <p style={{ margin: 0, fontSize: 12, color: 'var(--bs-fg-muted)' }}>This session is large; the most recent part is shown.</p>}
+        {conversation.turns.slice(-60).map((turn, index) => <TurnView key={index} turn={turn} />)}
+      </div>
+      : <div className="bs-saved-screen"><pre aria-label="Saved terminal screen">{leaf.savedScreen?.lines.join('\n') || 'No terminal screen was captured before the app stopped.'}</pre></div>}
     <div style={{ padding: 8, borderTop: '1px solid var(--bs-border)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
       <button disabled={checking} onClick={() => activateRestoredPane(leaf.paneId)}>Start new shell</button>
       {leaf.agentCli && <>
-        <button disabled={checking} onClick={() => activateRestoredPane(leaf.paneId, { resumeAgentCli: true })} title={`Starts a shell and runs: ${paneResumeCommand(leaf)}`}>
+        <button disabled={checking} onClick={() => activateRestoredPane(leaf.paneId, { resumeAgentCli: true })} title={command ? `Starts a shell and runs: ${abbreviatePathsIn(command)}` : undefined}>
           Start shell and resume {AGENT_CLI_LABEL[leaf.agentCli]}
         </button>
-        <span style={{ color: 'var(--bs-fg-muted)', fontSize: 11 }}>
-          {leaf.agentSessionId ? 'Reopens the conversation this pane had.' : 'Reopens the latest conversation in this folder.'} Runs <code>{paneResumeCommand(leaf)}</code>. Reopening uses no tokens until you send a message.
+        <span style={{ color: 'var(--bs-fg-muted)', fontSize: 11 }} title={command ? abbreviatePathsIn(command) : undefined}>
+          {leaf.agentSessionId ? 'Reopens this exact conversation.' : 'Reopens your latest conversation in this folder.'} Hover the button for the command.
         </span>
       </>}
     </div>
@@ -166,6 +188,7 @@ function PaneLeaf({
       }}
     >
       {notification && <PaneNotificationChip notification={notification} />}
+      {!leaf.restored && leaf.agentCli && leaf.agentSessionId && <SessionUsageChip workspacePath={leaf.cwd} provider={leaf.agentCli} sessionId={leaf.agentSessionId} />}
       {leaf.restored ? <RestoredShell leaf={leaf} /> : <Terminal
         paneId={paneId}
         cwd={leaf.cwd}
@@ -443,6 +466,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
         <button onClick={() => { splitActive('v'); setFocused('terminal'); setInsert(true) }} title="Split side by side">Split right</button>
         <button onClick={() => { splitActive('h'); setFocused('terminal'); setInsert(true) }} title="Split top and bottom">Split down</button>
         <button onClick={unsplitToTabs} disabled={tab.root.kind === 'leaf'} title="Remove splits and keep every session in its own tab">Unsplit to tabs</button>
+        <button aria-label="Restore split layout" onClick={() => { if (restoreSplit()) { setFocused('terminal'); typeIntoActiveShell() } }} disabled={!canRestoreSplit()} title="Undo Unsplit to tabs: bring the previous split layout back, keeping every session">Restore split</button>
         <button onClick={() => { joinTabs(); setFocused('terminal'); typeIntoActiveShell() }} disabled={tabs.length < 2} title="Put every terminal tab back side by side">Join tabs</button>
         <button onClick={toggleZoom} disabled={tab.root.kind === 'leaf'}>{visibleZoom ? 'Restore panes' : 'Zoom pane'}</button>
         <button onClick={() => { spawnBrowser(''); setFocused('terminal') }} title="Open a web page beside this pane">Browser</button>

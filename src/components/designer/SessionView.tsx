@@ -33,6 +33,16 @@ interface SessionWork { ticketId: string; title: string; attemptId: string }
 // Kept outside the component so leaving the Session view does not forget it.
 const sessionWork = new Map<string, SessionWork>()
 
+// A command the History view wants the Session to start with (resume a past
+// conversation). The user already clicked "Resume"; the Session view runs it once.
+const pendingStarts = new Map<string, string>()
+export function requestSessionStart(projectId: string, command: string) {
+  pendingStarts.set(projectId, command)
+}
+export function sessionIsRunning(projectId: string) {
+  return hasTerminalSession(designerSessionPaneId(projectId))
+}
+
 export function designerSessionPaneId(projectId: string) {
   return `designer:${projectId}`
 }
@@ -89,7 +99,18 @@ export function SessionView({ project, issue, onClearIssue }: {
   }
   const workOn = (ticket: Issue) => setWork({ ticketId: ticket.id, title: ticket.title, attemptId: crypto.randomUUID() })
 
-  useEffect(() => { setRunning(hasTerminalSession(paneId)); setOpen(null) }, [paneId])
+  // A start that is queued but whose terminal has not mounted yet still counts as running.
+  useEffect(() => { setRunning(hasTerminalSession(paneId) || startupCommands.has(paneId)); setOpen(null) }, [paneId])
+
+  // A resume requested from History starts here, but only if nothing is running.
+  useEffect(() => {
+    const command = pendingStarts.get(project.id)
+    pendingStarts.delete(project.id)
+    if (!command || hasTerminalSession(paneId)) return
+    startupCommands.set(paneId, command)
+    setRunning(true)
+    setFocused('terminal'); setInsert(true)
+  }, [project.id, paneId])
 
   const typeHere = () => { setFocused('terminal'); setInsert(true) }
 

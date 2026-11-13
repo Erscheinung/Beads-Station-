@@ -73,3 +73,12 @@ test('workspace modal accepts real key presses after terminal focus', async ({ p
   await folder.press('Enter')
   await expect(page.locator('.bs-tabstrip .bs-tab').last()).toHaveText('a folder')
 })
+
+test('the clone address field fills the row beside its button', async ({ page }) => {
+  await page.goto('/')
+  await page.getByText('Clone a repository').click()
+  const field = await page.getByLabel('Repository address').boundingBox()
+  const button = await page.getByRole('button', { name: 'Clone', exact: true }).boundingBox()
+  expect(field!.width).toBeGreaterThan(400)
+  expect(Math.abs(field!.y - button!.y)).toBeLessThan(12)
+})

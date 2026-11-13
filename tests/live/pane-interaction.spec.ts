@@ -26,6 +26,21 @@ test('unsplit can be undone with Join tabs, keeping every pane', async ({ page }
   await expect(page.locator('[data-terminal-pane]')).toHaveCount(2)
 })
 
+test('Restore split brings the previous layout back after Unsplit', async ({ page }) => {
+  const restore = page.getByRole('button', { name: 'Restore split layout', exact: true })
+  await expect(restore).toBeDisabled()
+  await page.getByRole('button', { name: 'Split right', exact: true }).click()
+  const panes = await page.locator('[data-terminal-pane]').evaluateAll(nodes => nodes.map(n => n.getAttribute('data-terminal-pane')))
+  await page.getByRole('button', { name: 'Unsplit to tabs', exact: true }).click()
+  await expect(page.getByRole('tab', { name: /Terminal tab 2/ })).toBeVisible()
+  await expect(restore).toBeEnabled()
+  await restore.click()
+  await expect(page.getByRole('tab', { name: /Terminal tab/ })).toHaveCount(0)
+  const after = await page.locator('[data-terminal-pane]').evaluateAll(nodes => nodes.map(n => n.getAttribute('data-terminal-pane')))
+  expect(after.sort()).toEqual(panes.sort())
+  await expect(restore).toBeDisabled()
+})
+
 test('terminal tabs reorder by dragging with the pointer', async ({ page }) => {
   await page.getByRole('button', { name: 'Split right', exact: true }).click()
   await page.getByRole('button', { name: 'Unsplit to tabs', exact: true }).click()

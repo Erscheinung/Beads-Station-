@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { abbreviatePath } from '../lib/abbreviatePath'
 import type { Project } from '../state/projects'
 import { useClaudeStatus, type ClaudeStatus } from '../state/claudeStatus'
 import { notifiedWorkspaceIds, usePaneNotifications } from '../state/paneNotifications'
@@ -41,7 +42,7 @@ function TabStatusDot({ projectId }: { projectId: string }) {
 
 /**
  * Bufferline-style horizontal tab strip. Tokyonight palette only — no new
- * colors. Each tab is capped at 160px and truncates with an ellipsis. Active
+ * colors. Each tab is capped at 240px and truncates with an ellipsis. Active
  * tab gets a solid bottom-border in --bs-blue, raised --bs-bg-elev background
  * and brightened foreground; inactive tabs sit muted with a transparent
  * bottom border so the active swap doesn't shift layout. Overflow scrolls
@@ -116,7 +117,7 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
             }}
             aria-posinset={projects.indexOf(p) + 1}
             aria-setsize={projects.length}
-            title={p.path}
+            title={`${p.name}\n${abbreviatePath(p.path)}`}
             className={active ? 'bs-tab bs-tab--active' : 'bs-tab'}
             role="tab"
             aria-selected={active}
@@ -126,7 +127,7 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
               gap: 8,
               padding: '0 12px',
               height: '100%',
-              maxWidth: 160,
+              maxWidth: 240,
               background: active ? 'var(--bs-bg-elev)' : 'transparent',
               color: 'var(--bs-fg)',
               opacity: active ? 1 : 0.55,

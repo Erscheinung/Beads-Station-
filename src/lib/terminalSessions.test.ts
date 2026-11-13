@@ -5,14 +5,14 @@ const mock = vi.hoisted(() => ({
   scrollToBottom: vi.fn(), scrollToLine: vi.fn(), markerDispose: vi.fn(), paste: vi.fn(),
   onScroll: null as null | (() => void), onWriteParsed: null as null | (() => void), onData: null as null | ((data: string) => void),
   onBell: null as null | (() => void), keyHandler: null as null | ((event: KeyboardEvent) => boolean),
-  osc: new Map<number, (data: string) => boolean>(), scrollToTop: vi.fn(), notifyPane: vi.fn(), setPaneAgentCli: vi.fn(), setPaneAgentSession: vi.fn(), showInBrowserPane: vi.fn(() => true),
+  osc: new Map<number, (data: string) => boolean>(), scrollToTop: vi.fn(), notifyPane: vi.fn(), setPaneAgentCli: vi.fn(), setPaneAgentSession: vi.fn(), showInBrowserPane: vi.fn(() => true), openUrlInBrowserTab: vi.fn(() => true), spawnFileNavTab: vi.fn(),
   themeListeners: new Set<() => void>(), selection: '', hostKey: null as string | null, pendingWrite: null as null | (() => void),
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
 vi.mock('../state/theme', () => ({ getActivePalette: () => null, subscribeTheme: (listener: () => void) => { mock.themeListeners.add(listener); return () => mock.themeListeners.delete(listener) } }))
 vi.mock('../state/paneNotifications', () => ({ notifyPane: mock.notifyPane }))
-vi.mock('../state/termPanes', () => ({ setPaneAgentCli: mock.setPaneAgentCli, setPaneAgentSession: mock.setPaneAgentSession, isLocalUrl: (url: string) => url.includes('localhost'), showInBrowserPane: mock.showInBrowserPane, paneHostKey: () => mock.hostKey }))
+vi.mock('../state/termPanes', () => ({ setPaneAgentCli: mock.setPaneAgentCli, setPaneAgentSession: mock.setPaneAgentSession, isLocalUrl: (url: string) => url.includes('localhost'), showInBrowserPane: mock.showInBrowserPane, openUrlInBrowserTab: mock.openUrlInBrowserTab, spawnFileNavTab: mock.spawnFileNavTab, paneHostKey: () => mock.hostKey }))
 vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
   buffer = {
@@ -21,7 +21,7 @@ vi.mock('xterm', () => ({ Terminal: class {
     alternate: { type: 'alternate', viewportY: 0, baseY: 0, cursorY: 0, cursorX: 0, length: 24 },
     onBufferChange() { return { dispose() {} } },
   }
-  loadAddon() {} open() {} focus = mock.focus
+  loadAddon() {} registerLinkProvider() { return { dispose() {} } } open() {} focus = mock.focus
   hasSelection() { return mock.selection !== '' }
   getSelection() { return mock.selection }
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { mock.keyHandler = handler }
@@ -311,8 +311,8 @@ it('updates cursor and bounded scrollback in a detached terminal without respawn
 
 describe('dropped file paths', () => {
   it('quotes only paths the shell would split or expand', () => {
-    expect(shellQuote('/Users/me/src/app.ts')).toBe('/Users/me/src/app.ts')
-    expect(shellQuote('/Users/me/My Files/a b.png')).toBe("'/Users/me/My Files/a b.png'")
+    expect(shellQuote('/home/me/src/app.ts')).toBe('/home/me/src/app.ts')
+    expect(shellQuote('/home/me/My Files/a b.png')).toBe("'/home/me/My Files/a b.png'")
     expect(shellQuote("/tmp/it's $HOME")).toBe("'/tmp/it'\\''s $HOME'")
   })
   it('pastes quoted paths into the session under the drop point without executing them', async () => {
@@ -515,6 +515,19 @@ describe('links in terminal output', () => {
     openTerminalLink('https://example.com/docs')
     expect(mock.showInBrowserPane).not.toHaveBeenCalled()
     expect(open).toHaveBeenCalledTimes(1)
+  })
+  it('Command+click opens a new browser tab, and non-web schemes open nothing', () => {
+    const open = vi.fn(() => null)
+    vi.stubGlobal('open', open)
+    mock.showInBrowserPane.mockClear()
+    openTerminalLink('https://example.com/docs', { metaKey: true })
+    expect(mock.openUrlInBrowserTab).toHaveBeenCalledWith('https://example.com/docs')
+    expect(mock.showInBrowserPane).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+    mock.openUrlInBrowserTab.mockClear()
+    for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x']) openTerminalLink(bad, { metaKey: true })
+    expect(mock.openUrlInBrowserTab).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
   })
 })
 

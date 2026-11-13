@@ -34,6 +34,7 @@ const ready = all.filter(item => ['site-1.3', 'site-2.1', 'site-3', 'site-4'].in
 test('capture the Designer', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.addInitScript(({ all, ready }) => {
+    localStorage.setItem('beads-station.themePaletteId', 'fahrenheit')
     localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a'], activeId: 'proj-a' }))
     ;(window as any).__bsMockOverride = { bd_snapshot: { ready, all, no_db: false } }
   }, { all, ready })
@@ -52,6 +53,7 @@ test('capture the Designer', async ({ page }) => {
 test('capture the terminal workspace and About', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   await page.addInitScript(() => {
+    localStorage.setItem('beads-station.themePaletteId', 'fahrenheit')
     localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a', 'proj-b'], activeId: 'proj-a' }))
     localStorage.setItem('beads-station.lastConfirmed.proj-a', new Date().toISOString().slice(0, 10))
   })

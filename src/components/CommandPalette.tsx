@@ -13,7 +13,7 @@ import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPrefe
 import { closeFocusedPane } from './TerminalPanes'
 import { toggleNotificationPanel } from '../state/notificationPanel'
 import { stepTerminalFontSize } from '../state/terminalAppearance'
-import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell, joinTabs, launchInTerminalPane } from '../state/termPanes'
+import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell, joinTabs, restoreSplit, launchInTerminalPane } from '../state/termPanes'
 import { agentLaunchCommand } from '../state/sessionPreferences'
 import { initializeBeads } from '../lib/beadsInit'
 import { setFocused } from '../state/vim'
@@ -173,6 +173,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'splitH': dispatchSemanticCommand('terminal.split', { direction: 'right' }, { kind: 'active-terminal' }); break
       case 'splitV': dispatchSemanticCommand('terminal.split', { direction: 'down' }, { kind: 'active-terminal' }); break
       case 'unsplit': setSkin('terminal'); unsplitToTabs(); break
+      case 'restoreSplit': setSkin('terminal'); if (restoreSplit()) { setFocused('terminal'); typeIntoActiveShell() } break
       case 'joinTabs': setSkin('terminal'); joinTabs(); setFocused('terminal'); typeIntoActiveShell(); break
       case 'launchClaude': setSkin('terminal'); launchInTerminalPane(agentLaunchCommand('claude')); setFocused('terminal'); typeIntoActiveShell(); break
       case 'launchCodex': setSkin('terminal'); launchInTerminalPane(agentLaunchCommand('codex')); setFocused('terminal'); typeIntoActiveShell(); break

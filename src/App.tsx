@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
+import { abbreviatePath } from './lib/abbreviatePath'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
@@ -669,7 +670,7 @@ export default function App() {
               <span style={{ display: 'inline-block', width: 8, transform: terminalCollapsed ? 'rotate(-90deg)' : 'none', transition: 'transform 120ms ease' }}>
                 {terminalFocus ? '⤢' : '▼'}
               </span>
-              <span>terminal · {active.path}{terminalFocus ? '  ·  fullscreen (Cmd/Ctrl+Shift+Enter to exit)' : ''}</span>
+              <span title={active.path}>terminal · {abbreviatePath(active.path)}{terminalFocus ? '  ·  fullscreen (Cmd/Ctrl+Shift+Enter to exit)' : ''}</span>
             </button>
             {!terminalCollapsed && (
               <div style={{ flex: 1, minHeight: 0 }}>

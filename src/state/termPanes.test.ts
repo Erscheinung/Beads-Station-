@@ -482,7 +482,8 @@ describe('pane lookup, reveal and agent CLI resume', () => {
   it('finds the pane hosting an agent bridge', () => {
     setActiveProject('locate-agent', '/repo/agent')
     spawnAgent('locate-agent', '/repo/agent', 'session-1')
-    const bridge = allAgentBridges().at(-1)!
+    const bridges = allAgentBridges()
+    const bridge = bridges[bridges.length - 1]!
     const paneId = paneForAgentBridge(bridge)!
     expect(locatePane(paneId)?.agentBridgeId).toBe(bridge)
     expect(paneForAgentBridge('no-such-bridge')).toBeNull()
@@ -617,5 +618,74 @@ describe('starting an agent in a terminal pane', () => {
     const pane = panes.activeTerminalPaneId()
     expect(panes.takePaneStartupCommand(pane)).toBe('claude --dangerously-skip-permissions')
     expect(panes.takePaneStartupCommand(pane)).toBeNull()
+  })
+})
+
+describe('opening links in new tabs', () => {
+  it('opens http(s) in a new browser tab without touching the current pane, and rejects other schemes', async () => {
+    const panes = await import('./termPanes')
+    panes.setActiveProject('link-tabs', '/tmp/links')
+    const original = panes.activeTabRoot()
+    const tabsBefore = panes.terminalTabIds().length
+    expect(panes.openUrlInBrowserTab('javascript:alert(1)')).toBe(false)
+    expect(panes.openUrlInBrowserTab('file:///etc/passwd')).toBe(false)
+    expect(panes.openUrlInBrowserTab('data:text/html,x')).toBe(false)
+    expect(panes.terminalTabIds()).toHaveLength(tabsBefore)
+    expect(panes.openUrlInBrowserTab('https://example.com/a')).toBe(true)
+    expect(panes.terminalTabIds()).toHaveLength(tabsBefore + 1)
+    expect(panes.activeTabRoot()).toMatchObject({ kind: 'leaf', browser: { url: 'https://example.com/a' } })
+    panes.switchTab(0)
+    expect(panes.activeTabRoot()).toBe(original)
+  })
+  it('opens a folder in a file tab', async () => {
+    const panes = await import('./termPanes')
+    panes.setActiveProject('link-tabs-2', '/tmp/links2')
+    panes.spawnFileNavTab('/home/dev/docs')
+    expect(panes.activeTabRoot()).toMatchObject({ kind: 'leaf', fileNav: { rootPath: '/home/dev/docs' } })
+  })
+})
+
+describe('restoring the split layout after unsplit', () => {
+  it('brings back the same tree, ratios and pane ids with live ptys', async () => {
+    const panes = await import('./termPanes')
+    panes.setActiveProject('restore-split', '/tmp/restore')
+    panes.splitActive('v')
+    panes.splitActive('h')
+    const rootBefore = panes.activeTabRoot()
+    if (rootBefore.kind !== 'split') throw new Error('expected split')
+    panes.setRatio(rootBefore.splitId, 0.3)
+    panes.leavesOf(panes.activeTabRoot()).forEach((leaf, i) => panes.registerPty(leaf.paneId, 900 + i))
+    const shape = (n: ReturnType<typeof panes.activeTabRoot>): unknown =>
+      n.kind === 'leaf' ? [n.paneId, n.ptyId] : [n.splitId, n.dir, n.ratio, shape(n.a), shape(n.b)]
+    const before = shape(panes.activeTabRoot())
+    expect(panes.canRestoreSplit()).toBe(false)
+    panes.unsplitToTabs()
+    expect(panes.canRestoreSplit()).toBe(true)
+    expect(panes.restoreSplit()).toBe(true)
+    expect(panes.terminalTabIds()).toHaveLength(1)
+    expect(shape(panes.activeTabRoot())).toEqual(before)
+    expect(panes.canRestoreSplit()).toBe(false)
+  })
+  it('drops closed panes and keeps unrelated tabs, never throwing', async () => {
+    const panes = await import('./termPanes')
+    panes.setActiveProject('restore-split-2', '/tmp/restore2')
+    panes.splitActive('v')
+    panes.splitActive('h')
+    const ids = panes.leavesOf(panes.activeTabRoot()).map(l => l.paneId)
+    panes.unsplitToTabs()
+    panes.newTab()
+    panes.switchTab(2)
+    panes.closeActivePane()
+    panes.switchTab(0)
+    expect(panes.restoreSplit()).toBe(true)
+    const remaining = panes.leavesOf(panes.activeTabRoot()).map(l => l.paneId)
+    expect(remaining.every(id => ids.includes(id))).toBe(true)
+    expect(remaining.length).toBeGreaterThanOrEqual(2)
+    expect(panes.terminalTabIds().length).toBeGreaterThanOrEqual(2)
+  })
+  it('does nothing when there is nothing to restore', async () => {
+    const panes = await import('./termPanes')
+    panes.setActiveProject('restore-split-3', '/tmp/restore3')
+    expect(panes.restoreSplit()).toBe(false)
   })
 })

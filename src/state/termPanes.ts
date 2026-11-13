@@ -19,6 +19,7 @@
 // The R3.5 render-loop was an uncached getSnapshot; do not repeat it.
 
 import { useSyncExternalStore } from 'react'
+import { isOpenableWebUrl } from '../lib/terminalLinks'
 import { shouldKeepTerminalsRunning, shouldRestoreContextOnLaunch, type ObservedProvider } from './sessionPreferences'
 import { agentResumeCommand, isAgentSessionId, type AgentCli } from './agentHooks'
 export type { AgentCli }
@@ -910,6 +911,11 @@ function spawnCwd(): string {
   return active?.cwd || _lastCwd || ''
 }
 
+/** The pane the user is currently in, in the active tab. */
+export function activePaneId(): string {
+  return activeTab(state).activePaneId
+}
+
 export function focusPane(paneId: string): void {
   const tab = activeTab(state)
   if (tab.activePaneId === paneId) return
@@ -1046,6 +1052,29 @@ export function spawnBrowser(url: string): void {
   emit()
 }
 
+function appendTabWith(leaf: Leaf): void {
+  const tab: Tab = { id: uid('tab'), root: leaf, activePaneId: leaf.paneId }
+  state = { ...state, tabs: [...state.tabs, tab], activeTabId: tab.id }
+  emit()
+}
+
+/**
+ * Open a page in its own new tab, leaving the pane being typed in untouched.
+ * Returns false (and opens nothing) for anything but http and https.
+ */
+export function openUrlInBrowserTab(url: string): boolean {
+  if (!isOpenableWebUrl(url)) return false
+  const target = normalizeBrowserUrl(url)
+  if (!target) return false
+  appendTabWith({ kind: 'leaf', paneId: uid('pane'), ptyId: null, cwd: spawnCwd(), browser: { url: target } })
+  return true
+}
+
+/** Open a folder in a file-navigation pane in its own new tab. */
+export function spawnFileNavTab(rootPath: string): void {
+  appendTabWith(newFileNavLeaf(rootPath))
+}
+
 /** True for an address on this machine: a dev server, a local preview. */
 export function isLocalUrl(url: string): boolean {
   try {
@@ -1108,6 +1137,10 @@ export function closeActivePane(): { killPtyId: number | null; killBridgeId: str
   return { killPtyId, killBridgeId }
 }
 
+/** What unsplitToTabs took apart, so restoreSplit can put it back. */
+interface UnsplitMemo { keptTabId: string; tabIds: string[]; root: Node }
+let unsplitMemos: UnsplitMemo[] = []
+
 /** Remove split geometry while retaining every pane and its live resource. */
 export function unsplitToTabs(): void {
   const tab = activeTab(state)
@@ -1116,9 +1149,64 @@ export function unsplitToTabs(): void {
   const selected = leaves.find(l => l.paneId === tab.activePaneId)!
   const kept = { ...tab, root: selected }
   const others = leaves.filter(l => l !== selected).map(root => ({ id: uid('tab'), root, activePaneId: root.paneId }))
+  unsplitMemos = [...unsplitMemos.filter(m => m.keptTabId !== tab.id), { keptTabId: tab.id, tabIds: others.map(t => t.id), root: tab.root }]
   state = { ...state, tabs: state.tabs.flatMap(t => t.id === tab.id ? [kept, ...others] : [t]) }
   if (_zoomed) toggleZoom()
   emit()
+}
+
+/** The memo that applies to the active tab, if its tabs still exist. */
+function activeUnsplitMemo(): UnsplitMemo | undefined {
+  const id = state.activeTabId
+  return unsplitMemos.find(m => m.keptTabId === id || m.tabIds.includes(id))
+    ?? unsplitMemos.find(m => state.tabs.some(t => t.id === m.keptTabId))
+}
+
+/** True when restoreSplit has a layout to bring back. */
+export function canRestoreSplit(): boolean {
+  const memo = activeUnsplitMemo()
+  if (!memo) return false
+  const kept = state.tabs.find(t => t.id === memo.keptTabId)
+  return !!kept && kept.root.kind === 'leaf' && memo.tabIds.some(id => state.tabs.find(t => t.id === id)?.root.kind === 'leaf')
+}
+
+/**
+ * Undo unsplitToTabs: the earlier tree and ratios return, built from the
+ * live leaf objects so no pane id (and so no terminal session) changes.
+ * Panes closed since are dropped; tabs that were split or renamed since are
+ * left alone. Returns false when nothing could be restored.
+ */
+export function restoreSplit(): boolean {
+  const memo = activeUnsplitMemo()
+  if (!memo || !canRestoreSplit()) return false
+  const kept = state.tabs.find(t => t.id === memo.keptTabId)!
+  const pool = new Map<string, Leaf>()
+  const merged = new Set<string>()
+  for (const id of memo.tabIds) {
+    const t = state.tabs.find(candidate => candidate.id === id)
+    if (t && t.root.kind === 'leaf') { pool.set(t.root.paneId, t.root); merged.add(t.id) }
+  }
+  pool.set((kept.root as Leaf).paneId, kept.root as Leaf)
+  const build = (node: Node): Node | null => {
+    if (node.kind === 'leaf') return pool.get(node.paneId) ?? null
+    const a = build(node.a)
+    const b = build(node.b)
+    if (a && b) return { ...node, a, b }
+    return a ?? b
+  }
+  const root = build(memo.root)
+  if (!root || root.kind === 'leaf') return false
+  const activeLeaf = state.tabs.find(t => t.id === state.activeTabId)?.root
+  const focus = activeLeaf && activeLeaf.kind === 'leaf' && pool.has(activeLeaf.paneId) ? activeLeaf.paneId : (kept.root as Leaf).paneId
+  unsplitMemos = unsplitMemos.filter(m => m !== memo)
+  state = {
+    ...state,
+    tabs: state.tabs.filter(t => !merged.has(t.id)).map(t => (t.id === kept.id ? { ...t, root, activePaneId: focus } : t)),
+    activeTabId: kept.id,
+  }
+  if (_zoomed) toggleZoom()
+  emit()
+  return true
 }
 
 /** Put every terminal tab back side by side; the reverse of unsplitToTabs. */

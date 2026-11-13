@@ -9,7 +9,8 @@ import { getActivePalette, subscribeTheme } from '../state/theme'
 import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/terminalAppearance'
 import { matchedCommand } from '../state/commands'
 import { notifyPane } from '../state/paneNotifications'
-import { isLocalUrl, paneHostKey, setPaneAgentCli, setPaneAgentSession, showInBrowserPane, type AgentCli } from '../state/termPanes'
+import { isLocalUrl, openUrlInBrowserTab, paneHostKey, setPaneAgentCli, setPaneAgentSession, showInBrowserPane, spawnFileNavTab, type AgentCli } from '../state/termPanes'
+import { findMarkdownPaths, isOpenableWebUrl, markdownDirectory } from './terminalLinks'
 import { macTerminalKeyAction } from './terminalKeys'
 import { shellQuote } from './shellQuote'
 import { shouldKeepTerminalsRunning, subscribeSessionPreferences } from '../state/sessionPreferences'
@@ -250,6 +251,23 @@ export class TerminalSession {
     this.element.style.cssText = 'width:100%;height:100%;'
     this.terminal.loadAddon(this.fit)
     this.terminal.loadAddon(new WebLinksAddon((event, uri) => openTerminalLink(uri, event)))
+    // Command+click on a markdown path opens its folder in a file tab. There is
+    // no markdown viewer pane, so the file tree is the closest existing fit.
+    this.terminal.registerLinkProvider({
+      provideLinks: (row, callback) => {
+        const line = this.terminal.buffer.active.getLine(row - 1)?.translateToString(true) ?? ''
+        const links = findMarkdownPaths(line).map(match => ({
+          text: match.text,
+          range: { start: { x: match.start + 1, y: row }, end: { x: match.end, y: row } },
+          activate: (event: MouseEvent, text: string) => {
+            if (!event.metaKey) return
+            const dir = markdownDirectory(text, cwd)
+            if (dir) spawnFileNavTab(dir)
+          },
+        }))
+        callback(links.length ? links : undefined)
+      },
+    })
     this.terminal.open(this.element)
     this.terminal.attachCustomKeyEventHandler(e => this.handleKey(e))
     this.registerNotificationSources()
@@ -794,8 +812,11 @@ export class TerminalSession {
  * everything else opens as it always has.
  */
 export function openTerminalLink(uri: string, event?: Pick<MouseEvent, 'metaKey'>) {
-  // Command+click always means the embedded browser; a plain click only for local pages.
-  if ((event?.metaKey || isLocalUrl(uri)) && showInBrowserPane(uri)) return
+  // Command+click opens a new browser tab, leaving the pane being typed in alone;
+  // a plain click shows local pages beside the terminal as before.
+  if (!isOpenableWebUrl(uri)) return
+  if (event?.metaKey && openUrlInBrowserTab(uri)) return
+  if (!event?.metaKey && isLocalUrl(uri) && showInBrowserPane(uri)) return
   const opened = window.open()
   if (!opened) return
   try { opened.opener = null } catch { /* cross-origin window */ }
