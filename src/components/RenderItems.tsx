@@ -17,6 +17,7 @@ import { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { PluggableList } from 'unified';
 import rehypeHighlight from 'rehype-highlight';
+import remarkGfm from 'remark-gfm';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { diffLines } from 'diff';
 
@@ -40,6 +41,8 @@ const SANITIZE_SCHEMA = {
   },
 };
 
+// GFM adds tables, task-list checkboxes, strikethrough and bare links.
+const REMARK_PLUGINS: PluggableList = [remarkGfm];
 const REHYPE_PLUGINS: PluggableList = [rehypeHighlight, [rehypeSanitize, SANITIZE_SCHEMA]];
 
 function Chevron({ open }: { open: boolean }) {
@@ -73,7 +76,7 @@ function inputSummary(input: unknown): string {
 export function MarkdownText({ text }: { text: string }) {
   return (
     <div className="bs-md">
-      <ReactMarkdown rehypePlugins={REHYPE_PLUGINS}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>{text}</ReactMarkdown>
     </div>
   );
 }

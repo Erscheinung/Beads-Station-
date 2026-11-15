@@ -8,12 +8,13 @@
 
 import { useSyncExternalStore } from 'react'
 
-export type ShelfKind = 'note' | 'file' | 'markdown'
+export type ShelfKind = 'note' | 'file' | 'markdown' | 'folder' | 'link'
+const KINDS: ShelfKind[] = ['note', 'file', 'markdown', 'folder', 'link']
 
 export interface ShelfItem {
   id: string
   kind: ShelfKind
-  /** Pasted text for a note; an absolute or ~ path for a file or markdown note. */
+  /** Pasted text for a note; an absolute or ~ path for a file, folder or markdown note; a URL for a link. References only: nothing is copied. */
   value: string
   label: string
   addedAt: number
@@ -30,6 +31,7 @@ export const MAX_INLINE_BYTES = 64 * 1024
 export function classifyInput(raw: string): { kind: ShelfKind; value: string } | null {
   const text = raw.trim()
   if (!text) return null
+  if (isLink(text)) return { kind: 'link', value: text }
   // "/review this" is a slash command, not a path: an absolute path needs a second segment.
   const shaped = text.startsWith('/') ? text.split('/').length >= 3 : /^(~\/|\.{1,2}\/)/.test(text)
   // Spaces are fine when escaped, or when the whole thing ends in a file extension ("/Notes/My Vault/a.md").
@@ -48,11 +50,39 @@ function unquotePath(text: string): string {
   return text.replace(/\\ /g, ' ')
 }
 
+/** A single http(s) URL, nothing else on the line. */
+export function isLink(text: string): boolean {
+  return /^https?:\/\/[^\s]+$/i.test(text.trim())
+}
+
+/** Files the user's editor can show; everything else is opened by the system. */
+export function isTextPath(path: string): boolean {
+  return /\.(md|markdown|mdx|txt|json|jsonc|ya?ml|toml|ts|tsx|js|jsx|mjs|cjs|css|scss|html|rs|py|go|sh|zsh|swift|java|kt|rb|c|h|cpp|hpp|sql|xml|csv|log|env|ini|conf|lock)$/i.test(path)
+}
+
+/** Dropped paths become references; `kinds` says which of them are folders ("dir"). */
+export function dropItems(paths: string[], kinds: string[]): { kind: ShelfKind; value: string }[] {
+  return paths.flatMap((path, index): { kind: ShelfKind; value: string }[] => {
+    if (!path || kinds[index] === 'missing') return []
+    if (kinds[index] === 'dir') return [{ kind: 'folder' as const, value: path }]
+    return [{ kind: /\.(md|markdown|mdx)$/i.test(path) ? 'markdown' as const : 'file' as const, value: path }]
+  })
+}
+
+/** What a double-click does with an item. */
+export function openAction(item: Pick<ShelfItem, 'kind' | 'value'>): 'browser' | 'editor' | 'system' | 'none' {
+  if (item.kind === 'link') return 'browser'
+  if (item.kind === 'note') return 'none'
+  if (item.kind === 'folder') return 'system'
+  return isTextPath(item.value) ? 'editor' : 'system'
+}
+
 export function defaultLabel(kind: ShelfKind, value: string): string {
   if (kind === 'note') {
     const first = value.split('\n').find(line => line.trim()) ?? value
     return first.length > 60 ? `${first.slice(0, 60)}…` : first
   }
+  if (kind === 'link') return value.replace(/^https?:\/\//i, '').replace(/\/$/, '')
   return value.split('/').filter(Boolean).pop() ?? value
 }
 
@@ -73,7 +103,8 @@ export async function composePayload(
 ): Promise<string> {
   const parts: string[] = []
   for (const item of items) {
-    if (item.kind === 'file') { parts.push(quotePath(item.value)); continue }
+    if (item.kind === 'file' || item.kind === 'folder') { parts.push(quotePath(item.value)); continue }
+    if (item.kind === 'link') { parts.push(item.value); continue }
     if (item.kind === 'note') { parts.push(`## ${item.label}\n${item.value}`); continue }
     let file: Awaited<ReturnType<typeof readText>> = null
     try { file = await readText(item.value) } catch { file = null }
@@ -99,7 +130,7 @@ function read(workspaceId: string): ShelfItem[] {
     const parsed = JSON.parse(localStorage.getItem(KEY_PREFIX + workspaceId) ?? '[]')
     if (Array.isArray(parsed)) {
       items = parsed.filter((item): item is ShelfItem =>
-        item && typeof item.id === 'string' && typeof item.value === 'string' && ['note', 'file', 'markdown'].includes(item.kind))
+        item && typeof item.id === 'string' && typeof item.value === 'string' && KINDS.includes(item.kind))
     }
   } catch { /* private window or bad data: start empty */ }
   lists.set(workspaceId, items)

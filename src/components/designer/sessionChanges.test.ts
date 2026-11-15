@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { diffSections, fileChanges, ticketPrompt } from './sessionChanges'
+import { diffSections, fileChanges, formatBytes, ticketPrompt } from './sessionChanges'
 
 const DIFF = [
   'diff --git a/src/app.ts b/src/app.ts',
@@ -44,5 +44,12 @@ describe('session changes', () => {
     expect(prompt).not.toContain('\n')
     expect(prompt).toContain('Code-1: Fix the header.')
     expect(prompt).toContain('do not close the ticket')
+  })
+  it('lists a binary file with its size instead of a diff or an error', () => {
+    const png = { path: 'docs/a.png', status: '??', size: 20480, contentHash: 'h', content: null, binary: true, truncated: false }
+    const [change] = fileChanges({ diff: 'diff --git a/docs/a.png b/docs/a.png\nBinary files differ', files: [png] })
+    expect(change).toMatchObject({ binary: true, size: 20480, added: 0, removed: 0, diff: null, content: null })
+    expect(formatBytes(20480)).toBe('20 KB')
+    expect(formatBytes(3 * 1024 * 1024)).toBe('3.0 MB')
   })
 })

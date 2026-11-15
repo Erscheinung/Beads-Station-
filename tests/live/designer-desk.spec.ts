@@ -49,13 +49,13 @@ test('the Shelf classifies input, pins from History, and types without pressing 
   await openDesigner(page)
   await page.getByRole('button', { name: 'History', exact: true }).click()
   await page.getByRole('button', { name: /Fix the header spacing/ }).click()
-  await page.getByRole('button', { name: 'Pin this to the Shelf' }).last().click()
+  await page.getByRole('button', { name: 'Pin this answer' }).last().click()
 
-  await page.getByRole('button', { name: 'Shelf', exact: true }).click()
+  await page.getByRole('button', { name: 'Pinned', exact: true }).click()
   const shelf = page.getByTestId('designer-shelf')
   await expect(shelf.getByText('I tightened the **header** padding.')).toBeVisible()
-  await shelf.getByLabel('Add to the shelf').fill('~/Documents/nAI/Plan.md')
-  await shelf.getByRole('button', { name: 'Add to shelf', exact: true }).click()
+  await shelf.getByLabel('Add something to pin').fill('~/Documents/nAI/Plan.md')
+  await shelf.getByRole('button', { name: 'Pin it', exact: true }).click()
   await expect(shelf.getByText('Note', { exact: true })).toBeVisible()
   // No session yet: nowhere to type.
   await expect(shelf.getByRole('button', { name: 'No running session to send to' })).toBeDisabled()
@@ -63,7 +63,7 @@ test('the Shelf classifies input, pins from History, and types without pressing 
   await page.getByRole('button', { name: 'Session', exact: true }).click()
   await page.getByRole('button', { name: 'Plain shell', exact: true }).click()
   await expect.poll(async () => (await calls(page, 'pty_spawn')).length).toBe(1)
-  await page.getByRole('button', { name: 'Shelf', exact: true }).click()
+  await page.getByRole('button', { name: 'Pinned', exact: true }).click()
   await page.getByRole('button', { name: /^Type 2 into designer session$/ }).click()
   await expect(page.getByRole('status')).toContainText('Nothing was submitted.')
   // xterm turns pasted line breaks into \r; what must be absent is a final Enter.
@@ -94,4 +94,40 @@ test('a ticket lists the sessions that worked it and opens one in History', asyn
   await sessions.getByRole('button').click()
   await expect(page.getByTestId('designer-history').locator('[data-role="assistant"] .bs-md strong')).toHaveText('header')
   expect((await calls(page, 'pty_spawn')).length).toBe(0)
+})
+
+test('Pinned keeps dropped links as references and renders the vault read-only', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('beads-station.session-preferences', JSON.stringify({ obsidianVaultPath: '~/Vault' }))
+  })
+  await openDesigner(page)
+  await page.getByRole('button', { name: 'Pinned', exact: true }).click()
+  const shelf = page.getByTestId('designer-shelf')
+  await shelf.evaluate(element => {
+    const data = new DataTransfer()
+    data.setData('text/uri-list', 'https://example.com/spec')
+    element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }))
+  })
+  await expect(shelf.getByText('Link', { exact: true })).toBeVisible()
+  await expect(shelf.getByText('example.com/spec')).toBeVisible()
+
+  const vault = page.getByTestId('pinned-vault')
+  await vault.getByRole('button', { name: /Monday/ }).click()
+  const note = page.getByTestId('vault-note')
+  await expect(note.getByRole('heading', { name: 'Plan' })).toBeVisible()
+  await expect(note.locator('input[type="checkbox"]')).toHaveCount(2)
+  await expect(note.locator('table td').first()).toHaveText('1')
+  await expect(note.locator('pre code')).toContainText('const a = 1')
+  await expect(note).not.toContainText('tags:')
+  await expect(note).toContainText('See Ideas and')
+  expect((await calls(page, 'vault_read')).length).toBe(1)
+  expect((await calls(page, 'pty_spawn')).length).toBe(0)
+})
+
+test('the Session changes list shows an image as a binary file, not an error', async ({ page }) => {
+  await openDesigner(page)
+  await page.getByRole('button', { name: 'Session', exact: true }).click()
+  const row = page.getByTestId('binary-file')
+  await expect(row).toHaveText('binary file · 20 KB')
+  await expect(page.getByRole('alert')).toHaveCount(0)
 })

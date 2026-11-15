@@ -52,3 +52,28 @@ export async function installTerminalFileDrop(): Promise<() => void> {
     unlisten()
   }
 }
+
+const AREA_CLASS = 'bs-file-drop-target'
+
+/**
+ * Listen for native file drops over one element (the Pinned view). Adds its own
+ * listener while mounted, so it never competes with the terminal drop above:
+ * that one only acts when the pointer is over a terminal. Returns a cleanup.
+ */
+export async function watchFileDrop(getElement: () => HTMLElement | null, onDrop: (paths: string[]) => void): Promise<() => void> {
+  const over = (position: { x: number; y: number }) => {
+    const element = getElement()
+    if (!element) return false
+    const { x, y } = dropPoint(position, window.devicePixelRatio || 1, /Mac/.test(navigator.platform))
+    const node = document.elementFromPoint(x, y)
+    return !!node && element.contains(node)
+  }
+  const unlisten = await getCurrentWebview().onDragDropEvent(({ payload }) => {
+    const element = getElement()
+    if (payload.type === 'leave') { element?.classList.remove(AREA_CLASS); return }
+    const inside = over(payload.position)
+    element?.classList.toggle(AREA_CLASS, inside && payload.type !== 'drop')
+    if (payload.type === 'drop' && inside && payload.paths.length > 0) onDrop(payload.paths)
+  })
+  return () => { getElement()?.classList.remove(AREA_CLASS); unlisten() }
+}

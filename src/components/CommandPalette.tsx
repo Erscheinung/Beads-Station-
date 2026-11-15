@@ -7,14 +7,19 @@ import { bdClaim, bdCreate } from '../types/issue'
 import { COMMANDS, useCommandBindings, shortcutLabel, type CommandId } from '../state/commands'
 import { openSettings } from '../state/settings'
 import { SettingsPanel } from './SettingsPanel'
+import { ShortcutSheet } from './ShortcutSheet'
 import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from '../state/theme'
-import { setSkin } from '../state/skin'
+import { setSkin, toggleSkin } from '../state/skin'
 import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
 import { closeFocusedPane } from './TerminalPanes'
 import { toggleNotificationPanel } from '../state/notificationPanel'
 import { stepTerminalFontSize } from '../state/terminalAppearance'
-import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell, joinTabs, restoreSplit, launchInTerminalPane } from '../state/termPanes'
-import { agentLaunchCommand } from '../state/sessionPreferences'
+import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell, joinTabs, restoreSplit } from '../state/termPanes'
+import { startLauncher } from './TopBar'
+import { openDesignerView, type DesignerView } from '../state/designerNav'
+import { useTermPanes, leavesOf } from '../state/termPanes'
+import { listTranscripts, relativeTime, requestHistoryFocus, type TranscriptSummary } from './designer/transcripts'
+import { abbreviatePath } from '../lib/abbreviatePath'
 import { initializeBeads } from '../lib/beadsInit'
 import { setFocused } from '../state/vim'
 import { dispatchSemanticCommand } from '../state/recipeIntegration'
@@ -47,6 +52,18 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
   const setView = (next: View) => { updateView(next); setSearch('') }
   const [title, setTitle] = useState('')
   const [busy, setBusy] = useState(false)
+  const panes = useTermPanes()
+  // Past conversations for this folder, read when the palette opens. Reading
+  // the CLIs' session list starts nothing.
+  const [sessions, setSessions] = useState<TranscriptSummary[]>([])
+  useEffect(() => {
+    if (!open || !repoPath) return
+    let cancelled = false
+    Promise.resolve(listTranscripts(repoPath))
+      .then(list => { if (!cancelled && Array.isArray(list)) setSessions(list.slice(0, 15)) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [open, repoPath])
 
   // Reset the sub-view + inputs whenever the dialog opens or closes so it never
   // reopens mid-flow.
@@ -169,14 +186,20 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'toggleTheme': onToggleTheme(); break
       case 'designer': onSwitchToDesigner(); break
       case 'terminal': setSkin('terminal'); break
+      case 'toggleSkin': toggleSkin(); break
+      case 'designer.requests': case 'designer.session': case 'designer.history': case 'designer.shelf':
+      case 'designer.graph': case 'designer.agents': case 'designer.timeline':
+        openDesignerView(id.slice('designer.'.length) as DesignerView); break
+      case 'shortcuts': window.dispatchEvent(new Event('shortcuts:open')); break
       case 'newTab': setSkin('terminal'); newTab(); setFocused('terminal'); typeIntoActiveShell(); break
       case 'splitH': dispatchSemanticCommand('terminal.split', { direction: 'right' }, { kind: 'active-terminal' }); break
       case 'splitV': dispatchSemanticCommand('terminal.split', { direction: 'down' }, { kind: 'active-terminal' }); break
       case 'unsplit': setSkin('terminal'); unsplitToTabs(); break
       case 'restoreSplit': setSkin('terminal'); if (restoreSplit()) { setFocused('terminal'); typeIntoActiveShell() } break
       case 'joinTabs': setSkin('terminal'); joinTabs(); setFocused('terminal'); typeIntoActiveShell(); break
-      case 'launchClaude': setSkin('terminal'); launchInTerminalPane(agentLaunchCommand('claude')); setFocused('terminal'); typeIntoActiveShell(); break
-      case 'launchCodex': setSkin('terminal'); launchInTerminalPane(agentLaunchCommand('codex')); setFocused('terminal'); typeIntoActiveShell(); break
+      case 'launchClaude': startLauncher('claude'); break
+      case 'launchCodex': startLauncher('codex'); break
+      case 'launchGemini': startLauncher('gemini'); break
       case 'chatPanel': setSkin('terminal'); window.dispatchEvent(new Event('chat:open-panel')); break
       case 'closeWorkspace': window.dispatchEvent(new CustomEvent('workspace:navigate', { detail: { action: 'close' } })); break
       case 'closePane': setSkin('terminal'); closeFocusedPane(); break
@@ -186,6 +209,10 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'focusRight': dispatchSemanticCommand('terminal.focus', { direction: 'right' }, { kind: 'active-terminal' }); break
       case 'focusUp': dispatchSemanticCommand('terminal.focus', { direction: 'up' }, { kind: 'active-terminal' }); break
       case 'focusDown': dispatchSemanticCommand('terminal.focus', { direction: 'down' }, { kind: 'active-terminal' }); break
+      case 'focusLeftVim': dispatchSemanticCommand('terminal.focus', { direction: 'left' }, { kind: 'active-terminal' }); break
+      case 'focusRightVim': dispatchSemanticCommand('terminal.focus', { direction: 'right' }, { kind: 'active-terminal' }); break
+      case 'focusUpVim': dispatchSemanticCommand('terminal.focus', { direction: 'up' }, { kind: 'active-terminal' }); break
+      case 'focusDownVim': dispatchSemanticCommand('terminal.focus', { direction: 'down' }, { kind: 'active-terminal' }); break
       case 'resizeLeft': setSkin('terminal'); setFocused('terminal'); resizePane('left'); break
       case 'resizeRight': setSkin('terminal'); setFocused('terminal'); resizePane('right'); break
       case 'resizeUp': setSkin('terminal'); setFocused('terminal'); resizePane('up'); break
@@ -214,6 +241,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
   return (
     <>
     <SettingsPanel />
+    <ShortcutSheet />
     <Command.Dialog
       open={open}
       onOpenChange={onOpenChange}
@@ -245,7 +273,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
         </>
       ) : (
         <>
-          <Command.Input value={search} onValueChange={setSearch} placeholder="Type a command or search issues…" autoFocus />
+          <Command.Input value={search} onValueChange={setSearch} placeholder="Search commands, views, workspaces, tabs and conversations…" autoFocus />
           <Command.List>
             <Command.Empty>No results.</Command.Empty>
 
@@ -254,6 +282,39 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
                 {COMMANDS.filter(c => c.id !== 'palette').map(c => (
                   <Command.Item key={c.id} value={c.label} disabled={'repo' in c && c.repo && !repoPath} onSelect={() => execute(c.id)}>
                     <span>{c.label}</span><kbd>{bindings[c.id] ? shortcutLabel(bindings[c.id]) : '—'}</kbd>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {view === 'root' && projects.length > 1 && (
+              <Command.Group heading="Workspaces">
+                {projects.filter(p => p.id !== activeId).map(p => (
+                  <Command.Item key={p.id} value={`workspace ${p.name} ${p.id}`} onSelect={() => onSwitchProject(p.id)}>
+                    <span>{p.name}</span><kbd>workspace</kbd>
+                  </Command.Item>
+                ))}
+              </Command.Group>
+            )}
+
+            {view === 'root' && repoPath && panes.tabs.length > 1 && (
+              <Command.Group heading="Terminal tabs">
+                {panes.tabs.map((tab, index) => {
+                  const leaves = leavesOf(tab.root)
+                  const what = [...new Set(leaves.map(leaf => leaf.agent ? 'agent' : leaf.fileNav ? 'files' : leaf.browser ? 'browser' : leaf.agentCli ?? 'shell'))].join(' + ')
+                  const where = abbreviatePath(leaves[0]?.cwd ?? '')
+                  return <Command.Item key={tab.id} value={`terminal tab ${index + 1} ${what} ${where}`} onSelect={() => { dismiss(); setSkin('terminal'); switchTab(index); setFocused('terminal'); typeIntoActiveShell() }}>
+                    <span>Tab {index + 1} · {what}{where ? ` · ${where}` : ''}</span><kbd>{tab.id === panes.activeTabId ? 'current tab' : 'terminal tab'}</kbd>
+                  </Command.Item>
+                })}
+              </Command.Group>
+            )}
+
+            {view === 'root' && sessions.length > 0 && (
+              <Command.Group heading="Conversations">
+                {sessions.map(item => (
+                  <Command.Item key={`${item.provider}:${item.id}`} value={`conversation ${item.provider} ${item.title} ${item.id}`} onSelect={() => { requestHistoryFocus(activeId ?? '', item); openDesignerView('history'); dismiss() }}>
+                    <span>{item.title || 'Untitled conversation'}</span><kbd>{item.provider} · {relativeTime(item.modifiedMs)}</kbd>
                   </Command.Item>
                 ))}
               </Command.Group>

@@ -24,6 +24,8 @@ const MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DIFF_BYTES: usize = 512 * 1024;
 const MAX_STATUS_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 1024;
+const MAX_BINARY_HASH_BYTES: u64 = 16 * 1024 * 1024;
+const BINARY_SAMPLE_BYTES: usize = 8192;
 static LEDGER_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -302,6 +304,22 @@ fn walk_workspace(root: &Path, out: &mut Vec<(String, PathBuf)>, depth: usize) {
     }
 }
 
+/// True when the first bytes hold a NUL or are not UTF-8 text (a cut multi-byte
+/// character at the end of the sample is tolerated).
+fn looks_binary(path: &Path) -> Result<bool, String> {
+    let mut sample = vec![0u8; BINARY_SAMPLE_BYTES];
+    let mut file = fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let n = file.read(&mut sample).map_err(|e| format!("read {}: {e}", path.display()))?;
+    sample.truncate(n);
+    if sample.contains(&0) {
+        return Ok(true);
+    }
+    Ok(match std::str::from_utf8(&sample) {
+        Ok(_) => false,
+        Err(error) => error.error_len().is_some(),
+    })
+}
+
 fn read_file(
     root: &Path,
     status: String,
@@ -339,6 +357,32 @@ fn read_file(
     }
     let metadata = fs::metadata(&path).map_err(|e| format!("stat {}: {e}", path.display()))?;
     let size = metadata.len();
+    // A binary file (an image, an archive) is listed, never read into the
+    // capture: it is not an error. Its identity is its bytes when small, else
+    // its size and modification time.
+    if looks_binary(&path)? {
+        let mut identity = relative.to_string_lossy().as_bytes().to_vec();
+        if size <= MAX_BINARY_HASH_BYTES {
+            identity.extend_from_slice(&fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?);
+        } else {
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|age| age.as_nanos())
+                .unwrap_or(0);
+            identity.extend_from_slice(format!("\0{size}\0{modified}").as_bytes());
+        }
+        return Ok(Some(ArtifactFile {
+            path: relative.to_string_lossy().into_owned(),
+            status: if status.is_empty() { "A".into() } else { status },
+            size,
+            content_hash: hash_bytes(&identity),
+            content: None,
+            binary: true,
+            truncated: false,
+        }));
+    }
     if size > MAX_FILE_BYTES as u64 || total.saturating_add(size as usize) > MAX_TOTAL_BYTES {
         return Err(format!(
             "artifact content exceeds the bounded capture limit: {}",
@@ -347,12 +391,23 @@ fn read_file(
     }
     let bytes = fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     *total = total.saturating_add(bytes.len());
-    let content = String::from_utf8(bytes.clone()).map_err(|_| {
-        format!(
-            "binary artifact is not supported by the safe text preview: {}",
-            relative.display()
-        )
-    })?;
+    let content = match String::from_utf8(bytes.clone()) {
+        Ok(text) => text,
+        // Invalid UTF-8 past the sampled prefix: still a binary file.
+        Err(_) => {
+            let mut identity = relative.to_string_lossy().as_bytes().to_vec();
+            identity.extend_from_slice(&bytes);
+            return Ok(Some(ArtifactFile {
+                path: relative.to_string_lossy().into_owned(),
+                status: if status.is_empty() { "A".into() } else { status },
+                size,
+                content_hash: hash_bytes(&identity),
+                content: None,
+                binary: true,
+                truncated: false,
+            }));
+        }
+    };
     let mut identity = relative.to_string_lossy().as_bytes().to_vec();
     identity.extend_from_slice(&bytes);
     Ok(Some(ArtifactFile {
@@ -746,6 +801,23 @@ pub async fn artifact_approve(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn binary_files_are_listed_not_errors() {
+        let root = std::env::temp_dir().join(format!("bs-artifacts-bin-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let png = root.join("shot.png");
+        fs::write(&png, [0x89, b'P', b'N', b'G', 0, 1, 2, 0xff, 0xfe]).unwrap();
+        let mut total = 0;
+        let file = read_file(&root, "??".into(), png, &mut total).unwrap().unwrap();
+        assert!(file.binary);
+        assert!(file.content.is_none());
+        assert_eq!(file.size, 9);
+        assert_eq!(total, 0);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn hash_is_stable() {

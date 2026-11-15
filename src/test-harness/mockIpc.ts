@@ -244,6 +244,9 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
     case 'agent_hooks_status':
     case 'agent_hooks_set_installed':
       return { installed: args?.installed === true, sessionSettings: '/tmp/beads-station/agent-hooks/claude-settings.json' }
+    case 'browser_probe':
+      // Port 9 (discard) stands for a dev server that is not running.
+      return { reachable: !String(args?.url ?? '').includes(':9/') && !String(args?.url ?? '').endsWith(':9'), refusesFraming: String(args?.url ?? '').includes('refuses') }
     case 'pty_persisted':
       return []
     case 'pty_foreground':
@@ -282,10 +285,22 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
         workspacePath: String(args?.workspacePath ?? ''), revisionHash: 'preview', validation: [],
         files: [
           { path: 'src/app.ts', status: 'M', size: 10, contentHash: 'a', content: null, binary: false, truncated: false },
+          { path: 'docs/images/shot.png', status: '??', size: 20480, contentHash: 'c', content: null, binary: true, truncated: false },
           { path: 'notes.md', status: '??', size: 8, contentHash: 'b', content: 'one\ntwo\n', binary: false, truncated: false },
         ],
         diff: 'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n-old\n+new\n+more',
       }
+    case 'pin_kinds':
+      return ((args?.paths as string[]) ?? []).map(path => (path.endsWith('/') || !path.includes('.')) ? 'dir' : 'file')
+    case 'pin_open':
+      return null
+    case 'vault_list':
+      return { truncated: false, notes: [
+        { rel: 'Daily/Monday.md', name: 'Monday', modifiedMs: Date.now() - 3_600_000, size: 120 },
+        { rel: 'Ideas.md', name: 'Ideas', modifiedMs: Date.now() - 86_400_000, size: 80 },
+      ] }
+    case 'vault_read':
+      return { rel: String(args?.rel ?? ''), truncated: false, content: '---\ntags: [x]\n---\n# Plan\n\n- [x] done item\n- [ ] open item\n\nSee [[Ideas]] and [site](https://example.com).\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n```ts\nconst a = 1\n```\n' }
     case 'app_close_scope':
       return { ptyCount: 1, providerCount: 1, runCount: 0 }
     case 'app_request_close':

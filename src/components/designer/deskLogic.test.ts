@@ -145,3 +145,46 @@ describe('groupBlocks', () => {
     expect(groups[1].kind === 'tools' && groups[1].tools.length).toBe(2)
   })
 })
+
+import { classifyInput as classifyPinned, dropItems, openAction } from './shelf'
+import { filterNotes, notePath, prepareNote } from './vault'
+import { looksLikeDiff } from './ConversationView'
+
+describe('Pinned references', () => {
+  it('pins a URL as a link and a dropped folder or file as a reference', () => {
+    expect(classifyPinned('https://example.com/a?b=1')).toEqual({ kind: 'link', value: 'https://example.com/a?b=1' })
+    expect(classifyPinned('see https://example.com')?.kind).toBe('note')
+    expect(dropItems(['/a/dir', '/a/n.md', '/a/p.png', '/gone'], ['dir', 'file', 'file', 'missing'])).toEqual([
+      { kind: 'folder', value: '/a/dir' }, { kind: 'markdown', value: '/a/n.md' }, { kind: 'file', value: '/a/p.png' },
+    ])
+  })
+  it('opens links in the browser, text in the editor, everything else with the system', () => {
+    expect(openAction({ kind: 'link', value: 'https://x.y' })).toBe('browser')
+    expect(openAction({ kind: 'markdown', value: '/a/n.md' })).toBe('editor')
+    expect(openAction({ kind: 'file', value: '/a/src/app.ts' })).toBe('editor')
+    expect(openAction({ kind: 'file', value: '/a/shot.png' })).toBe('system')
+    expect(openAction({ kind: 'folder', value: '/a' })).toBe('system')
+    expect(openAction({ kind: 'note', value: 'text' })).toBe('none')
+  })
+})
+
+describe('vault notes', () => {
+  it('drops properties and turns wikilinks into text', () => {
+    expect(prepareNote('---\ntags: [a]\n---\n# Title\nSee [[Other|the other]] and [[Plain]] ![[pic.png]]'))
+      .toBe('# Title\nSee the other and Plain (embedded: pic.png)')
+    expect(prepareNote('no properties')).toBe('no properties')
+  })
+  it('filters by every word and joins paths', () => {
+    const notes = [{ rel: 'Daily/Mon.md', name: 'Mon', modifiedMs: 1, size: 1 }, { rel: 'Ideas.md', name: 'Ideas', modifiedMs: 2, size: 1 }]
+    expect(filterNotes(notes, 'daily mon').map(note => note.rel)).toEqual(['Daily/Mon.md'])
+    expect(filterNotes(notes, '')).toHaveLength(2)
+    expect(notePath('~/Vault/', 'A/b.md')).toBe('~/Vault/A/b.md')
+  })
+})
+
+describe('tool results', () => {
+  it('recognises a unified diff', () => {
+    expect(looksLikeDiff('--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b')).toBe(true)
+    expect(looksLikeDiff('updated')).toBe(false)
+  })
+})

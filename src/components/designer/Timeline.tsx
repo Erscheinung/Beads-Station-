@@ -1,5 +1,10 @@
 import { useMemo } from 'react'
-import type { Issue } from '../../types/issue'
+import { ProviderMark } from '../ProviderMark'
+import { buildActivity, type ActivityEntry, type SessionNode } from './activity'
+import { StatusDot } from './LiveSessions'
+import { useSessionTree } from './useSessionTree'
+import { requestHistoryFocus } from './transcripts'
+import { openDesignerView } from '../../state/designerNav'
 import { BdLiveProvider } from '../../lib/BdLiveProvider'
 import { useBdSnapshot } from '../../lib/bdCache'
 import { useProjects } from '../../state/projects'
@@ -13,49 +18,49 @@ import { useProjects } from '../../state/projects'
 // its own BdLiveProvider (shell renders outside App's provider), mirroring
 // BeadGraph + ActiveAgents.
 
-interface DayGroup {
-  /** YYYY-MM-DD key. */
-  key: string
-  /** "Fri, Aug 22" heading. */
-  label: string
-  issues: Issue[]
+function timeOf(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
 
-const DAY_FMT: Intl.DateTimeFormatOptions = {
-  weekday: 'short',
-  month: 'short',
-  day: 'numeric',
+function SessionRow({ node, projectId, nested }: { node: SessionNode; projectId: string; nested?: boolean }) {
+  const { summary } = node
+  const open = () => { if (!summary.parentId) { requestHistoryFocus(projectId, summary); openDesignerView('history') } }
+  return (
+    <div style={{ ...styles.row, marginLeft: nested ? 22 : 0 }} data-testid="timeline-session">
+      <span style={{ ...styles.tick, background: 'var(--bs-blue)' }} />
+      <span style={styles.time}>{timeOf(summary.modifiedMs)}</span>
+      <span style={styles.mark}><ProviderMark id={summary.provider} size={13} /></span>
+      <StatusDot status={node.status} />
+      <button style={styles.sessionTitle} onClick={open} disabled={Boolean(summary.parentId)} title={summary.parentId ? 'Subagent' : 'Open in History'}>{summary.title}</button>
+      {summary.agentType && <span style={styles.chip}>{summary.agentType}</span>}
+      {node.beads.map(id => <span key={id} style={styles.beadLink}>{id}</span>)}
+      {node.duration && <span style={styles.time}>{node.duration}</span>}
+    </div>
+  )
 }
 
-function timeOf(iso: string): string {
-  const d = new Date(iso)
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-}
-
-/** Group closed issues into day lanes, newest day first, newest issue first. */
-function groupByDay(all: Issue[]): DayGroup[] {
-  const closed = all
-    .filter(i => i.status === 'closed' && i.closed_at)
-    .sort((a, b) => (a.closed_at! < b.closed_at! ? 1 : -1))
-
-  const groups = new Map<string, DayGroup>()
-  for (const issue of closed) {
-    const d = new Date(issue.closed_at!)
-    // Local-day key (not UTC) so a late-evening close lands on the right lane.
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-    let g = groups.get(key)
-    if (!g) {
-      g = { key, label: d.toLocaleDateString(undefined, DAY_FMT), issues: [] }
-      groups.set(key, g)
-    }
-    g.issues.push(issue)
+function EntryRow({ entry, projectId }: { entry: ActivityEntry; projectId: string }) {
+  if (entry.kind === 'bead') {
+    return (
+      <div style={styles.row}>
+        <span style={styles.tick} />
+        <span style={styles.time}>{timeOf(entry.at)}</span>
+        <span style={styles.rowId}>{entry.issue.id}</span>
+        <span style={styles.rowTitle}>{entry.issue.title}</span>
+      </div>
+    )
   }
-  return [...groups.values()]
+  return <>
+    <SessionRow node={entry.node} projectId={projectId} />
+    {entry.node.children.map(child => <SessionRow key={child.summary.id} node={child} projectId={projectId} nested />)}
+  </>
 }
 
-function TimelineInner({ repoPath }: { repoPath: string }) {
+function TimelineInner({ repoPath, projectId }: { repoPath: string; projectId: string }) {
   const snap = useBdSnapshot(repoPath)
-  const days = useMemo(() => groupByDay(snap.all), [snap.all])
+  const beadIds = useMemo(() => snap.all.map(issue => issue.id), [snap.all])
+  const { tree } = useSessionTree(repoPath, beadIds)
+  const days = useMemo(() => buildActivity(snap.all, tree), [snap.all, tree])
 
   if (!snap.loaded) {
     return <div style={styles.hint}>Reading the timeline…</div>
@@ -63,15 +68,14 @@ function TimelineInner({ repoPath }: { repoPath: string }) {
   if (snap.error) {
     return <div style={styles.hint}>bd error: {snap.error}</div>
   }
-  if (days.length === 0) {
-    return <div style={styles.hint}>No closed beads yet. Ship one and it lands here.</div>
-  }
+  const closedCount = snap.all.filter(i => i.status === 'closed' && i.closed_at).length
 
   return (
     <div style={styles.wrap}>
       <div style={styles.header}>
         <p style={styles.title}>Timeline</p>
-        <p style={styles.sub}>Closed beads, most recent first.</p>
+        <p style={styles.sub}>Closed beads and Claude, Codex and Qwen sessions, most recent first.</p>
+        {closedCount === 0 && <p style={styles.sub}>No closed beads yet. Ship one and it lands here.</p>}
       </div>
 
       <div style={styles.lanes}>
@@ -79,17 +83,10 @@ function TimelineInner({ repoPath }: { repoPath: string }) {
           <section key={day.key} style={styles.lane}>
             <div style={styles.dayHead}>
               <span style={styles.dayLabel}>{day.label}</span>
-              <span style={styles.dayCount}>{day.issues.length}</span>
+              <span style={styles.dayCount}>{day.entries.length}</span>
             </div>
             <div style={styles.rail}>
-              {day.issues.map(issue => (
-                <div key={issue.id} style={styles.row}>
-                  <span style={styles.tick} />
-                  <span style={styles.time}>{timeOf(issue.closed_at!)}</span>
-                  <span style={styles.rowId}>{issue.id}</span>
-                  <span style={styles.rowTitle}>{issue.title}</span>
-                </div>
-              ))}
+              {day.entries.map(entry => <EntryRow key={entry.key} entry={entry} projectId={projectId} />)}
             </div>
           </section>
         ))}
@@ -106,7 +103,7 @@ export function Timeline() {
 
   return (
     <BdLiveProvider>
-      <TimelineInner repoPath={active.path} />
+      <TimelineInner repoPath={active.path} projectId={active.id} />
     </BdLiveProvider>
   )
 }
@@ -202,6 +199,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--bs-fg-faint)',
     minWidth: 44,
   },
+  mark: { display: 'inline-flex', color: 'var(--bs-fg-muted)', flexShrink: 0 },
+  sessionTitle: { border: 'none', background: 'transparent', padding: 0, font: 'inherit', fontSize: 13, color: 'var(--bs-fg)', textAlign: 'left', cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 },
+  chip: { fontSize: 10, padding: '0 6px', borderRadius: 5, border: '1px solid var(--bs-border)', color: 'var(--bs-fg-muted)', flexShrink: 0 },
+  beadLink: { fontSize: 10, fontFamily: 'var(--du-font-mono)', fontWeight: 600, color: 'var(--bs-green)', flexShrink: 0 },
   rowId: {
     fontSize: 11,
     fontFamily: 'var(--du-font-mono)',

@@ -112,10 +112,10 @@ test('Designer top-bar "Terminal skin" button switches to the terminal shell', a
 }) => {
   // Default mock has projects, so the designer shell (with its top-bar) renders.
   await bootDesignerWith(page, {})
-  await expect(page.getByRole('button', { name: 'Terminal skin' })).toBeVisible()
-  await page.getByRole('button', { name: 'Terminal skin' }).click()
+  await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Terminal', exact: true }).click()
   // Terminal shell is up: the designer top-bar control is gone, and a
   // terminal-only surface (the tab bar / board) is present.
-  await expect(page.getByRole('button', { name: 'Terminal skin' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('.du-theme').first()).toHaveCount(0)
 })

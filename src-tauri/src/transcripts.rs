@@ -25,6 +25,9 @@ const HEAD_READ: u64 = 256 * 1024;
 /// How much of a file's end is looked at for the latest generated title.
 const TITLE_TAIL: u64 = 64 * 1024;
 const MAX_LIST: usize = 60;
+/// Subagents shown per session, and for how many of the newest sessions they are looked up.
+const MAX_SUBAGENTS: usize = 20;
+const SUBAGENT_PARENTS: usize = 15;
 /// Codex keeps every workspace's rollouts together, so only the newest are scanned.
 const MAX_CODEX_SCAN: usize = 150;
 const PREVIEW_CHARS: usize = 400;
@@ -41,6 +44,17 @@ pub struct TranscriptSummary {
     pub first_prompt: String,
     pub modified_ms: u64,
     pub bytes: u64,
+    /// When the file was created (the session's start); 0 when the filesystem does not say.
+    pub created_ms: u64,
+    /// Set on a Claude subagent: the session that spawned it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// A subagent's own marker (from its `.meta.json`); None for sessions, whose end is not recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished: Option<bool>,
+    /// A subagent's type, e.g. "general-purpose".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -108,6 +122,15 @@ pub(crate) fn read_window(path: &Path, cap: u64, from_end: bool) -> std::io::Res
 pub(crate) fn modified_ms(path: &Path) -> u64 {
     fs::metadata(path)
         .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub(crate) fn created_ms(path: &Path) -> u64 {
+    fs::metadata(path)
+        .and_then(|meta| meta.created())
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis() as u64)
@@ -253,7 +276,13 @@ fn new_turn(role: &str, at: Option<String>) -> Turn {
 
 // ---------- Claude ----------
 
+#[cfg(test)]
 pub(crate) fn parse_claude(text: &str) -> (Vec<Turn>, Option<Usage>) {
+    parse_claude_with(text, false)
+}
+
+/// A subagent's own file is all sidechain, so reading one keeps those lines.
+pub(crate) fn parse_claude_with(text: &str, keep_sidechain: bool) -> (Vec<Turn>, Option<Usage>) {
     let mut turns: Vec<Turn> = Vec::new();
     // tool_use id -> (turn index, block index), so a later result lands on its call.
     let mut calls: HashMap<String, (usize, usize)> = HashMap::new();
@@ -262,7 +291,7 @@ pub(crate) fn parse_claude(text: &str) -> (Vec<Turn>, Option<Usage>) {
 
     for line in text.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
-        if value.get("isSidechain").and_then(Value::as_bool) == Some(true) { continue }
+        if !keep_sidechain && value.get("isSidechain").and_then(Value::as_bool) == Some(true) { continue }
         let at = value.get("timestamp").and_then(Value::as_str).map(str::to_string);
         let Some(message) = value.get("message") else { continue };
         match value.get("type").and_then(Value::as_str) {
@@ -380,10 +409,32 @@ fn list_claude(claude_home: &Path, workspace: &str) -> Vec<TranscriptSummary> {
             // Sessions that never got a readable user prompt (hook-only or empty) are noise.
             let first_prompt = claude_first_prompt(&head).unwrap_or_default();
             let title = claude_title(&head, &tail, &first_prompt)?;
-            Some(TranscriptSummary { id, provider: "claude".into(), title, first_prompt, modified_ms: modified, bytes: fs::metadata(&path).map(|m| m.len()).unwrap_or(0) })
+            Some(TranscriptSummary { id, provider: "claude".into(), title, first_prompt, modified_ms: modified, bytes: fs::metadata(&path).map(|m| m.len()).unwrap_or(0), created_ms: created_ms(&path), parent_id: None, finished: None, agent_type: None })
         })
         .take(MAX_LIST)
         .collect()
+}
+
+/// Subagents a session spawned: `<session id>/subagents/agent-*.jsonl` with a `.meta.json` beside each.
+fn list_subagents(dir: &Path, parent: &str) -> Vec<TranscriptSummary> {
+    let mut found: Vec<TranscriptSummary> = jsonl_files(&dir.join(parent).join("subagents"))
+        .into_iter()
+        .filter_map(|(path, modified)| {
+            let id = path.file_stem()?.to_str()?.to_string();
+            if !is_session_id(&id) { return None }
+            let meta: Value = fs::read_to_string(path.with_extension("meta.json")).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or(Value::Null);
+            let description = meta.get("description").and_then(Value::as_str).unwrap_or("Subagent");
+            Some(TranscriptSummary {
+                id, provider: "claude".into(), title: clip(description, TITLE_CHARS), first_prompt: String::new(),
+                modified_ms: modified, bytes: fs::metadata(&path).map(|m| m.len()).unwrap_or(0), created_ms: created_ms(&path),
+                parent_id: Some(parent.to_string()),
+                finished: meta.get("finished").and_then(Value::as_bool),
+                agent_type: meta.get("agentType").and_then(Value::as_str).map(str::to_string),
+            })
+        })
+        .collect();
+    found.truncate(MAX_SUBAGENTS);
+    found
 }
 
 // ---------- Codex ----------
@@ -444,7 +495,7 @@ fn list_codex(codex_home: &Path, workspace: &str) -> Vec<TranscriptSummary> {
             if !head.contains(&needle) { return None }
             let first_prompt = codex_first_user_text(&head, PROMPT_CHARS)?;
             let title = clip(&first_prompt, TITLE_CHARS);
-            Some(TranscriptSummary { id: codex_id(&path)?, provider: "codex".into(), title, first_prompt, modified_ms: modified, bytes: fs::metadata(&path).map(|m| m.len()).unwrap_or(0) })
+            Some(TranscriptSummary { id: codex_id(&path)?, provider: "codex".into(), title, first_prompt, modified_ms: modified, bytes: fs::metadata(&path).map(|m| m.len()).unwrap_or(0), created_ms: created_ms(&path), parent_id: None, finished: None, agent_type: None })
         })
         .take(MAX_LIST)
         .collect()
@@ -552,20 +603,34 @@ pub(crate) fn list(claude_home: &Path, codex_home: &Path, workspace: &str) -> Ve
     all.extend(list_codex(codex_home, workspace));
     all.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
     all.truncate(MAX_LIST);
+    // Subagents ride along after the sessions, so they never push a session out of the list.
+    let dir = claude_dir(claude_home, workspace);
+    let parents: Vec<String> = all.iter().filter(|item| item.provider == "claude").take(SUBAGENT_PARENTS).map(|item| item.id.clone()).collect();
+    for parent in parents { all.extend(list_subagents(&dir, &parent)); }
     all
 }
 
 pub(crate) fn read(claude_home: &Path, codex_home: &Path, workspace: &str, provider: &str, id: &str) -> Result<Transcript, String> {
     if !is_session_id(id) { return Err("Invalid session id".into()) }
     let path = match provider {
-        "claude" => jsonl_files(&claude_dir(claude_home, workspace)).into_iter().map(|(path, _)| path).find(|path| path.file_stem().and_then(|s| s.to_str()) == Some(id)),
+        "claude" => {
+            let dir = claude_dir(claude_home, workspace);
+            jsonl_files(&dir).into_iter().map(|(path, _)| path).find(|path| path.file_stem().and_then(|s| s.to_str()) == Some(id))
+                .or_else(|| find_subagent_file(&dir, id))
+        }
         "codex" => codex_rollouts(codex_home).into_iter().map(|(path, _)| path).find(|path| codex_id(path).as_deref() == Some(id)),
         _ => return Err("Unknown provider".into()),
     }
     .ok_or("That session file is gone")?;
     let (text, truncated) = read_window(&path, MAX_READ, true).map_err(|error| error.to_string())?;
-    let (turns, usage) = if provider == "claude" { parse_claude(&text) } else { (parse_codex(&text), codex_usage(&text)) };
+    let is_subagent = provider == "claude" && path.parent().and_then(|p| p.file_name()).is_some_and(|n| n == "subagents");
+    let (turns, usage) = if provider == "claude" { parse_claude_with(&text, is_subagent) } else { (parse_codex(&text), codex_usage(&text)) };
     Ok(Transcript { id: id.into(), provider: provider.into(), turns, truncated, usage })
+}
+
+/// A subagent is named by its file stem only (validated by the caller), looked up under each session's own folder.
+fn find_subagent_file(dir: &Path, id: &str) -> Option<PathBuf> {
+    fs::read_dir(dir).ok()?.flatten().map(|entry| entry.path().join("subagents").join(format!("{id}.jsonl"))).find(|path| path.is_file())
 }
 
 pub(crate) fn homes() -> Result<(PathBuf, PathBuf), String> {
@@ -731,5 +796,25 @@ mod tests {
         assert_eq!((listed[0].id.as_str(), listed[0].provider.as_str(), listed[0].title.as_str()), (id, "codex", "Add a dark mode toggle"));
         assert!(list(&home.join("none"), &home, "/home/dev/proj2").is_empty());
         assert_eq!(read(&home.join("none"), &home, "/x", "codex", id).unwrap().turns.len(), 2);
+    }
+
+    #[test]
+    fn subagents_are_listed_under_their_session_and_readable_by_id() {
+        let home = scratch();
+        let workspace = "/work/proj";
+        let dir = claude_dir(&home, workspace);
+        let parent = "11111111-1111-4111-8111-111111111111";
+        fs::create_dir_all(dir.join(parent).join("subagents")).unwrap();
+        fs::write(dir.join(format!("{parent}.jsonl")), CLAUDE_SESSION).unwrap();
+        fs::write(dir.join(parent).join("subagents/agent-abc.meta.json"), r#"{"agentType":"general-purpose","description":"Scan the repo","finished":true}"#).unwrap();
+        fs::write(dir.join(parent).join("subagents/agent-abc.jsonl"), "{\"isSidechain\":true,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Look around\"}}\n").unwrap();
+        let codex = scratch();
+        let all = list(&home, &codex, workspace);
+        let sub = all.iter().find(|item| item.id == "agent-abc").expect("subagent listed");
+        assert_eq!(sub.parent_id.as_deref(), Some(parent));
+        assert_eq!(sub.finished, Some(true));
+        assert_eq!(sub.title, "Scan the repo");
+        let read = read(&home, &codex, workspace, "claude", "agent-abc").unwrap();
+        assert_eq!(read.turns.len(), 1);
     }
 }

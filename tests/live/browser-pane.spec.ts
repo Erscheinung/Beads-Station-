@@ -30,3 +30,17 @@ test('a browser pane loads a typed address in a sandboxed frame and keeps the sh
   await pane.getByRole('button', { name: 'Window', exact: true }).click()
   await expect.poll(() => page.evaluate(() => (window as any).__bsInvokeLog.find((entry: any) => entry.cmd === 'browser_open_window')?.args?.url)).toBe('http://localhost:1422/vite.svg')
 })
+
+test('a local address with nothing listening says so instead of showing a blank frame', async ({ page }) => {
+  await page.getByRole('button', { name: 'Browser', exact: true }).click()
+  const pane = page.locator('[data-browser-pane]')
+  await pane.getByLabel('Address').fill('localhost:9')
+  await pane.getByLabel('Address').press('Enter')
+  await expect(pane.getByRole('status')).toContainText('Nothing is answering at localhost:9')
+  await expect(pane.locator('iframe')).toHaveCount(0)
+  // The harness page is plain http itself, so the "blocked http" hint does not apply here.
+  await pane.getByLabel('Address').fill('localhost:1422/vite.svg')
+  await pane.getByLabel('Address').press('Enter')
+  await expect(pane.locator('iframe')).toHaveCount(1)
+  await expect(pane.getByTestId('browser-http-note')).toHaveCount(0)
+})

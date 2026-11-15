@@ -270,8 +270,9 @@ impl Host {
             "foreground" => {
                 let terminal = self.terminal(request)?;
                 let want_session = request.get("wantSession").and_then(Value::as_bool) == Some(true);
-                let (cli, session_id) = crate::pty::foreground_of(lock(&terminal.master).as_ref(), want_session);
-                Ok(json!({ "cli": cli, "sessionId": session_id }))
+                // Additive fields: an older app ignores `program` and `cwd`.
+                let found = crate::pty::foreground_of(lock(&terminal.master).as_ref(), want_session);
+                Ok(json!({ "cli": found.cli, "sessionId": found.session_id, "program": found.program, "cwd": found.cwd }))
             }
             "kill" => {
                 if let Some(terminal) = lock(&self.terminals).remove(text(request, "key")?) {

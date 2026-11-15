@@ -6,6 +6,8 @@ import { useBdSnapshot } from '../../lib/bdCache'
 import { useConductorStatus, useConductorFeed, useConductorBuilders } from '../../lib/useConductorStatus'
 import type { ConductorFeedEntry } from '../../lib/useConductorStatus'
 import type { ConductorStatus, BuilderStatus } from '../../lib/conductorBridge'
+import { LiveSessions } from './LiveSessions'
+import { ProviderMark } from '../ProviderMark'
 import { conductorPulseNow, conductorStopAgent, conductorDeferBead } from '../../lib/conductorBridge'
 
 // DU3 (Code-d7j) — the Active-agents panel. A calm, READ-ONLY summary of what
@@ -214,7 +216,7 @@ function relTime(ts: number, now: number): string {
   return `${Math.round(mins / 60)}h ago`
 }
 
-function AgentsInner({ repoPath }: { repoPath: string }) {
+function AgentsInner({ repoPath, full }: { repoPath: string; full: boolean }) {
   const { projects } = useProjects()
 
   const status = useConductorStatus()
@@ -258,6 +260,8 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
   const cards = [conductor, ...builderCards, ...chatCards].filter(Boolean) as AgentCard[]
 
   const nextUp = snap.ready[0] ?? null
+  const project = projects.find(p => p.path === repoPath) ?? null
+  const beadIds = useMemo(() => snap.all.map(issue => issue.id), [snap.all])
 
   // Code-jx3.2 (RV6.2) — fire a targeted pulse for the NEXT UP bead on demand.
   // Backend inherits a running loop's dry-run posture; the button never opts into
@@ -306,6 +310,10 @@ function AgentsInner({ repoPath }: { repoPath: string }) {
 
   return (
     <div style={styles.wrap}>
+      <LiveSessions project={project} beadIds={beadIds} full={full} />
+      <p style={{ ...styles.empty, display: 'flex', alignItems: 'center', gap: 6, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: 11 }}>
+        <ProviderMark id="conductor" size={12} /> Local conductor runs
+      </p>
       {cards.length === 0 && (
         <p style={styles.empty}>
           No agents running. Start the conductor or open a chat pane.
@@ -442,13 +450,13 @@ function FeedSection({ feed }: { feed: ConductorFeedEntry[] }) {
  * BdLiveProvider (the shell renders outside App's provider) and resolves the
  * active project's repoPath the same way BeadGraph does.
  */
-export function ActiveAgents() {
+export function ActiveAgents({ full = false }: { full?: boolean } = {}) {
   const { projects, activeId } = useProjects()
   const active = projects.find(p => p.id === activeId) ?? projects[0] ?? null
 
   return (
     <BdLiveProvider>
-      <AgentsInner repoPath={active?.path ?? ''} />
+      <AgentsInner repoPath={active?.path ?? ''} full={full} />
     </BdLiveProvider>
   )
 }

@@ -123,7 +123,7 @@ test('macOS editing chords reach the shell and can be turned off', async ({ page
   await expect.poll(writes).toEqual(['\u0001', '\u0005', '\u0015', '\u001b\r'])
 
   await page.getByTitle('Open settings', { exact: true }).click()
-  await page.getByRole('button', { name: 'Terminal', exact: true }).click()
+  await page.getByLabel('Settings categories').getByRole('button', { name: 'Terminal', exact: true }).click()
   await page.getByLabel('macOS editing shortcuts', { exact: true }).uncheck()
   await page.getByRole('button', { name: 'Close settings' }).click()
   await page.locator('.xterm-helper-textarea').first().focus()

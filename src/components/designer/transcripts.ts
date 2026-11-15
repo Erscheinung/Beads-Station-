@@ -4,7 +4,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-export type TranscriptProvider = 'claude' | 'codex'
+export type TranscriptProvider = 'claude' | 'codex' | 'qwen'
 
 export interface TranscriptSummary {
   id: string
@@ -14,6 +14,13 @@ export interface TranscriptSummary {
   firstPrompt: string
   modifiedMs: number
   bytes: number
+  /** When the session file was created; 0 when unknown. */
+  createdMs?: number
+  /** Set on a Claude subagent: the session that spawned it. */
+  parentId?: string
+  /** A subagent's own finished marker; sessions do not record their end. */
+  finished?: boolean
+  agentType?: string
 }
 
 export type TranscriptBlock =

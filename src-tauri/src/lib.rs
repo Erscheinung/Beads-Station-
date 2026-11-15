@@ -20,6 +20,7 @@ mod envloader;
 #[cfg(target_os = "macos")]
 mod finder_service;
 mod fs;
+mod pinned;
 mod herdr_bridge;
 mod menu;
 mod meter;
@@ -223,6 +224,10 @@ pub fn run() {
             daily::daily_append,
             fs::list_dir,
             fs::read_file,
+            pinned::pin_kinds,
+            pinned::pin_open,
+            pinned::vault_list,
+            pinned::vault_read,
             projects::projects_get,
             projects::projects_list,
             projects::projects_browse,
@@ -257,6 +262,7 @@ pub fn run() {
             app_lifecycle::app_take_open_requests,
             browser::browser_open_window,
             browser::browser_refuses_framing,
+            browser::browser_probe,
             projects::projects_git_clone,
             crash_guard::app_last_crash,
             agent_hooks::agent_hooks_status,

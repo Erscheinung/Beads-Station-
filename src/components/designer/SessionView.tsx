@@ -7,6 +7,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from '../Terminal'
 import { disposeTerminalSession, hasTerminalSession, pasteIntoTerminalSession, runInTerminalSession } from '../../lib/terminalSessions'
 import { agentStartCommand } from '../../state/agentHooks'
+import { openInEditor } from '../../lib/openInEditor'
+import { openDesignerView } from '../../state/designerNav'
 import { setFocused } from '../../state/vim'
 import { setInsert } from '../../state/termPanes'
 import { requestDestructiveAction } from '../../state/destructiveActions'
@@ -14,7 +16,7 @@ import type { Issue } from '../../types/issue'
 import { approveArtifact, captureArtifact, requestArtifactChanges, useArtifactReview, type ArtifactRevision } from './artifacts'
 import { submitSessionAttempt } from './nativeRuns'
 import { bdCloseIssue } from '../../types/issue'
-import { fileChanges, ticketPrompt, type FileChange } from './sessionChanges'
+import { fileChanges, formatBytes, ticketPrompt, type FileChange } from './sessionChanges'
 
 type SessionKind = 'claude' | 'codex' | 'shell'
 const KIND_LABEL: Record<SessionKind, string> = { claude: 'Claude Code', codex: 'Codex', shell: 'Shell' }
@@ -172,6 +174,7 @@ export function SessionView({ project, issue, onClearIssue }: {
         : <div style={styles.empty}>
           <p style={styles.emptyTitle}>What are we making?</p>
           <p style={styles.meta}>Start a session in {project.name}. The real CLI runs here, with your own login. Nothing runs until you choose.</p>
+          <p style={styles.meta}>To pick up an earlier conversation instead, open <button style={{ border: 'none', background: 'transparent', padding: 0, font: 'inherit', color: 'var(--bs-orange)', textDecoration: 'underline', cursor: 'pointer' }} onClick={() => openDesignerView('history')}>History</button> and press “Resume in Session”.</p>
           <div style={styles.actions}>
             {(['claude', 'codex', 'shell'] as const).map(kind =>
               <button key={kind} style={kind === 'claude' ? styles.primary : styles.quiet} onClick={() => start(kind, false)}>{kind === 'shell' ? 'Plain shell' : `Start ${KIND_LABEL[kind]}`}</button>)}
@@ -193,9 +196,14 @@ export function SessionView({ project, issue, onClearIssue }: {
           <button style={styles.file} aria-expanded={open === change.path} onClick={() => setOpen(current => current === change.path ? null : change.path)}>
             <span style={{ ...styles.kind, color: KIND_COLOR[change.kind] }}>{change.kind}</span>
             <span style={styles.path} title={change.path}>{change.path}</span>
-            <span style={styles.counts}><span style={{ color: 'var(--bs-green)' }}>+{change.added}</span> <span style={{ color: 'var(--bs-red)' }}>−{change.removed}</span></span>
+            {change.binary
+              ? <span style={styles.counts} data-testid="binary-file">binary file · {formatBytes(change.size)}</span>
+              : <span style={styles.counts}><span style={{ color: 'var(--bs-green)' }}>+{change.added}</span> <span style={{ color: 'var(--bs-red)' }}>−{change.removed}</span></span>}
           </button>
-          {open === change.path && <pre style={styles.diff}>{change.diff ?? change.content ?? 'No preview for this file.'}</pre>}
+          {open === change.path && <>
+            {change.kind !== 'gone' && !change.binary && <button style={{ ...styles.quiet, margin: '6px 0', fontSize: 12, padding: '4px 9px' }} title="Opens the file in your editor in a Terminal pane (Settings → Sessions → Editor command)" onClick={() => { void openInEditor({ path: change.path }, { cwd: project.path }) }}>Open in editor</button>}
+            <pre style={styles.diff}>{change.binary ? `Binary file (${formatBytes(change.size)}). No text preview.` : change.diff ?? change.content ?? 'No preview for this file.'}</pre>
+          </>}
         </li>)}
       </ul>
       {work

@@ -7,6 +7,14 @@ import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 export const LAST_SEEN_VERSION_KEY = 'beads-station.last-seen-version'
 
 export const RELEASE_HIGHLIGHTS: Record<string, readonly string[]> = {
+  '0.2.1': [
+    'A pane that ran Claude or Codex before a restart now shows that conversation: searchable, with a message box. Enter reopens the CLI on exactly that conversation, and typed text is sent as the first message.',
+    'One top bar for Terminal and Designer, with Claude, Codex and Gemini launchers that use the commands set in Settings → Sessions.',
+    'Cmd Shift D flips Terminal and Designer, Cmd Y opens History, Cmd / shows every shortcut, and Cmd Shift H, J, K, L move between panes.',
+    'Cmd+click a path, path:line or ~/path in a terminal opens it in your editor. The browser pane moved to Cmd Shift B.',
+    'Designer: a live Agents view with subagents and a session timeline, a Requests board with focus lens and epic groups, Pinned drops and Obsidian notes.',
+    'Optional, off by default: Settings → Sessions → Continue agent sessions automatically.',
+  ],
   '0.2.0': [
     'Designer → History: every Claude Code and Codex session in a folder, read as a formatted conversation. No resume needed, no tokens used, and it works after a restart.',
     'Resume in Session starts the CLI on exactly the conversation you were reading. A ticket lists the sessions that worked on it.',

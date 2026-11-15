@@ -18,14 +18,15 @@ import { DesignerEmptyState } from './DesignerEmptyState'
 import { ColumnResizer } from './ColumnResizer'
 import { loadDesignerLayout, saveDesignerLayout, type DesignerLayout } from './designerLayout'
 import { useProjects } from '../../state/projects'
-import { setSkin } from '../../state/skin'
 import { conductorSetDefaultTier } from '../../lib/conductorBridge'
 import { useConductorStatus, statusPresentation } from '../../lib/useConductorStatus'
 import { bdCreate, bdNote, bdShow, type Issue } from '../../types/issue'
 import { cancelNativeRun, reconcileNativeRuns, startNativeRun, useNativeRun, type NativeProvider } from './nativeRuns'
 import { approveArtifact, captureArtifact, requestArtifactChanges, useArtifactReview, type ArtifactRevision } from './artifacts'
-import { openPalette } from '../../state/palette'
-import { openSettings } from '../../state/settings'
+import { TopBar } from '../TopBar'
+import { designerViewInfo, setDesignerView, useDesignerView, type DesignerView } from '../../state/designerNav'
+import { dispatchSemanticCommand } from '../../state/recipeIntegration'
+import { abbreviatePath } from '../../lib/abbreviatePath'
 import { SessionView, requestSessionStart, sessionIsRunning } from './SessionView'
 import { HistoryView } from './HistoryView'
 import { listTranscripts, mentionsBead, relativeTime, requestHistoryFocus, type TranscriptSummary } from './transcripts'
@@ -33,22 +34,12 @@ import { ShelfView } from './ShelfView'
 import { agentResumeCommand } from '../../state/agentHooks'
 
 type Tier = 'everyday' | 'heavy'
-type NavItem = 'requests' | 'session' | 'history' | 'shelf' | 'graph' | 'agents' | 'timeline'
+type NavItem = DesignerView
 interface ProviderAvailability {
   provider: NativeProvider
   available: boolean
   detail: string
 }
-
-const NAV_ITEMS: { id: NavItem; label: string }[] = [
-  { id: 'requests', label: 'Requests' },
-  { id: 'session',  label: 'Session' },
-  { id: 'history',  label: 'History' },
-  { id: 'shelf',    label: 'Shelf' },
-  { id: 'graph',    label: 'Bead map' },
-  { id: 'agents',   label: 'Agents' },
-  { id: 'timeline', label: 'Timeline' },
-]
 
 // Code-da0.5 — direct provider CLIs and conductor backends for ticket runs.
 const RUN_OPTIONS: { value: NativeProvider; label: string }[] = [
@@ -65,7 +56,8 @@ const TIER_META = {
 
 export function DesignerShell() {
   const [tier, setTier] = useState<Tier>('everyday')
-  const [nav, setNav]   = useState<NavItem>('requests')
+  const nav = useDesignerView()
+  const setNav = setDesignerView
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null)
   // The ticket handed to the live session; starting anything on it is a separate click there.
   const [sessionIssue, setSessionIssue] = useState<Issue | null>(null)
@@ -86,7 +78,7 @@ export function DesignerShell() {
   // right-panel surface independently renders "No project selected." on a fresh
   // machine (or a rejected projects_list), with no path forward. Show one
   // purposeful first-run / error panel instead.
-  const { projects, loaded, error: projectsError } = useProjects()
+  const { projects, activeId, loaded, error: projectsError } = useProjects()
 
   const meta = TIER_META[tier]
 
@@ -110,24 +102,10 @@ export function DesignerShell() {
 
   return (
     <div className="bs-designer" style={styles.root}>
-      {/* ── Top bar ── */}
-      <header style={styles.topbar}>
-        <div style={styles.wordmark}>
-          <span style={styles.dot} />
-          <span style={styles.wordmarkText}>Beads Station</span>
-        </div>
-        <div style={styles.topbarRight}>
-          <button style={styles.skinBtn} onClick={() => window.dispatchEvent(new Event('workspace:open'))}>Open workspace</button>
-          <button style={styles.skinBtn} onClick={openPalette}>Commands</button>
-          <button style={styles.skinBtn} onClick={openSettings}>Settings</button>
-          <button
-            style={styles.skinBtn}
-            onClick={() => setSkin('terminal')}
-            title="Switch to the terminal skin"
-          >
-            Terminal skin
-          </button>
-          <div style={styles.tierToggle} role="group" aria-label="Workflow tier">
+      <TopBar
+        skin="designer"
+        context={
+          <div style={styles.tierToggle} role="group" aria-label="Workflow tier" title={`${meta.model}. ${meta.heavy}`}>
             <button
               style={{ ...styles.tierBtn, ...(tier === 'everyday' ? styles.tierBtnActive : {}) }}
               onClick={() => selectTier('everyday')}
@@ -141,24 +119,27 @@ export function DesignerShell() {
               Heavy
             </button>
           </div>
-        </div>
-      </header>
+        }
+      />
 
       {/* ── Body: sidebar + main + right ── */}
       <div style={{ ...styles.body, gridTemplateColumns: `${layout.left}px 1fr ${layout.right}px` }}>
         {/* Left sidebar */}
         <aside style={styles.sidebar}>
-          <nav style={styles.nav}>
+          {/* The views live in the top bar; this column says where you are. */}
+          <nav style={styles.nav} aria-label="Workspaces">
             <p style={styles.navGroup}>WORKSPACE</p>
-            {NAV_ITEMS.map(item => (
+            {projects.map(candidate => (
               <button
-                key={item.id}
-                style={{ ...styles.navItem, ...(nav === item.id ? styles.navItemActive : {}) }}
-                onClick={() => setNav(item.id)}
+                key={candidate.id}
+                style={{ ...styles.navItem, ...(candidate.id === (activeId ?? projects[0]?.id) ? styles.navItemActive : {}) }}
+                title={abbreviatePath(candidate.path)}
+                onClick={() => dispatchSemanticCommand('workspace.select', { workspaceId: candidate.id }, { kind: 'workspace', workspaceId: candidate.id })}
               >
-                {item.label}
+                {candidate.name}
               </button>
             ))}
+            <button style={{ ...styles.navItem, color: 'var(--bs-fg-faint)' }} onClick={() => window.dispatchEvent(new Event('workspace:open'))}>Open workspace</button>
           </nav>
 
           {/* Active tier card */}
@@ -194,6 +175,7 @@ export function DesignerShell() {
 
         {/* Center — main view */}
         <main style={styles.main}>
+          <p style={styles.purpose} data-testid="designer-purpose"><strong style={{ color: 'var(--bs-fg)' }}>{designerViewInfo(nav).label}</strong> {designerViewInfo(nav).purpose}</p>
           <PaneBoundary paneId="designer-center">
             <CenterView nav={nav} selectedIssue={selectedIssue} onSelectIssue={setSelectedIssue} sessionIssue={sessionIssue} onSessionIssue={setSessionIssue} onOpenSession={openSession} onNavigate={setNav} />
           </PaneBoundary>
@@ -286,14 +268,14 @@ function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSession
       : <div style={styles.viewPlaceholder}><p style={styles.graphPlaceholderText}>Session</p><p style={styles.graphPlaceholderSub}>Open a workspace to start a session.</p></div>
   }
   if (nav === 'history' || nav === 'shelf') {
-    if (!project) return <div style={styles.viewPlaceholder}><p style={styles.graphPlaceholderText}>{nav === 'history' ? 'History' : 'Shelf'}</p><p style={styles.graphPlaceholderSub}>Open a workspace first.</p></div>
+    if (!project) return <div style={styles.viewPlaceholder}><p style={styles.graphPlaceholderText}>{nav === 'history' ? 'History' : 'Pinned'}</p><p style={styles.graphPlaceholderSub}>Open a workspace first.</p></div>
     return nav === 'history'
       ? <HistoryView key={project.id} project={project} sessionRunning={sessionIsRunning(project.id)}
-          onResume={summary => { requestSessionStart(project.id, agentResumeCommand(summary.provider, summary.id)); onNavigate('session') }} />
+          onResume={summary => { if (summary.provider === 'qwen') return /* no resume contract yet: docs/roadmap-0.2/QWEN-INTEGRATION.md */; requestSessionStart(project.id, agentResumeCommand(summary.provider, summary.id)); onNavigate('session') }} />
       : <ShelfView key={project.id} project={project} />
   }
   if (nav === 'agents') {
-    return <div style={{ ...styles.graphSlot, padding: 16, overflow: 'auto' }}><ActiveAgents /></div>
+    return <div style={{ ...styles.graphSlot, padding: 16, overflow: 'auto' }}><ActiveAgents full /></div>
   }
   if (nav === 'requests' || nav === 'graph') {
     return (
@@ -334,7 +316,7 @@ function RequestBrowser({ onSelect }: { onSelect: (issue: Issue) => void }) {
   }
   return <div style={styles.requestBrowser}>
     <div style={styles.requestBrowserHeader}>
-      <div><h2 style={styles.requestTitle}>Requests</h2><p style={styles.requestMeta}>Open anything to read it or start work, or capture a new outcome.</p></div>
+      <div style={{ minWidth: 0, flex: '1 1 260px' }}><h2 style={{ ...styles.requestTitle, lineHeight: 1.25 }}>Requests</h2><p style={styles.requestMeta}>Open anything to read it or start work, or capture a new outcome.</p></div>
       <button style={styles.primaryBtn} onClick={() => setCreating(v => !v)}>New request</button>
     </div>
     {creating && <div style={styles.reviewBox}>
@@ -662,6 +644,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 0,
     overflow: 'hidden',
   },
+  purpose: { margin: 0, padding: '7px 16px', fontSize: 12, color: 'var(--bs-fg-muted)', borderBottom: '1px solid var(--bs-border)', display: 'flex', gap: 8, alignItems: 'baseline', flexShrink: 0 },
   nav: {
     flex: 1,
     display: 'flex',
@@ -744,8 +727,8 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
   },
   requestDetail: { display: 'flex', flexDirection: 'column', gap: 20, padding: 28, maxWidth: 900, width: '100%', margin: '0 auto', boxSizing: 'border-box' },
-  requestBrowser: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
-  requestBrowserHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px 8px' },
+  requestBrowser: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, overflow: 'hidden' },
+  requestBrowserHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, padding: '16px 24px 8px', flexShrink: 0, position: 'relative', zIndex: 1, minWidth: 0 },
   requestEyebrow: { fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--bs-orange)' },
   requestTitle: { margin: 0, fontSize: 24, color: 'var(--bs-fg)' },
   requestBody: { margin: '10px 0 0', whiteSpace: 'pre-wrap', lineHeight: 1.6, color: 'var(--bs-fg-muted)' },

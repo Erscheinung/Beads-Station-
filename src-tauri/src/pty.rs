@@ -461,28 +461,44 @@ fn classify_agent_cli(argv: &[String]) -> Option<&'static str> {
     })
 }
 
+/// The command line and working folder of the terminal's foreground process.
 #[cfg(unix)]
-fn foreground_argv(master: &dyn MasterPty) -> Option<Vec<String>> {
+fn foreground_process(master: &dyn MasterPty) -> Option<(Vec<String>, Option<String>)> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let pid = Pid::from_u32(u32::try_from(master.process_group_leader()?).ok()?);
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
         true,
-        ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_cwd(UpdateKind::Always),
     );
     let process = system.process(pid)?;
-    Some(
+    Some((
         process
             .cmd()
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect(),
-    )
+        process.cwd().map(|cwd| cwd.to_string_lossy().into_owned()),
+    ))
 }
 #[cfg(not(unix))]
-fn foreground_argv(_master: &dyn MasterPty) -> Option<Vec<String>> {
+fn foreground_process(_master: &dyn MasterPty) -> Option<(Vec<String>, Option<String>)> {
     None
+}
+
+#[cfg(test)]
+fn foreground_argv(master: &dyn MasterPty) -> Option<Vec<String>> {
+    foreground_process(master).map(|(argv, _)| argv)
+}
+
+/// The program's own name, without its folder or arguments: `nvim`, `zsh`.
+fn program_name(argv: &[String]) -> Option<String> {
+    let first = argv.first()?;
+    let name = first.rsplit('/').next().unwrap_or(first).trim_start_matches('-');
+    (!name.is_empty() && name.len() <= 64).then(|| name.to_string())
 }
 
 /// The session id in a Codex rollout path: `…/sessions/2026/10/12/rollout-<time>-<uuid>.jsonl`.
@@ -521,6 +537,26 @@ fn codex_session_id(_process_group: i32) -> Option<String> {
     None
 }
 
+/// Claude Code records each running session in `~/.claude/sessions/<pid>.json`.
+/// Reading it gives the exact conversation of a hand-typed `claude` without
+/// any hook. The file follows `/clear` and `/resume`, so it is read each time.
+fn claude_session_from_registry(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let id = value.get("sessionId")?.as_str()?;
+    (id.len() == 36 && id.bytes().all(|byte| byte.is_ascii_hexdigit() || byte == b'-') && id.as_bytes()[8] == b'-')
+        .then(|| id.to_string())
+}
+
+fn claude_session_id(pid: i32) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let path = std::path::Path::new(&home).join(".claude/sessions").join(format!("{pid}.json"));
+    // A registry entry is a few hundred bytes; refuse anything that is not.
+    if std::fs::metadata(&path).ok()?.len() > 64 * 1024 {
+        return None;
+    }
+    claude_session_from_registry(&std::fs::read_to_string(path).ok()?)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyForeground {
@@ -528,17 +564,31 @@ pub struct PtyForeground {
     cli: Option<String>,
     /// The exact session, when it can be read without the agent's help.
     session_id: Option<String>,
+    /// Name of the foreground program (no path, no arguments), so an editor
+    /// that is already open can be reused instead of typing into a shell.
+    program: Option<String>,
+    /// Its working folder: what a relative path printed there is relative to.
+    cwd: Option<String>,
 }
 
-/// The agent CLI in a terminal's foreground and, for Codex on request (it
-/// costs an `lsof`), its session.
-pub(crate) fn foreground_of(master: &dyn MasterPty, want_session: bool) -> (Option<&'static str>, Option<String>) {
-    let cli = foreground_argv(master).and_then(|argv| classify_agent_cli(&argv));
+pub(crate) struct Foreground {
+    pub cli: Option<&'static str>,
+    pub session_id: Option<String>,
+    pub program: Option<String>,
+    pub cwd: Option<String>,
+}
+
+/// The agent CLI in a terminal's foreground and, on request, its session:
+/// Codex from its open rollout file (an `lsof`), Claude from its own registry.
+pub(crate) fn foreground_of(master: &dyn MasterPty, want_session: bool) -> Foreground {
+    let (argv, cwd) = foreground_process(master).unwrap_or_default();
+    let cli = classify_agent_cli(&argv);
     let session_id = match (cli, master.process_group_leader()) {
         (Some("codex"), Some(group)) if want_session => codex_session_id(group),
+        (Some("claude"), Some(group)) if want_session => claude_session_id(group),
         _ => None,
     };
-    (cli, session_id)
+    Foreground { cli, session_id, program: program_name(&argv), cwd }
 }
 
 /// Which agent CLI, if any, owns this terminal's foreground, and for Codex
@@ -553,16 +603,16 @@ pub async fn pty_foreground(id: u32, want_session: Option<bool>) -> Result<PtyFo
         .await
         .map_err(|e| e.to_string())??;
         let field = |name: &str| answer.get(name).and_then(serde_json::Value::as_str).map(str::to_string);
-        return Ok(PtyForeground { cli: field("cli"), session_id: field("sessionId") });
+        return Ok(PtyForeground { cli: field("cli"), session_id: field("sessionId"), program: field("program"), cwd: field("cwd") });
     }
     let handle = handle(id)?;
-    let (cli, session_id) = tauri::async_runtime::spawn_blocking(move || {
+    let found = tauri::async_runtime::spawn_blocking(move || {
         let master = handle.master.lock().unwrap_or_else(|e| e.into_inner());
         foreground_of(master.as_ref(), want_session)
     })
     .await
     .map_err(|e| e.to_string())?;
-    Ok(PtyForeground { cli: cli.map(str::to_string), session_id })
+    Ok(PtyForeground { cli: found.cli.map(str::to_string), session_id: found.session_id, program: found.program, cwd: found.cwd })
 }
 
 #[tauri::command]
@@ -722,6 +772,23 @@ mod tests {
         assert_eq!(cmd.get_env("LANG").and_then(|v| v.to_str()), Some("en_US.UTF-8"));
         assert_eq!(cmd.get_env("TERM").and_then(|v| v.to_str()), Some("xterm-256color"));
         assert_eq!(cmd.get_env("COLORTERM").and_then(|v| v.to_str()), Some("truecolor"));
+    }
+
+    #[test]
+    fn names_the_foreground_program_without_its_path_or_arguments() {
+        let argv = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();
+        assert_eq!(program_name(&argv(&["/opt/homebrew/bin/nvim", "+12", "notes.md"])).as_deref(), Some("nvim"));
+        assert_eq!(program_name(&argv(&["-zsh"])).as_deref(), Some("zsh"));
+        assert_eq!(program_name(&[]), None);
+    }
+
+    #[test]
+    fn reads_a_claude_session_id_from_its_registry_entry_and_rejects_anything_else() {
+        let id = "0123abcd-0123-4abc-8def-0123456789ab";
+        assert_eq!(claude_session_from_registry(&format!(r#"{{"pid":7,"sessionId":"{id}","cwd":"/tmp"}}"#)).as_deref(), Some(id));
+        assert_eq!(claude_session_from_registry(r#"{"sessionId":"../../etc/passwd"}"#), None);
+        assert_eq!(claude_session_from_registry(r#"{"pid":7}"#), None);
+        assert_eq!(claude_session_from_registry("not json"), None);
     }
 
     #[test]

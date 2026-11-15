@@ -61,7 +61,7 @@ function safeStoredRevision(value: unknown): value is ArtifactRevision {
   if (revision.schemaVersion !== ARTIFACT_SCHEMA_VERSION || typeof revision.revisionId !== 'string' || typeof revision.revisionHash !== 'string' || typeof revision.workspacePath !== 'string' || !revision.workspacePath.startsWith('/') || !validIdentity(revision as ArtifactIdentity) || !Array.isArray(revision.files) || revision.files.length > MAX_FILES) return false
   let total = 0
   return revision.files.every(file => {
-    if (!file || typeof file.path !== 'string' || file.path.startsWith('/') || file.path.split(/[\\/]/).includes('..') || file.path.length > 1024 || typeof file.contentHash !== 'string' || !file.contentHash || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_FILE_BYTES) return false
+    if (!file || typeof file.path !== 'string' || file.path.startsWith('/') || file.path.split(/[\\/]/).includes('..') || file.path.length > 1024 || typeof file.contentHash !== 'string' || !file.contentHash || !Number.isSafeInteger(file.size) || file.size < 0 || (file.size > MAX_FILE_BYTES && !file.binary)) return false
     const contentLength = typeof file.content === 'string' ? file.content.length : 0
     total += contentLength
     return contentLength <= MAX_FILE_BYTES && total <= MAX_TOTAL_BYTES
@@ -139,7 +139,7 @@ function validateRevision(value: unknown, identity: ArtifactIdentity): ArtifactR
     const content: string | null = file.content == null ? null : String(file.content)
     const contentLength = content?.length ?? 0
     const size = Number(file.size ?? contentLength)
-    if (!Number.isSafeInteger(size) || size < 0 || size > MAX_FILE_BYTES) throw new Error('Artifact file size exceeds the safe bound.')
+    if (!Number.isSafeInteger(size) || size < 0 || (size > MAX_FILE_BYTES && !file.binary)) throw new Error('Artifact file size exceeds the safe bound.')
     if (contentLength > MAX_FILE_BYTES) throw new Error('Artifact file preview exceeds the safe bound.')
     total += contentLength
     if (total > MAX_TOTAL_BYTES) throw new Error('Artifact preview exceeds the safe bound.')

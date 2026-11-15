@@ -16,7 +16,7 @@ async function bootDesigner(page: import('@playwright/test').Page): Promise<void
 test('the CONDUCTOR card renders with a Start button; footer starts stopped', async ({ page }) => {
   await bootDesigner(page)
   await expect(page.getByText('CONDUCTOR', { exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Start' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeVisible()
   // No status event yet -> stopped presentation. Text appears in both the card
   // and the footer (shared source of truth), so match the first.
   await expect(page.getByText('Conductor stopped').first()).toBeVisible()
@@ -24,7 +24,7 @@ test('the CONDUCTOR card renders with a Start button; footer starts stopped', as
 
 test('Start fires conductor_start with the repo path and dry-run', async ({ page }) => {
   await bootDesigner(page)
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
   await expect
     .poll(async () => {
       const log = await page.evaluate(() => (window as any).__bsInvokeLog ?? [])

@@ -165,10 +165,10 @@
 .du-link__title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .du-link__id { font-family: var(--du-font-mono); font-size: 10px; color: var(--bs-fg-faint); white-space: nowrap; }
 
-.du-board__filter { padding: 0 24px 8px; flex-shrink: 0; display: flex; }
-.du-board { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(210px, 1fr)); gap: 12px; padding: 4px 24px 20px; overflow-x: auto; }
+.du-board__filter { padding: 0 24px 8px; flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.du-board { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(210px, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 12px; padding: 4px 24px 16px; overflow-x: auto; overflow-y: hidden; }
 .du-column { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-radius: var(--du-radius); background: color-mix(in srgb, var(--bs-fg-faint) 8%, transparent); }
-.du-column h3 { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--bs-fg); }
+.du-column h3 { position: sticky; top: 0; flex-shrink: 0; display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; font-size: 12px; font-weight: 600; color: var(--bs-fg); }
 .du-column__count { margin-left: auto; color: var(--bs-fg-muted); font-weight: 500; font-variant-numeric: tabular-nums; }
 .du-column__list { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 0 8px 8px; }
 .du-column__empty { margin: 4px; color: var(--bs-fg-faint); font-size: 12px; }
@@ -188,3 +188,24 @@
   .du-bead, .du-card, .du-edge, .du-chip { transition: none; }
   .du-bead:hover, .du-card:hover { transform: none; }
 }
+
+/* Requests board: lens, chips, density, epic groups. Columns scroll alone; the page does not. */
+.du-seg { display: inline-flex; border: 1px solid var(--bs-border); border-radius: 8px; overflow: hidden; }
+.du-seg button { padding: 4px 10px; border: 0; background: transparent; color: var(--bs-fg-muted); font-size: 12px; cursor: pointer; }
+.du-seg button[aria-pressed="true"] { background: var(--bs-bg-elev); color: var(--bs-fg); font-weight: 600; }
+.du-seg--end { margin-left: auto; }
+.du-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.du-chip--filter { cursor: pointer; border: 1px solid var(--bs-border); background: transparent; color: var(--bs-fg-muted); border-radius: 999px; padding: 3px 10px; font-size: 11.5px; }
+.du-chip--filter[aria-pressed="true"] { border-color: var(--bs-orange); color: var(--bs-orange); background: color-mix(in srgb, var(--bs-orange) 10%, transparent); }
+.du-board__note { margin: 0; padding: 0 24px 6px; font-size: 12px; color: var(--bs-fg-muted); flex-shrink: 0; }
+.du-link-btn { border: 0; background: none; padding: 0; color: var(--bs-orange); cursor: pointer; font: inherit; text-decoration: underline; }
+.du-card--compact { flex-direction: row; align-items: center; gap: 8px; padding: 5px 9px; }
+.du-card--compact .du-card__title { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.du-card--compact .du-card__meta { flex-wrap: nowrap; flex-shrink: 0; white-space: nowrap; }
+.du-card--compact:hover { transform: none; }
+.du-card__live { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--bs-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bs-blue) 25%, transparent); vertical-align: middle; }
+.du-group { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; border: 1px dashed var(--bs-border); border-radius: 9px; padding: 4px; }
+.du-group__head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 6px; border: 0; background: transparent; color: var(--bs-fg); font-size: 12px; text-align: left; cursor: pointer; }
+.du-group__title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.du-group__count { flex-shrink: 0; font-size: 10.5px; color: var(--bs-fg-muted); font-variant-numeric: tabular-nums; }
+.du-group__body { display: flex; flex-direction: column; gap: 6px; }

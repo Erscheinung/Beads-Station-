@@ -7,7 +7,7 @@
 // wrapper is promoted to position:absolute/inset:0 over the region while
 // siblings are visually hidden. Nothing unmounts.
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import './TerminalPanes.css'
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
@@ -23,7 +23,6 @@ import {
   updatePaneScreen,
   activateRestoredPane,
   takePaneStartupCommand,
-  paneResumeCommand,
   focusPane,
   setInsert,
   setRatio,
@@ -38,13 +37,10 @@ import { clearObservedProviderSession, observedProviderSession } from '../state/
 import { requestDestructiveAction } from '../state/destructiveActions'
 import { clearPaneNotification, usePaneNotifications, type PaneNotification } from '../state/paneNotifications'
 import { runInTerminalSession } from '../lib/terminalSessions'
-import { AGENT_CLI_LABEL, useAgentHooks } from '../state/agentHooks'
 import { startPointerDrag, startPointerReorder } from '../lib/pointerDrag'
 import { PaneBoundary } from './PaneBoundary'
 import { SessionUsageChip } from './SessionUsageChip'
-import { TurnView } from './designer/ConversationView'
-import { readTranscript, usageLine, type Transcript } from './designer/transcripts'
-import { abbreviatePathsIn } from '../lib/abbreviatePath'
+import { RestoredPane } from './RestoredPane'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
@@ -74,64 +70,6 @@ function PaneNotificationChip({ notification }: { notification: PaneNotification
 
 function onScreen(paneId: string, screen: Parameters<typeof updatePaneScreen>[1]) {
   updatePaneScreen(paneId, screen)
-}
-
-function RestoredShell({ leaf }: { leaf: Leaf }) {
-  // Re-render when the hook settings path arrives: it is part of the command shown.
-  useAgentHooks()
-  // A kept shell may still be running. Attaching to it starts nothing, so it
-  // needs no click; the buttons wait until that is known, because a resume
-  // command must never be typed into a program that is already there.
-  const [checking, setChecking] = useState(Boolean(leaf.hostKey))
-  useEffect(() => {
-    if (!leaf.hostKey) return
-    let cancelled = false
-    invoke<string[]>('pty_persisted', { keys: [leaf.hostKey] })
-      .then(alive => {
-        if (cancelled) return
-        if (Array.isArray(alive) && alive.includes(leaf.hostKey!)) activateRestoredPane(leaf.paneId)
-        else setChecking(false)
-      })
-      .catch(() => { if (!cancelled) setChecking(false) })
-    return () => { cancelled = true }
-  }, [leaf.hostKey, leaf.paneId])
-  // The conversation this pane had, when its exact session is known. Reading the
-  // session file starts nothing; resuming stays an explicit click.
-  const [conversation, setConversation] = useState<Transcript | null>(null)
-  const [showRaw, setShowRaw] = useState(false)
-  const canRead = Boolean(leaf.agentCli && leaf.agentSessionId)
-  useEffect(() => {
-    if (!leaf.agentCli || !leaf.agentSessionId) return
-    let cancelled = false
-    Promise.resolve(readTranscript(leaf.cwd, leaf.agentCli, leaf.agentSessionId)).then(result => { if (!cancelled && result?.turns) setConversation(result) }).catch(() => undefined)
-    return () => { cancelled = true }
-  }, [leaf.agentCli, leaf.agentSessionId, leaf.cwd])
-  const showConversation = canRead && conversation && conversation.turns.length > 0 && !showRaw
-  const command = paneResumeCommand(leaf)
-  return <div data-restored-pane={leaf.paneId} style={{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bs-bg)' }}>
-    <div style={{ padding: '8px 10px', borderBottom: '1px solid var(--bs-border)', color: 'var(--bs-yellow)', fontSize: 11, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-      <span>{showConversation ? 'Earlier conversation · read-only · nothing is running' : 'Saved screen · previous shell is stopped · no live process attached'}</span>
-      {showConversation && conversation && <span style={{ color: 'var(--bs-fg-muted)' }}>{usageLine(conversation.usage)}</span>}
-      {canRead && conversation && conversation.turns.length > 0 && <button style={{ marginLeft: 'auto' }} onClick={() => setShowRaw(value => !value)}>{showRaw ? 'Show conversation' : 'Show saved screen'}</button>}
-    </div>
-    {showConversation
-      ? <div className="bs-saved-screen" aria-label="Earlier conversation" data-testid="restored-conversation" ref={element => { if (element && !element.dataset.scrolled) { element.scrollTop = element.scrollHeight; element.dataset.scrolled = '1' } }}>
-        {conversation.truncated && <p style={{ margin: 0, fontSize: 12, color: 'var(--bs-fg-muted)' }}>This session is large; the most recent part is shown.</p>}
-        {conversation.turns.slice(-60).map((turn, index) => <TurnView key={index} turn={turn} />)}
-      </div>
-      : <div className="bs-saved-screen"><pre aria-label="Saved terminal screen">{leaf.savedScreen?.lines.join('\n') || 'No terminal screen was captured before the app stopped.'}</pre></div>}
-    <div style={{ padding: 8, borderTop: '1px solid var(--bs-border)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-      <button disabled={checking} onClick={() => activateRestoredPane(leaf.paneId)}>Start new shell</button>
-      {leaf.agentCli && <>
-        <button disabled={checking} onClick={() => activateRestoredPane(leaf.paneId, { resumeAgentCli: true })} title={command ? `Starts a shell and runs: ${abbreviatePathsIn(command)}` : undefined}>
-          Start shell and resume {AGENT_CLI_LABEL[leaf.agentCli]}
-        </button>
-        <span style={{ color: 'var(--bs-fg-muted)', fontSize: 11 }} title={command ? abbreviatePathsIn(command) : undefined}>
-          {leaf.agentSessionId ? 'Reopens this exact conversation.' : 'Reopens your latest conversation in this folder.'} Hover the button for the command.
-        </span>
-      </>}
-    </div>
-  </div>
 }
 
 interface RenderCtx {
@@ -189,7 +127,7 @@ function PaneLeaf({
     >
       {notification && <PaneNotificationChip notification={notification} />}
       {!leaf.restored && leaf.agentCli && leaf.agentSessionId && <SessionUsageChip workspacePath={leaf.cwd} provider={leaf.agentCli} sessionId={leaf.agentSessionId} />}
-      {leaf.restored ? <RestoredShell leaf={leaf} /> : <Terminal
+      {leaf.restored ? <RestoredPane leaf={leaf} focused={isActive && ctx.termFocused} /> : <Terminal
         paneId={paneId}
         cwd={leaf.cwd}
         onSpawn={onSpawn}

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -17,6 +17,7 @@ vi.mock('./ClaudeChat', () => ({ ClaudeChat: mocks.ClaudeChat }))
 vi.mock('./FileTree', () => ({ FileTree: () => <div data-file-tree /> }))
 
 import { TerminalPanes } from './TerminalPanes'
+import { setSessionPreferences } from '../state/sessionPreferences'
 import {
   activeTabRoot,
   leavesOf,
@@ -121,19 +122,71 @@ describe('TerminalPanes tab accessibility', () => {
     render(<TerminalPanes termFocused />)
 
     // The pane that ran an agent CLI waits for the user; the plain shell just starts.
-    expect(screen.getAllByText(/previous shell is stopped/)).toHaveLength(1)
+    expect(document.querySelectorAll('[data-restored-pane]')).toHaveLength(1)
     expect(document.querySelector('[data-terminal-pane="pane911"]')).toBeNull()
     expect(document.querySelector('[data-terminal-pane="pane913"]')).not.toBeNull()
-    expect(screen.getAllByRole('button', { name: 'Start new shell' })).toHaveLength(1)
-    const resume = screen.getByRole('button', { name: 'Start shell and resume Codex' })
+    expect(screen.getAllByRole('button', { name: 'New shell' })).toHaveLength(1)
+    const resume = screen.getByRole('button', { name: 'Continue Codex' })
     // The pane knew its Codex session, so that exact one is reopened.
     expect(resume).toHaveAttribute('title', expect.stringContaining('codex resume 01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e'))
-    expect(screen.getByText(/Reopens this exact conversation/)).toBeInTheDocument()
+    expect(screen.getByText(/Continues this exact conversation/)).toBeInTheDocument()
+    expect(mocks.invoke.mock.calls.some(([command]) => command === 'pty_spawn')).toBe(false)
 
-    act(() => fireEvent.click(resume))
+    // Enter in the message box is the same explicit action as the button, and carries the message.
+    const box = screen.getByLabelText('Message Codex to continue')
+    act(() => { fireEvent.change(box, { target: { value: "what's left?" } }) })
+    act(() => { fireEvent.submit(box.closest('form')!) })
 
     expect(document.querySelector('[data-terminal-pane="pane911"]')).not.toBeNull()
-    expect(takePaneStartupCommand('pane911')).toBe('codex resume 01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e -c tui.notifications=true -c tui.notification_method=osc9')
+    expect(takePaneStartupCommand('pane911')).toBe("codex resume 01a12f2b-69d8-7ea0-a23b-0fd1d81cac0e -c tui.notifications=true -c tui.notification_method=osc9 'what'\\''s left?'")
     expect(takePaneStartupCommand('pane913')).toBeNull()
+  })
+
+  it('shows the likely conversation for a pane that never learned its session, and continues exactly that one', async () => {
+    const id = 'aaaa1111-0000-4000-8000-000000000001'
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'transcripts_list') return [{ id, provider: 'claude', title: 't', firstPrompt: 'p', modifiedMs: 5_000_000_000, bytes: 1 }]
+      if (command === 'transcript_read') return { id, provider: 'claude', truncated: false, usage: null, turns: [{ role: 'user', at: null, blocks: [{ kind: 'text', text: 'Fix the header spacing' }], files: [], thinking: 0 }] }
+      return null
+    })
+    restoreProjects(JSON.stringify({ v: 2, projects: { 'restore-guess': {
+      tabs: [{ id: 'tab920', activePaneId: 'pane921', root: { kind: 'leaf', paneId: 'pane921', ptyId: 4, cwd: '/tmp/restore', agentCli: 'claude', savedScreen: { lines: ['> hi'], cols: 80, rows: 24, buffer: 'normal', cursorX: 0, cursorY: 0, capturedAt: 5_000_060_000 } } }],
+      activeTabId: 'tab920', insert: false,
+    } } }))
+    setActiveProject('restore-guess', '/tmp/restore')
+
+    render(<TerminalPanes termFocused />)
+
+    expect(await screen.findByText('Fix the header spacing')).toBeInTheDocument()
+    expect(screen.getByText(/Most recent Claude conversation in this folder/)).toBeInTheDocument()
+    // Reading is not starting: no shell, no provider.
+    expect(document.querySelector('[data-terminal-pane="pane921"]')).toBeNull()
+    act(() => { fireEvent.click(screen.getByRole('button', { name: 'Continue Claude' })) })
+    expect(takePaneStartupCommand('pane921')).toContain(`--resume ${id}`)
+  })
+
+  it('reopens a known conversation by itself only when the setting is on', async () => {
+    const id = 'bbbb2222-0000-4000-8000-000000000002'
+    mocks.invoke.mockImplementation(async () => null)
+    const saved = (project: string, pane: string) => JSON.stringify({ v: 2, projects: { [project]: {
+      tabs: [{ id: `tab-${pane}`, activePaneId: pane, root: { kind: 'leaf', paneId: pane, ptyId: 4, cwd: '/tmp/restore', agentCli: 'claude', agentSessionId: id } }],
+      activeTabId: `tab-${pane}`, insert: false,
+    } } })
+    restoreProjects(saved('restore-manual', 'pane931'))
+    setActiveProject('restore-manual', '/tmp/restore')
+    const first = render(<TerminalPanes termFocused />)
+    expect(document.querySelector('[data-terminal-pane="pane931"]')).toBeNull()
+    first.unmount()
+
+    setSessionPreferences({ autoResumeAgents: true })
+    try {
+      restoreProjects(saved('restore-auto', 'pane941'))
+      setActiveProject('restore-auto', '/tmp/restore')
+      render(<TerminalPanes termFocused />)
+      await waitFor(() => expect(document.querySelector('[data-terminal-pane="pane941"]')).not.toBeNull())
+      expect(takePaneStartupCommand('pane941')).toContain(`--resume ${id}`)
+    } finally {
+      setSessionPreferences({ autoResumeAgents: false })
+    }
   })
 })

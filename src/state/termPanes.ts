@@ -865,18 +865,32 @@ export function takePaneStartupCommand(paneId: string): string | null {
  * Explicit user intent converts an inert restored pane into a new attachment
  * attempt. With `resumeAgentCli` the new shell also reopens the agent CLI that
  * was running there; that choice is part of the same explicit action.
+ * `sessionId` names a conversation the pane did not record itself (one the
+ * user was shown and chose to continue); `prompt` is the message they wrote.
  */
-export function activateRestoredPane(paneId: string, options: { resumeAgentCli?: boolean } = {}): void {
+export function activateRestoredPane(paneId: string, options: { resumeAgentCli?: boolean; sessionId?: string; prompt?: string } = {}): void {
   const tab = state.tabs.find(candidate => findLeaf(candidate.root, paneId))
   if (!tab) return
   const leaf = findLeaf(tab.root, paneId)
-  const resume = options.resumeAgentCli && leaf ? paneResumeCommand(leaf) : null
+  const sessionId = leaf?.agentSessionId ?? (isAgentSessionId(options.sessionId) ? options.sessionId : undefined)
+  const resume = options.resumeAgentCli && leaf?.agentCli ? agentResumeCommand(leaf.agentCli, sessionId, undefined, options.prompt ?? null) : null
   if (resume) startupCommands.set(paneId, resume)
   state = replaceTab(state, tab.id, {
     ...tab,
-    root: mapLeaf(tab.root, paneId, existing => ({ ...existing, restored: undefined })),
+    root: mapLeaf(tab.root, paneId, existing => ({ ...existing, restored: undefined, ...(resume && sessionId ? { agentSessionId: sessionId } : {}) })),
   })
   emit()
+}
+
+/** Session ids that panes in any workspace already claim, so a guess never picks one of them. */
+export function claimedAgentSessions(): Set<string> {
+  const claimed = new Set<string>()
+  const collect = (source: TermPanesState) => {
+    for (const tab of source.tabs) for (const leaf of leavesOf(tab.root)) if (leaf.agentSessionId) claimed.add(leaf.agentSessionId)
+  }
+  collect(state)
+  for (const [projectId, project] of PROJECTS) if (projectId !== activeProjectId) collect(project)
+  return claimed
 }
 
 /** Synchronous close/crash checkpoint; localStorage is the atomic browser-owned value. */

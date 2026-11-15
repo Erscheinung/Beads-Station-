@@ -87,3 +87,97 @@ test('capture the Fahrenheit theme', async ({ page }) => {
   await page.waitForTimeout(300)
   await page.screenshot({ path: `${out}/workspace-picker-fahrenheit.png` })
 })
+
+// v0.2.0 Designer Desk and terminal shots, Fahrenheit theme, sample project only.
+const deskSessions = [
+  { id: 'aaaa1111-0000-4000-8000-000000000001', provider: 'claude', title: 'Build the responsive pricing table', firstPrompt: 'Work on ticket site-1.3: Build the responsive pricing table. Read it with bd show first.', modifiedMs: Date.now() - 3 * 3_600_000, bytes: 4200 },
+  { id: 'bbbb2222-0000-4000-8000-000000000002', provider: 'codex', title: 'Compress the hero image', firstPrompt: 'Compress the hero image', modifiedMs: Date.now() - 2 * 86_400_000, bytes: 900 },
+  { id: 'cccc3333-0000-4000-8000-000000000003', provider: 'claude', title: 'Draft the welcome checklist', firstPrompt: 'Draft the welcome checklist for the onboarding flow', modifiedMs: Date.now() - 5 * 86_400_000, bytes: 1800 },
+]
+const deskTranscript = {
+  id: deskSessions[0].id, provider: 'claude', truncated: false,
+  usage: { input: 120, output: 2400, cacheRead: 1_500_000, cacheCreate: 800 },
+  turns: [
+    { role: 'user', at: null, blocks: [{ kind: 'text', text: 'Build the responsive pricing table so the three plans stack on narrow screens.' }], files: [], thinking: 0 },
+    { role: 'assistant', at: null, thinking: 2, files: ['src/PricingTable.tsx', 'src/pricing.css'], blocks: [
+      { kind: 'text', text: 'I built the **pricing table** as a grid. Below 640px the plans stack, and the recommended plan stays first.\n\n- Added `PricingTable.tsx` with three plan cards\n- Moved the breakpoint rules into `pricing.css`' },
+      { kind: 'tool', name: 'Edit', summary: 'src/PricingTable.tsx', result: 'updated' },
+    ] },
+    { role: 'user', at: null, blocks: [{ kind: 'text', text: 'Good. Keep the highlight colour on the recommended plan.' }], files: [], thinking: 0 },
+    { role: 'assistant', at: null, thinking: 0, files: [], blocks: [{ kind: 'text', text: 'Done. The recommended plan keeps its **accent border** at every width.' }] },
+  ],
+}
+
+async function openDesk(page: import('@playwright/test').Page) {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.addInitScript(({ all, ready, sessions, transcript }) => {
+    localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a'], activeId: 'proj-a' }))
+    localStorage.setItem('beads-station.themePaletteId', 'fahrenheit')
+    ;(window as any).__bsMockOverride = { bd_snapshot: { ready, all, no_db: false }, transcripts_list: sessions, transcript_read: transcript }
+  }, { all, ready, sessions: deskSessions, transcript: deskTranscript })
+  await page.goto('/?ui=designer')
+  await page.waitForFunction(() => (window as any).__bsMockReady === true)
+}
+
+test('capture Designer History', async ({ page }) => {
+  await openDesk(page)
+  await page.getByRole('button', { name: 'History', exact: true }).click()
+  await page.getByRole('button', { name: /Build the responsive pricing table/ }).first().click()
+  await expect(page.getByTestId('designer-history').locator('[data-role="assistant"]').first()).toBeVisible()
+  await expect(page.getByTestId('history-meter')).toBeVisible()
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/designer-history.png` })
+})
+
+test('capture Designer Shelf', async ({ page }) => {
+  await openDesk(page)
+  await page.getByRole('button', { name: 'Pinned', exact: true }).click()
+  const shelf = page.getByTestId('designer-shelf')
+  for (const text of ['Keep the plan cards to three, with the middle one highlighted.', '~/Documents/notes/Pricing-brief.md', '~/Desktop/sample-project/src/PricingTable.tsx']) {
+    await shelf.getByLabel('Add something to pin').fill(text)
+    await shelf.getByRole('button', { name: 'Pin it', exact: true }).click()
+  }
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/designer-shelf.png` })
+})
+
+test('capture a ticket with its sessions', async ({ page }) => {
+  await openDesk(page)
+  await page.getByRole('button', { name: 'Bead map', exact: true }).click()
+  await page.locator('[data-bs-bead-node="site-1.3"]').dblclick()
+  await expect(page.getByTestId('ticket-sessions')).toContainText('Sessions on this ticket')
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/designer-ticket-sessions.png` })
+})
+
+test('capture Restore split', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.addInitScript(({ all, ready }) => {
+    localStorage.setItem('beads-station.workspaces.v2', JSON.stringify({ openIds: ['proj-a', 'proj-b'], activeId: 'proj-a' }))
+    localStorage.setItem('beads-station.lastConfirmed.proj-a', new Date().toISOString().slice(0, 10))
+    localStorage.setItem('beads-station.themePaletteId', 'fahrenheit')
+    ;(window as any).__bsMockOverride = { bd_snapshot: { ready, all, no_db: false } }
+  }, { all, ready })
+  await page.goto('/')
+  await page.waitForFunction(() => (window as any).__bsMockReady === true)
+  await page.getByRole('button', { name: 'Split right', exact: true }).click()
+  await page.getByRole('button', { name: 'Unsplit to tabs', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Restore split layout', exact: true })).toBeEnabled()
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/terminal-restore-split.png` })
+})
+
+// v0.2.1: Agents, Timeline and Session views.
+for (const [view, file] of [['Agents', 'designer-agents'], ['Timeline', 'designer-timeline'], ['Session', 'designer-session']] as const) {
+  test(`capture Designer ${view}`, async ({ page }) => {
+    await openDesk(page)
+    await page.getByRole('button', { name: view, exact: true }).click()
+    await page.mouse.move(5, 5)
+    await page.waitForTimeout(500)
+    await page.screenshot({ path: `${out}/${file}.png` })
+  })
+}

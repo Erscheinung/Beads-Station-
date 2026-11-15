@@ -114,3 +114,41 @@
 .bs-toolbar { height: 40px; }
 .bs-toolbar button, .bs-toolbar select { font-size: 12px; min-height: 28px; }
 .bs-designer { --du-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; --du-font-mono: 'JetBrains Mono', monospace; font-family: var(--du-font-sans); }
+
+/* Shared top bar (both skins): places on the left, launchers and icons on the right. */
+.bs-topbar { gap: 4px; overflow: hidden; }
+.bs-topbar__mark { width: 9px; height: 9px; border-radius: 50%; background: var(--bs-orange); flex-shrink: 0; margin: 0 6px 0 2px; }
+.bs-topbar__places { display: flex; align-items: center; gap: 1px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.bs-topbar__places::-webkit-scrollbar { display: none; }
+.bs-toolbar .bs-topbar__place { border-color: transparent; background: transparent; border-radius: 6px; padding: 4px 9px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.bs-toolbar .bs-topbar__place:hover { background: var(--bs-bg); border-color: transparent; }
+.bs-toolbar .bs-topbar__place[aria-pressed="true"] { background: var(--bs-bg); color: var(--bs-fg); border-color: var(--bs-border); font-weight: 600; }
+.bs-toolbar .bs-topbar__place--group { color: var(--bs-fg-faint); text-transform: uppercase; font-size: 10px; letter-spacing: .08em; padding-inline: 6px; }
+.bs-toolbar .bs-topbar__place--group[aria-pressed="true"] { background: transparent; border-color: transparent; color: var(--bs-fg-muted); }
+.bs-topbar__sep { width: 1px; height: 16px; background: var(--bs-border); margin: 0 5px; flex-shrink: 0; }
+.bs-topbar__context { display: flex; align-items: center; gap: 4px; margin-left: 6px; padding-left: 8px; border-left: 1px solid var(--bs-border); flex-shrink: 0; }
+.bs-topbar__spacer { flex: 1; min-width: 4px; }
+.bs-topbar__launchers { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.bs-toolbar .bs-topbar__launcher { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 4px 8px; white-space: nowrap; }
+.bs-toolbar .bs-topbar__launcher:disabled { opacity: .5; cursor: default; }
+.bs-topbar__glyph { flex-shrink: 0; }
+.bs-topbar__launcher--claude .bs-topbar__glyph { color: var(--bs-orange); }
+.bs-topbar__launcher--codex .bs-topbar__glyph { color: var(--bs-green); }
+.bs-topbar__launcher--gemini .bs-topbar__glyph { color: var(--bs-blue); }
+.bs-toolbar .bs-topbar__icon { display: inline-flex; align-items: center; gap: 4px; border-color: transparent; background: transparent; padding: 4px 6px; flex-shrink: 0; }
+.bs-toolbar .bs-topbar__icon:hover { background: var(--bs-bg); border-color: var(--bs-border); }
+.bs-topbar .codicon { font-size: 14px; }
+.bs-topbar__context select { max-width: 130px; }
+@media (max-width: 1180px) { .bs-topbar__launcher-name, .bs-topbar__icon kbd { display: none; } }
+@media (max-width: 900px) { .bs-topbar__place--group, .bs-topbar__place .codicon { display: none; } }
+
+/* Keyboard cheat sheet. */
+.bs-shortcuts__overlay { position: fixed; inset: 0; z-index: 9998; background: color-mix(in srgb, var(--bs-bg-dark) 60%, transparent); display: grid; place-items: center; }
+.bs-shortcuts { width: min(980px, 94vw); max-height: 86vh; overflow: auto; background: var(--bs-bg-elev); border: 1px solid var(--bs-border); border-radius: 10px; padding: 16px 18px; box-shadow: var(--bs-shadow-modal); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: var(--bs-fg); }
+.bs-shortcuts header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; font-size: 13px; }
+.bs-shortcuts header span { color: var(--bs-fg-muted); font-size: 11px; }
+.bs-shortcuts__grid { columns: 3 260px; column-gap: 24px; }
+.bs-shortcuts section { break-inside: avoid; margin-bottom: 12px; }
+.bs-shortcuts h4 { margin: 0 0 6px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--bs-fg-muted); }
+.bs-shortcuts__row { display: flex; gap: 10px; align-items: baseline; font-size: 12px; padding: 2px 0; }
+.bs-shortcuts__row kbd { min-width: 78px; color: var(--bs-cyan, var(--bs-blue)); font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 11px; white-space: nowrap; }

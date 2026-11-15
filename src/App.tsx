@@ -3,7 +3,7 @@ import { abbreviatePath } from './lib/abbreviatePath'
 import { invoke } from '@tauri-apps/api/core'
 import { IssueList } from './components/IssueList'
 import { TerminalPanes } from './components/TerminalPanes'
-import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges, splitActive, focusPaneDirection, typeIntoActiveShell, launchInTerminalPane, activeTerminalPaneId } from './state/termPanes'
+import { setActiveProject, spawnAgent, spawnFileNav, useTermPanesSignature, allAgentBridges, splitActive, focusPaneDirection, typeIntoActiveShell, activeTerminalPaneId } from './state/termPanes'
 import { ClaudeChat } from './components/ClaudeChat'
 import { TabBar } from './components/TabBar'
 import { Board } from './components/Board'
@@ -17,17 +17,17 @@ import { CommandPalette } from './components/CommandPalette'
 import { useProjects } from './state/projects'
 import { useVim, setFocused } from './state/vim'
 import { useSkin, setSkin } from './state/skin'
+import { TopBar } from './components/TopBar'
 import { useVimNav } from './hooks/useVimNav'
 import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
-import { openPalette } from './state/palette'
 import { openSettings } from './state/settings'
 import { openNotificationPanel } from './state/notificationPanel'
 import { clearPaneNotification, usePaneNotifications } from './state/paneNotifications'
 import { startPointerDrag } from './lib/pointerDrag'
 import { useCommandBindings, shortcutLabel } from './state/commands'
 import { setBeadsView, setUiPreferences, useUiPreferences, type BeadsView } from './state/uiPreferences'
-import { agentLaunchCommand, clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
+import { clearObservedClaudeSession, observedClaudeSession, useSessionPreferences } from './state/sessionPreferences'
 import { getInteractiveChatProvider, providerAvailability, providerLabel, useInteractiveChatProvider, useNativeProviderAvailability, type InteractiveChatProvider } from './state/chatProviders'
 import { reorderWorkspace, useWorkspaceOrder } from './state/workspaceOrder'
 import { dispatchSemanticCommand, getRecipeRuntimeContext, setRecipeRuntimeContext, useRecipeRecording } from './state/recipeIntegration'
@@ -453,18 +453,19 @@ export default function App() {
     })
   }, [projects, closeProject])
 
-  const openChatPanel = useCallback(() => {
+  const openChatPanel = useCallback((provider?: InteractiveChatProvider) => {
     if (!active) return
     setRequestedChats(prev => {
       if (prev.has(active.id)) return prev
       const next = new Map(prev)
-      next.set(active.id, getInteractiveChatProvider())
+      next.set(active.id, provider ?? getInteractiveChatProvider())
       return next
     })
   }, [active])
   useEffect(() => {
-    window.addEventListener('chat:open-panel', openChatPanel)
-    return () => window.removeEventListener('chat:open-panel', openChatPanel)
+    const open = () => openChatPanel()
+    window.addEventListener('chat:open-panel', open)
+    return () => window.removeEventListener('chat:open-panel', open)
   }, [openChatPanel])
 
   const closeChatPanel = useCallback((projectId: string, provider: InteractiveChatProvider) => {
@@ -531,8 +532,6 @@ export default function App() {
   // Store the provider chosen at the explicit start action. Changing the
   // setting while a chat is alive must not remount it into another backend.
   const activeChatProvider = requestedChats.get(active.id) ?? interactiveChatProvider
-  const selectedProviderStatus = providerAvailability(providerStatuses, interactiveChatProvider)
-  const chatProviderUnavailable = selectedProviderStatus?.available === false
   const resumableSession = activeChatProvider === 'claude' ? observedClaudeSession(active.id) : null
   const needsConfirm = chatRequested
     && activeChatProvider === 'claude'
@@ -569,39 +568,39 @@ export default function App() {
         />
       </aside>
       <main style={{ background: 'var(--bs-bg)', gridColumn: 2, gridRow: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <header className="bs-toolbar bs-app-chrome">
-          <span className="bs-toolbar__brand">BEADS STATION</span>
-          <button onClick={openPalette} title="Open command palette">Commands <kbd>{shortcutLabel(commandBindings.palette)}</kbd></button>
-          {recipeRecording.status === 'recording' && <button aria-label="Recipe recording active; open recipe settings to stop" onClick={() => { openSettings(); window.dispatchEvent(new Event('recipes:open')) }} title="Recipe recording is active">● Recording · {recipeRecording.stepCount}</button>}
-          <button onClick={() => setSkin('designer')}>Designer</button>
-          <label className="bs-toolbar__select">View
-            <select aria-label="Beads view" value={uiPrefs.view} onChange={e => switchView(e.target.value as BeadsView)}>
+        <TopBar
+          skin="terminal"
+          context={<>
+            {recipeRecording.status === 'recording' && <button aria-label="Recipe recording active; open recipe settings to stop" onClick={() => { openSettings(); window.dispatchEvent(new Event('recipes:open')) }} title="Recipe recording is active">● Recording · {recipeRecording.stepCount}</button>}
+            <select aria-label="Beads view" title="What sits around the terminal: nothing, the ticket explorer, the board, or both" value={uiPrefs.view} onChange={e => switchView(e.target.value as BeadsView)}>
               <option value="terminal-only">Terminal only</option><option value="explorer">Explorer</option><option value="board">Board</option><option value="both">Both</option>
             </select>
-          </label>
-          {(!showExplorer || sidebarCollapsed) && (
-            <button onClick={() => setUiPreferences({ view: 'explorer', sidebarCollapsed: false })} title="Show the Explorer sidebar">
-              Show Explorer
-            </button>
-          )}
-          <button
-            disabled={chatRequested || chatProviderUnavailable}
-            title={chatProviderUnavailable ? `${providerLabel(interactiveChatProvider)} is unavailable` : undefined}
-            onClick={() => {
-              if (sessionPrefs.chatSurface === 'panel') { openChatPanel(); return }
-              launchInTerminalPane(agentLaunchCommand(interactiveChatProvider))
-              setFocused('terminal')
-              typeIntoActiveShell()
-            }}
-          >{chatRequested ? `${providerLabel(activeChatProvider)} chat running` : `Start ${providerLabel(interactiveChatProvider)} chat`}</button>
-          {waitingPanes > 0 && <button className="bs-toolbar__waiting" onClick={openNotificationPanel} title="Show waiting panes">Waiting {waitingPanes} <kbd>{shortcutLabel(commandBindings.notificationPanel)}</kbd></button>}
-          <button onClick={openSettings} title="Open settings">Settings <kbd>{shortcutLabel(commandBindings.settings)}</kbd></button>
-          {(appUpdate.status === 'available' || appUpdate.status === 'downloaded' || appUpdate.status === 'ready') && (
-            <button className="bs-toolbar__update" onClick={() => { openSettings(); window.dispatchEvent(new Event('settings:show-about')) }} title="A newer release is available">
-              Update {appUpdate.info.latest}
-            </button>
-          )}
-        </header>
+            {(!showExplorer || sidebarCollapsed) && (
+              <button className="bs-topbar__icon" aria-label="Show Explorer" onClick={() => setUiPreferences({ view: 'explorer', sidebarCollapsed: false })} title="Show the Explorer sidebar">
+                <span className="codicon codicon-layout-sidebar-left" aria-hidden />
+              </button>
+            )}
+          </>}
+          launchers={sessionPrefs.chatSurface === 'panel' ? Object.fromEntries((['claude', 'codex'] as const).map(provider => {
+            // The older chat panel holds one conversation per workspace.
+            const unavailable = providerAvailability(providerStatuses, provider)?.available === false
+            const running = chatRequested && activeChatProvider === provider
+            return [provider, {
+              label: running ? `${providerLabel(provider)} chat running` : `Start ${providerLabel(provider)} chat`,
+              disabled: chatRequested || unavailable,
+              title: unavailable ? `${providerLabel(provider)} is unavailable` : `Open the ${providerLabel(provider)} chat panel`,
+              onStart: () => openChatPanel(provider),
+            }]
+          })) : undefined}
+          status={<>
+            {waitingPanes > 0 && <button className="bs-toolbar__waiting" onClick={openNotificationPanel} title="Show waiting panes">Waiting {waitingPanes} <kbd>{shortcutLabel(commandBindings.notificationPanel)}</kbd></button>}
+            {(appUpdate.status === 'available' || appUpdate.status === 'downloaded' || appUpdate.status === 'ready') && (
+              <button className="bs-toolbar__update" onClick={() => { openSettings(); window.dispatchEvent(new Event('settings:show-about')) }} title="A newer release is available">
+                Update {appUpdate.info.latest}
+              </button>
+            )}
+          </>}
+        />
         <div className="bs-app-chrome">
           <TabBar projects={orderedProjects} activeId={activeId} onSelect={selectWorkspace} onReorder={reorderWorkspace} onOpen={() => setPickerOpen(true)} onClose={requestCloseWorkspace} />
         </div>

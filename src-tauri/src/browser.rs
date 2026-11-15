@@ -67,6 +67,35 @@ pub async fn browser_refuses_framing(url: String) -> Result<bool, String> {
     .map_err(|error| error.to_string())
 }
 
+/// What a pane needs to explain an empty frame.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserProbe {
+    /// Something answered at that address (any HTTP status counts).
+    reachable: bool,
+    refuses_framing: bool,
+}
+
+/// One request that tells "nothing is listening there" apart from "the page
+/// forbids framing". A dev server that is not running is the usual reason a
+/// local address shows blank.
+#[tauri::command]
+pub async fn browser_probe(url: String) -> Result<BrowserProbe, String> {
+    let url = web_url(&url)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(4)).build();
+        match agent.get(url.as_str()).call() {
+            Ok(response) | Err(ureq::Error::Status(_, response)) => BrowserProbe {
+                reachable: true,
+                refuses_framing: forbids_framing(response.header("x-frame-options"), response.header("content-security-policy")),
+            },
+            Err(_) => BrowserProbe { reachable: false, refuses_framing: false },
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{forbids_framing, web_url};

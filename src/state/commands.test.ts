@@ -4,10 +4,10 @@ import { dispatchCommand, eventBinding, getBinding, LEADER_SHORTCUTS, matchedCom
 describe('command bindings', () => {
   beforeEach(resetBindings)
   it('rebinds the action and releases its old shortcut', () => {
-    expect(setBinding('palette', 'Mod+Shift+J')).toBeNull()
+    expect(setBinding('palette', 'Mod+Shift+G')).toBeNull()
     expect(matchedCommand(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))).toBeUndefined()
-    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'J', metaKey: true, shiftKey: true }))).toBe('palette')
-    expect(JSON.parse(localStorage.getItem('beads-station.command-bindings.v1')!).palette).toBe('Mod+Shift+J')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'G', metaKey: true, shiftKey: true }))).toBe('palette')
+    expect(JSON.parse(localStorage.getItem('beads-station.command-bindings.v1')!).palette).toBe('Mod+Shift+G')
   })
   it('rejects conflicts and protects editing, pane leader and Escape', () => {
     expect(setBinding('workspace', 'Mod+K')).toContain('Command palette')
@@ -73,6 +73,26 @@ describe('command bindings', () => {
     vi.resetModules()
     const fresh = await import('./commands')
     expect(fresh.getBinding('notificationJump')).toBe('Mod+Shift+U')
+  })
+  it('0.2.1: one chord flips Terminal and Designer, History has its own, and H/J/K/L move between panes', async () => {
+    // Saved by 0.2.0, where the browser pane sat on Mod+Shift+L and the user had kept the defaults.
+    localStorage.setItem('beads-station.command-bindings.v1', JSON.stringify({ palette: 'Mod+K', browser: 'Mod+Shift+L', focusLeft: 'Mod+Shift+ArrowLeft' }))
+    vi.resetModules()
+    const upgraded = await import('./commands')
+    expect(upgraded.getBinding('toggleSkin')).toBe('Mod+Shift+D')
+    expect(upgraded.getBinding('designer.history')).toBe('Mod+Y')
+    expect(upgraded.getBinding('shortcuts')).toBe('Mod+/')
+    // The old browser default was not a choice: it moves, and L becomes "pane right".
+    expect(upgraded.getBinding('browser')).toBe('Mod+Shift+B')
+    expect(upgraded.getBinding('focusRightVim')).toBe('Mod+Shift+L')
+    expect(upgraded.getBinding('focusLeft')).toBe('Mod+Shift+ArrowLeft')
+    expect(upgraded.matchedCommand(new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', metaKey: true, shiftKey: true }))).toBe('focusLeftVim')
+    expect(upgraded.matchedCommand(new KeyboardEvent('keydown', { key: 'd', code: 'KeyD', metaKey: true, shiftKey: true }))).toBe('toggleSkin')
+    // The editor's own keys stay untouched.
+    expect(upgraded.bindingError('toggleSkin', 'Mod+P')).toContain('Reserved')
+    expect(upgraded.matchedCommand(new KeyboardEvent('keydown', { key: 'Escape' }))).toBeUndefined()
+    localStorage.clear()
+    vi.resetModules()
   })
   it('accepts Tab chords and spells macOS Control chords as Ctrl', () => {
     const ctrlShiftTab = new KeyboardEvent('keydown', { key: 'Tab', ctrlKey: true, shiftKey: true })

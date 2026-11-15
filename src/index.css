@@ -529,6 +529,13 @@ body {
 .bs-md pre code { background: none; border: none; padding: 0; font-size: 11px; }
 .bs-md table { border-collapse: collapse; margin: 0 0 8px; }
 .bs-md th, .bs-md td { border: 1px solid var(--bs-border); padding: 2px 6px; }
+.bs-md th { text-align: left; background: var(--bs-bg-dark); }
+.bs-md ul ul, .bs-md ol ol, .bs-md ul ol, .bs-md ol ul { margin: 2px 0; }
+.bs-md ul.contains-task-list, .bs-md .task-list-item { list-style: none; }
+.bs-md ul.contains-task-list { padding-left: 4px; }
+.bs-md .task-list-item input { margin: 0 6px 0 0; vertical-align: -1px; }
+.bs-md hr { border: none; border-top: 1px solid var(--bs-border); margin: 10px 0; }
+.bs-md del { color: var(--bs-fg-muted); }
 
 /* Plain chat lines (synthetic frames). */
 .bs-chat-line { margin: 0 0 8px 0; white-space: pre-wrap; }
@@ -667,6 +674,7 @@ body {
 .bs-toolbar__waiting { color: var(--bs-yellow); border-color: var(--bs-yellow); }
 
 /* Browser pane (Code-470). */
+.bs-browser__inline { border: none; background: transparent; color: var(--bs-blue); cursor: pointer; font: inherit; padding: 0; text-decoration: underline; }
 .bs-browser { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; background: var(--bs-bg); }
 .bs-browser__bar { display: flex; gap: 4px; padding: 4px 6px; background: var(--bs-bg-elev); border-bottom: 1px solid var(--bs-border); flex-shrink: 0; }
 .bs-browser__bar input { flex: 1; min-width: 0; font: inherit; font-size: 12px; color: var(--bs-fg); background: var(--bs-bg); border: 1px solid var(--bs-border); border-radius: 4px; padding: 3px 7px; }
@@ -686,3 +694,29 @@ body {
 .bs-browser__refused { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--bs-fg-muted); font-size: 12px; }
 .bs-browser__refused strong { color: var(--bs-fg); }
 .bs-browser__refused p { margin: 0; }
+
+/* History / Agents conversation, drawn like the CLIs' own chat: a gutter
+   column, monospace text, tool calls as one-line folds. */
+.bs-chat-turn { display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: 6px; font-family: var(--du-font-mono, ui-monospace, Menlo, monospace); font-size: 12.5px; line-height: 1.55; padding: 3px 2px; min-width: 0; overflow-wrap: anywhere; }
+.bs-chat-turn .bs-md { font-family: inherit; font-size: inherit; }
+.bs-chat-gutter { color: var(--bs-fg-muted); user-select: none; text-align: center; }
+.bs-chat-user { background: color-mix(in srgb, var(--bs-fg) 5%, transparent); border-radius: 4px; padding: 4px 6px; margin: 6px 0 2px; }
+.bs-chat-user .bs-chat-gutter { color: var(--bs-orange); font-weight: 700; }
+.bs-chat-assistant .bs-chat-gutter { color: var(--bs-fg); }
+.bs-chat-body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.bs-chat-who { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--bs-fg-muted); }
+.bs-chat-thinking { color: var(--bs-fg-faint, var(--bs-fg-muted)); opacity: 0.75; font-style: italic; }
+.bs-chat-tool > summary { cursor: pointer; list-style: none; color: var(--bs-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bs-chat-tool > summary::-webkit-details-marker { display: none; }
+.bs-chat-tool > summary::before { content: "\25B8"; display: inline-block; width: 12px; color: var(--bs-fg-muted); }
+.bs-chat-tool[open] > summary::before { content: "\25BE"; }
+.bs-chat-tool-name { color: var(--bs-fg); font-weight: 600; }
+.bs-chat-result { margin: 2px 0 4px 12px; padding: 6px 8px; max-height: 240px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 11.5px; background: var(--bs-bg-dark); border-radius: 4px; border-left: 2px solid var(--bs-border); }
+.bs-chat-result .bs-diff-add { display: block; color: var(--bs-green); background: color-mix(in srgb, var(--bs-green) 12%, transparent); }
+.bs-chat-result .bs-diff-del { display: block; color: var(--bs-red); background: color-mix(in srgb, var(--bs-red) 12%, transparent); }
+.bs-chat-result .bs-diff-hunk { display: block; color: var(--bs-cyan); }
+
+/* Pinned: a file, folder or link dragged over the view. */
+.bs-file-drop-target { outline: 2px dashed var(--bs-orange, var(--bs-blue)); outline-offset: -4px; }
+.bs-vault-note .bs-md h1 { font-size: 22px; } .bs-vault-note .bs-md h2 { font-size: 18px; } .bs-vault-note .bs-md h3 { font-size: 15px; }
+.bs-vault-note .bs-md p, .bs-vault-note .bs-md li { line-height: 1.6; }

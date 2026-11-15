@@ -8,6 +8,7 @@
 import { useSyncExternalStore } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { shellQuote } from '../lib/shellQuote'
+import { agentLaunchCommand } from './sessionPreferences'
 
 export type AgentCli = 'claude' | 'codex'
 export const AGENT_CLI_LABEL: Record<AgentCli, string> = { claude: 'Claude', codex: 'Codex' }
@@ -60,25 +61,30 @@ export function isAgentSessionId(value: unknown): value is string {
 // Codex can announce a finished turn itself; OSC 9 is one of the sequences a pane reads.
 const CODEX_SIGNALS = '-c tui.notifications=true -c tui.notification_method=osc9'
 
+// The user's own command for each CLI (Settings → Sessions): an alias such as
+// `ccd` works because the line is typed into an interactive shell.
 function claudeBase(sessionSettings: string | null): string {
-  return sessionSettings ? `claude --settings ${shellQuote(sessionSettings)}` : 'claude'
+  const claude = agentLaunchCommand('claude')
+  return sessionSettings ? `${claude} --settings ${shellQuote(sessionSettings)}` : claude
 }
 
 /** Command line that starts an agent CLI in a pane, optionally on a first prompt. */
 export function agentStartCommand(cli: AgentCli, prompt: string | null = null, sessionSettings = state.sessionSettings): string {
-  const base = cli === 'claude' ? claudeBase(sessionSettings) : `codex ${CODEX_SIGNALS}`
+  const base = cli === 'claude' ? claudeBase(sessionSettings) : `${agentLaunchCommand('codex')} ${CODEX_SIGNALS}`
   return prompt ? `${base} ${shellQuote(prompt)}` : base
 }
 
 /**
  * Command line that reopens a pane's conversation: the exact session when it
- * is known, otherwise the latest one for the folder. Reopening loads the local
- * transcript; no model turn starts until a prompt is sent.
+ * is known, otherwise the latest one for the folder. With `prompt`, the message
+ * the user wrote on the restored pane is sent as the first thing after reopening.
+ * What reopening alone costs has not been measured; do not claim it is free.
  */
-export function agentResumeCommand(cli: AgentCli, sessionId?: string | null, sessionSettings = state.sessionSettings): string {
+export function agentResumeCommand(cli: AgentCli, sessionId?: string | null, sessionSettings = state.sessionSettings, prompt: string | null = null): string {
   const exact = isAgentSessionId(sessionId) ? sessionId : null
-  if (cli === 'claude') return `${claudeBase(sessionSettings)} ${exact ? `--resume ${exact}` : '--continue'}`
-  return `codex resume ${exact ?? '--last'} ${CODEX_SIGNALS}`
+  const message = prompt?.trim() ? ` ${shellQuote(prompt.trim())}` : ''
+  if (cli === 'claude') return `${claudeBase(sessionSettings)} ${exact ? `--resume ${exact}` : '--continue'}${message}`
+  return `${agentLaunchCommand('codex')} resume ${exact ?? '--last'} ${CODEX_SIGNALS}${message}`
 }
 
 export function __setAgentHooksForTest(next: Partial<AgentHooksState>) { set(next) }

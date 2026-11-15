@@ -9,8 +9,9 @@ import { getActivePalette, subscribeTheme } from '../state/theme'
 import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/terminalAppearance'
 import { matchedCommand } from '../state/commands'
 import { notifyPane } from '../state/paneNotifications'
-import { isLocalUrl, openUrlInBrowserTab, paneHostKey, setPaneAgentCli, setPaneAgentSession, showInBrowserPane, spawnFileNavTab, type AgentCli } from '../state/termPanes'
-import { findMarkdownPaths, isOpenableWebUrl, markdownDirectory } from './terminalLinks'
+import { activeTerminalPaneId, isLocalUrl, openUrlInBrowserTab, paneHostKey, setPaneAgentCli, setPaneAgentSession, showInBrowserPane, type AgentCli } from '../state/termPanes'
+import { findFilePaths, isOpenableWebUrl } from './terminalLinks'
+import { openInEditor } from './openInEditor'
 import { macTerminalKeyAction } from './terminalKeys'
 import { shellQuote } from './shellQuote'
 import { shouldKeepTerminalsRunning, subscribeSessionPreferences } from '../state/sessionPreferences'
@@ -251,18 +252,17 @@ export class TerminalSession {
     this.element.style.cssText = 'width:100%;height:100%;'
     this.terminal.loadAddon(this.fit)
     this.terminal.loadAddon(new WebLinksAddon((event, uri) => openTerminalLink(uri, event)))
-    // Command+click on a markdown path opens its folder in a file tab. There is
-    // no markdown viewer pane, so the file tree is the closest existing fit.
+    // Command+click on a file path (optionally path:line:col) opens it in the
+    // editor: an nvim already open in this tab, or a new split running it.
     this.terminal.registerLinkProvider({
       provideLinks: (row, callback) => {
         const line = this.terminal.buffer.active.getLine(row - 1)?.translateToString(true) ?? ''
-        const links = findMarkdownPaths(line).map(match => ({
+        const links = findFilePaths(line).map(match => ({
           text: match.text,
           range: { start: { x: match.start + 1, y: row }, end: { x: match.end, y: row } },
-          activate: (event: MouseEvent, text: string) => {
+          activate: (event: MouseEvent) => {
             if (!event.metaKey) return
-            const dir = markdownDirectory(text, cwd)
-            if (dir) spawnFileNavTab(dir)
+            void openInEditor(match, { ptyId: this.id, cwd })
           },
         }))
         callback(links.length ? links : undefined)
@@ -536,7 +536,8 @@ export class TerminalSession {
   private observeForeground() {
     if (this.id === null || this.phase !== 'running') return
     // Finding Codex's session costs an lsof; ask until it is known, then stop.
-    const wantSession = this.agentCli === 'codex' && !this.codexSessionKnown
+    // Claude's is one small file read and can change (/clear, /resume), so it is asked every time.
+    const wantSession = this.agentCli === 'claude' || (this.agentCli === 'codex' && !this.codexSessionKnown)
     void invoke<{ cli: AgentCli | null; sessionId: string | null } | null>('pty_foreground', { id: this.id, wantSession })
       .then(foreground => {
         if (this.closed) return
@@ -548,9 +549,9 @@ export class TerminalSession {
           this.selfReporting = false
         }
         setPaneAgentCli(this.paneId, cli)
-        if (cli === 'codex' && isAgentSessionId(foreground?.sessionId)) {
-          this.codexSessionKnown = true
-          setPaneAgentSession(this.paneId, 'codex', foreground.sessionId)
+        if (cli && isAgentSessionId(foreground?.sessionId)) {
+          if (cli === 'codex') this.codexSessionKnown = true
+          setPaneAgentSession(this.paneId, cli, foreground.sessionId)
         }
       })
       .catch(() => { /* exited, or a backend without foreground inspection */ })
@@ -872,6 +873,27 @@ export function pasteIntoTerminalSession(paneId: string, text: string) {
   session.focus()
   return true
 }
+/** True when a paste already has somewhere to go: a field, or a terminal's own input. */
+export function pasteHasOwnTarget(target: EventTarget | null): boolean {
+  const element = target instanceof Element ? target : null
+  return Boolean(element?.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], .xterm, dialog[open], [role="dialog"]'))
+}
+
+// Command+V arrives as the Edit menu's paste, which WebKit delivers to the
+// focused element. A terminal pane that is active but whose hidden input lost
+// focus (after a click on a pane header, a tab, or coming back from another
+// app) would drop it; send it to the active pane's shell instead. The text is
+// pasted, never submitted.
+function onStrayPaste(event: ClipboardEvent) {
+  if (event.defaultPrevented || pasteHasOwnTarget(event.target)) return
+  const vim = (window as unknown as { __bsVim?: { focused?: string } }).__bsVim
+  if (vim?.focused !== 'terminal') return
+  const text = event.clipboardData?.getData('text/plain')
+  if (!text) return
+  if (pasteIntoTerminalSession(activeTerminalPaneId(), text)) event.preventDefault()
+}
+window.addEventListener('paste', onStrayPaste)
+
 export function inspectTerminalSession(paneId: string): Promise<TerminalLifecycleSnapshot | null> {
   return sessions.get(paneId)?.snapshot() ?? Promise.resolve(null)
 }

@@ -12,10 +12,28 @@ export interface SessionPreferences {
   /** What is typed into the pane to start each CLI, flags included. */
   claudeCommand: string
   codexCommand: string
+  geminiCommand: string
+  /** Typed before a file path to open it; `+LINE` is added for vi-style editors. */
+  editorCommand: string
+  /**
+   * Opt-in exception to "agents start on a click only": a restored agent pane
+   * whose exact conversation is known reopens its CLI when the pane is shown.
+   */
+  autoResumeAgents: boolean
+  /** An Obsidian vault (any folder of markdown notes) that Pinned lists and renders read-only. Empty: none. */
+  obsidianVaultPath: string
 }
 
+/** The CLIs the top bar can start. Gemini has no session reading yet. */
+export type LauncherId = 'claude' | 'codex' | 'gemini'
+export const LAUNCHERS: readonly { id: LauncherId; label: string }[] = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'gemini', label: 'Gemini' },
+]
+
 const STORAGE_KEY = 'beads-station.session-preferences'
-const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false, chatSurface: 'terminal', claudeCommand: 'claude', codexCommand: 'codex' }
+const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false, chatSurface: 'terminal', claudeCommand: 'claude', codexCommand: 'codex', geminiCommand: 'gemini', editorCommand: 'nvim', autoResumeAgents: false, obsidianVaultPath: '' }
 
 function load(): SessionPreferences {
   try {
@@ -28,6 +46,10 @@ function load(): SessionPreferences {
       chatSurface: parsed.chatSurface === 'panel' ? 'panel' : 'terminal',
       claudeCommand: typeof parsed.claudeCommand === 'string' ? parsed.claudeCommand : DEFAULTS.claudeCommand,
       codexCommand: typeof parsed.codexCommand === 'string' ? parsed.codexCommand : DEFAULTS.codexCommand,
+      geminiCommand: typeof parsed.geminiCommand === 'string' ? parsed.geminiCommand : DEFAULTS.geminiCommand,
+      editorCommand: typeof parsed.editorCommand === 'string' ? parsed.editorCommand : DEFAULTS.editorCommand,
+      autoResumeAgents: parsed.autoResumeAgents === true,
+      obsidianVaultPath: typeof parsed.obsidianVaultPath === 'string' ? parsed.obsidianVaultPath : DEFAULTS.obsidianVaultPath,
     }
   } catch {
     return { ...DEFAULTS }
@@ -65,8 +87,19 @@ export function shouldRestoreContextOnLaunch(): boolean {
 }
 
 /** The command line for an agent CLI. An empty setting means the plain CLI. */
-export function agentLaunchCommand(provider: 'claude' | 'codex'): string {
-  return (provider === 'claude' ? state.claudeCommand : state.codexCommand).trim() || provider
+export function agentLaunchCommand(provider: LauncherId): string {
+  const command = provider === 'claude' ? state.claudeCommand : provider === 'codex' ? state.codexCommand : state.geminiCommand
+  return command.trim() || provider
+}
+
+/** The editor a file path is opened with. An empty setting means nvim. */
+export function editorCommand(): string {
+  return state.editorCommand.trim() || 'nvim'
+}
+
+/** Synchronous read used when a restored agent pane is shown. */
+export function shouldAutoResumeAgents(): boolean {
+  return state.autoResumeAgents
 }
 
 /** Synchronous read used when a pane's shell is about to start. */

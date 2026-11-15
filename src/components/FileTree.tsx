@@ -11,7 +11,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { flattenVisible, type FlatRow } from '../state/tree';
-import { resolveTargetAgentBridge, resolveActiveShellPtyId } from '../state/termPanes';
+import { resolveTargetAgentBridge } from '../state/termPanes';
+import { openInEditor } from '../lib/openInEditor';
 import { buildFileTree, isLoadingPlaceholder, type DirCache } from '../lib/fileTree';
 import { listDir, readFile, type FsFilePreview } from '../lib/fsBridge';
 
@@ -143,18 +144,15 @@ export function FileTree({ rootPath, active }: FileTreeProps) {
     [],
   );
 
-  // Code-3yn — open the cursor path in nvim running in the active shell PTY.
+  // Open the cursor path in the editor: an nvim already open in this tab is
+  // reused, otherwise it opens in a new split. Nothing is typed into a shell
+  // that might be running something else.
   const openInNvim = useCallback(
     (path: string) => {
-      const ptyId = resolveActiveShellPtyId();
-      if (ptyId == null) {
-        setHint('no shell pane focused (switch to a terminal pane first)');
-        return;
-      }
-      // Send "nvim <path>\r" — same as typing the command in the shell.
-      invoke('pty_write', { id: ptyId, data: `nvim ${path}\r` })
-        .then(() => setHint(`nvim ${path.split('/').pop()}`))
-        .catch((e) => setHint(`nvim failed: ${String(e)}`));
+      const name = path.split('/').pop();
+      openInEditor({ path })
+        .then((result) => setHint(result ? `${result === 'reused' ? 'opened in the running editor' : 'opened in a new pane'}: ${name}` : `cannot open ${name}`))
+        .catch((e) => setHint(`editor failed: ${String(e)}`));
     },
     [],
   );

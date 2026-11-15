@@ -18,7 +18,7 @@ test('shows changed files without starting a process, and starts one only on req
   await openDesigner(page)
   await page.getByRole('button', { name: 'Session', exact: true }).click()
   const session = page.getByTestId('designer-session')
-  await expect(session.getByText('2 files · +4 −1')).toBeVisible()
+  await expect(session.getByText('3 files · +4 −1')).toBeVisible()
   expect(await spawned(page)).toBe(0)
 
   await session.getByRole('button', { name: /src\/app\.ts/ }).click()

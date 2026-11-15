@@ -10,3 +10,25 @@
 }
 .bs-saved-screen { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 14px; display: flex; flex-direction: column; gap: 8px; }
 .bs-saved-screen pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: inherit; color: var(--bs-fg-muted); }
+
+/* Restored agent pane: the conversation is the pane, continuing it is one Enter. */
+.bs-restored { height: 100%; display: flex; flex-direction: column; background: var(--bs-bg); min-height: 0; }
+.bs-restored__head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--bs-border); font-size: 12px; min-width: 0; }
+.bs-restored__badge { padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--bs-bg); background: var(--bs-orange); flex-shrink: 0; }
+.bs-restored__badge--codex { background: var(--bs-blue); }
+.bs-restored__title { color: var(--bs-fg); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.bs-restored__meta { color: var(--bs-fg-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 2; }
+.bs-restored__spacer { flex: 1; }
+.bs-restored__search { width: 130px; flex-shrink: 1; min-width: 60px; font: inherit; font-size: 11px; color: var(--bs-fg); background: var(--bs-bg-dark); border: 1px solid var(--bs-border); border-radius: 5px; padding: 2px 7px; }
+.bs-restored__link { border: none; background: transparent; color: var(--bs-fg-muted); cursor: pointer; font: inherit; font-size: 11px; padding: 2px 4px; white-space: nowrap; align-self: center; }
+.bs-restored__link:hover { color: var(--bs-fg); text-decoration: underline; }
+.bs-restored__body { max-width: 100%; }
+.bs-restored__body > article { max-width: 860px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+.bs-restored__note { margin: 0; font-size: 12px; color: var(--bs-fg-muted); }
+.bs-restored__composer { display: flex; gap: 8px; align-items: center; padding: 8px 10px 4px; border-top: 1px solid var(--bs-border); }
+.bs-restored__input { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--bs-fg); background: var(--bs-bg-dark); border: 1px solid var(--bs-border); border-radius: 7px; padding: 7px 10px; }
+.bs-restored__input:focus { outline: none; border-color: var(--bs-blue); }
+.bs-restored__composer button { font: inherit; font-size: 12px; color: var(--bs-fg); background: var(--bs-bg-elev); border: 1px solid var(--bs-border); border-radius: 7px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+.bs-restored__composer button:disabled { opacity: 0.5; cursor: default; }
+.bs-restored__composer .bs-restored__primary { background: var(--bs-blue); border-color: var(--bs-blue); color: var(--bs-bg); font-weight: 600; }
+.bs-restored__foot { margin: 0; padding: 0 10px 7px; font-size: 11px; color: var(--bs-fg-muted); }

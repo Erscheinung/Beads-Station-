@@ -13,6 +13,9 @@ export interface FileChange {
   diff: string | null
   /** Full text of a file git does not track yet. */
   content: string | null
+  /** An image, archive or other non-text file: listed with its size, never previewed. */
+  binary: boolean
+  size: number
 }
 
 function kindOf(status: string): FileChange['kind'] {
@@ -45,13 +48,15 @@ function countLines(section: string): { added: number; removed: number } {
 export function fileChanges(revision: Pick<ArtifactRevision, 'files' | 'diff'>): FileChange[] {
   const sections = diffSections(revision.diff ?? '')
   return revision.files.map(file => {
-    const diff = sections.get(file.path) ?? null
+    const binary = Boolean(file.binary)
+    // git prints "Binary files differ" for these; that is not a diff to show.
+    const diff = binary ? null : sections.get(file.path) ?? null
     const kind = kindOf(file.status)
-    const content = diff === null && !file.binary ? file.content ?? null : null
-    const counts = diff !== null
+    const content = diff === null && !binary ? file.content ?? null : null
+    const counts = binary ? { added: 0, removed: 0 } : diff !== null
       ? countLines(diff)
       : { added: content ? content.split('\n').length - (content.endsWith('\n') ? 1 : 0) : 0, removed: 0 }
-    return { path: file.path, kind, ...counts, diff, content }
+    return { path: file.path, kind, ...counts, diff, content, binary, size: file.size }
   })
 }
 
@@ -59,4 +64,11 @@ export function fileChanges(revision: Pick<ArtifactRevision, 'files' | 'diff'>):
 export function ticketPrompt(issue: { id: string; title: string }): string {
   const title = issue.title.replace(/\s+/g, ' ').trim()
   return `Work on ticket ${issue.id}: ${title}. Read it with "bd show ${issue.id}" first. Keep the work scoped to this ticket, run the relevant checks, and do not close the ticket: I review the result in Beads Station.`
+}
+
+/** "12 KB" style size for the binary-file label. */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }

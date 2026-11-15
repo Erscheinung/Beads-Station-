@@ -12,7 +12,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
 vi.mock('../state/theme', () => ({ getActivePalette: () => null, subscribeTheme: (listener: () => void) => { mock.themeListeners.add(listener); return () => mock.themeListeners.delete(listener) } }))
 vi.mock('../state/paneNotifications', () => ({ notifyPane: mock.notifyPane }))
-vi.mock('../state/termPanes', () => ({ setPaneAgentCli: mock.setPaneAgentCli, setPaneAgentSession: mock.setPaneAgentSession, isLocalUrl: (url: string) => url.includes('localhost'), showInBrowserPane: mock.showInBrowserPane, openUrlInBrowserTab: mock.openUrlInBrowserTab, spawnFileNavTab: mock.spawnFileNavTab, paneHostKey: () => mock.hostKey }))
+vi.mock('../state/termPanes', () => ({ setPaneAgentCli: mock.setPaneAgentCli, setPaneAgentSession: mock.setPaneAgentSession, isLocalUrl: (url: string) => url.includes('localhost'), showInBrowserPane: mock.showInBrowserPane, openUrlInBrowserTab: mock.openUrlInBrowserTab, spawnFileNavTab: mock.spawnFileNavTab, paneHostKey: () => mock.hostKey, activeTerminalPaneId: () => 'pane' }))
 vi.mock('xterm', () => ({ Terminal: class {
   options = {}; cols = 80; rows = 24
   buffer = {
@@ -43,7 +43,7 @@ vi.mock('xterm', () => ({ Terminal: class {
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit = mock.fit } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
-import { openTerminalLink, disposeTerminalSession, getTerminalSession, oscNotificationText, runInTerminalSession, SgrColorNormalizer, shellQuote, terminalFontStack, terminalSessionForNode } from './terminalSessions'
+import { openTerminalLink, pasteHasOwnTarget, disposeTerminalSession, getTerminalSession, oscNotificationText, runInTerminalSession, SgrColorNormalizer, shellQuote, terminalFontStack, terminalSessionForNode } from './terminalSessions'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -578,5 +578,37 @@ describe('agent CLI resume support', () => {
     vi.advanceTimersByTime(500)
     await vi.runAllTimersAsync()
     expect(mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_write')).toEqual([['pty_write', { id: 7, data: 'claude --continue\r' }]])
+  })
+})
+
+describe('paste with no focused field', () => {
+  const paste = (target: Element) => {
+    const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent
+    Object.defineProperty(event, 'clipboardData', { value: { getData: () => 'from another app' } })
+    target.dispatchEvent(event)
+    return event
+  }
+  afterEach(() => { delete (window as unknown as { __bsVim?: unknown }).__bsVim })
+
+  it('goes to the active terminal pane when the terminal is the focused surface, and nowhere otherwise', async () => {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    mock.paste.mockClear()
+
+    // Another surface has focus: the paste is not ours.
+    ;(window as unknown as { __bsVim?: unknown }).__bsVim = { focused: 'board' }
+    expect(paste(document.body).defaultPrevented).toBe(false)
+    expect(mock.paste).not.toHaveBeenCalled()
+
+    ;(window as unknown as { __bsVim?: unknown }).__bsVim = { focused: 'terminal' }
+    // A real field keeps its own paste.
+    const field = document.body.appendChild(document.createElement('input'))
+    expect(paste(field).defaultPrevented).toBe(false)
+    expect(mock.paste).not.toHaveBeenCalled()
+    field.remove()
+
+    expect(paste(document.body).defaultPrevented).toBe(true)
+    expect(mock.paste).toHaveBeenCalledWith('from another app')
+    expect(pasteHasOwnTarget(null)).toBe(false)
   })
 })

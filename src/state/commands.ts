@@ -16,8 +16,18 @@ export const COMMANDS = [
   { id: 'themes', label: 'Choose theme' },
   { id: 'layout', label: 'View settings' },
   { id: 'showBoard', label: 'Show board' },
-  { id: 'designer', label: 'Switch to designer skin' },
-  { id: 'terminal', label: 'Switch to terminal skin' },
+  { id: 'designer', label: 'Go to Designer' },
+  { id: 'terminal', label: 'Go to Terminal' },
+  { id: 'toggleSkin', label: 'Switch between Terminal and Designer', binding: 'Mod+Shift+D' },
+  { id: 'designer.requests', label: 'Designer: Requests' },
+  { id: 'designer.session', label: 'Designer: Session' },
+  // Command+Y is "show history" in browsers.
+  { id: 'designer.history', label: 'Designer: History (past conversations)', binding: 'Mod+Y' },
+  { id: 'designer.shelf', label: 'Designer: Pinned context' },
+  { id: 'designer.graph', label: 'Designer: Bead map' },
+  { id: 'designer.agents', label: 'Designer: Agents' },
+  { id: 'designer.timeline', label: 'Designer: Timeline' },
+  { id: 'shortcuts', label: 'Keyboard shortcuts', binding: 'Mod+/' },
   { id: 'newTab', label: 'New terminal tab', repo: true },
   { id: 'splitH', label: 'Split terminal horizontally', repo: true },
   { id: 'splitV', label: 'Split terminal vertically', repo: true },
@@ -31,6 +41,11 @@ export const COMMANDS = [
   { id: 'focusRight', label: 'Focus terminal pane right', binding: 'Mod+Shift+ArrowRight', repo: true },
   { id: 'focusUp', label: 'Focus terminal pane up', binding: 'Mod+Shift+ArrowUp', repo: true },
   { id: 'focusDown', label: 'Focus terminal pane down', binding: 'Mod+Shift+ArrowDown', repo: true },
+  // The same four moves on the home row, as in Hyprland and Neovim window keys.
+  { id: 'focusLeftVim', label: 'Focus terminal pane left (H)', binding: 'Mod+Shift+H', repo: true },
+  { id: 'focusDownVim', label: 'Focus terminal pane down (J)', binding: 'Mod+Shift+J', repo: true },
+  { id: 'focusUpVim', label: 'Focus terminal pane up (K)', binding: 'Mod+Shift+K', repo: true },
+  { id: 'focusRightVim', label: 'Focus terminal pane right (L)', binding: 'Mod+Shift+L', repo: true },
   { id: 'resizeLeft', label: 'Resize terminal split left', binding: 'Ctrl+Shift+ArrowLeft', repo: true },
   { id: 'resizeRight', label: 'Resize terminal split right', binding: 'Ctrl+Shift+ArrowRight', repo: true },
   { id: 'resizeUp', label: 'Resize terminal split up', binding: 'Ctrl+Shift+ArrowUp', repo: true },
@@ -44,10 +59,11 @@ export const COMMANDS = [
   { id: 'checkForUpdates', label: 'Check for updates' },
   { id: 'launchClaude', label: 'Start Claude Code in a terminal pane', repo: true },
   { id: 'launchCodex', label: 'Start Codex in a terminal pane', repo: true },
+  { id: 'launchGemini', label: 'Start Gemini in a terminal pane', repo: true },
   { id: 'chatPanel', label: 'Open the chat panel', repo: true },
   { id: 'agent', label: 'New Claude agent pane', repo: true },
   { id: 'files', label: 'Open files explorer', repo: true },
-  { id: 'browser', label: 'Open browser pane', binding: 'Mod+Shift+L', repo: true },
+  { id: 'browser', label: 'Open browser pane', binding: 'Mod+Shift+B', repo: true },
   { id: 'expand', label: 'Expand all beads', repo: true },
   { id: 'collapse', label: 'Collapse bead groups', repo: true },
   { id: 'hideExplorer', label: 'Collapse explorer' },
@@ -118,6 +134,8 @@ const RETIRED_DEFAULTS = new Set([
   'Mod+Alt+[', 'Mod+Alt+]',
   ...Array.from({ length: 9 }, (_, index) => `Mod+Alt+${index + 1}`),
   ...Array.from({ length: 9 }, (_, index) => `Mod+Shift+${index + 1}`),
+  // 0.2.1: the browser pane moved to Mod+Shift+B so H/J/K/L can move between panes.
+  'Mod+Shift+L',
 ])
 const RECIPE_KEY = 'beads-station.recipe-bindings.v1'
 const defaults: Record<string, string> = Object.fromEntries(COMMANDS.map(c => [c.id, ('binding' in c ? c.binding : '') || '']))
@@ -239,6 +257,7 @@ export function matchedCommand(e: KeyboardEvent, mac = isMac()): CommandId | und
 export function dispatchCommand(id: CommandId) {
   if (id === 'palette') { openPalette(); return }
   if (id === 'settings') { openSettings(); return }
+  if (id === 'shortcuts') { window.dispatchEvent(new Event('shortcuts:open')); return }
   if (id === 'fullscreen') { window.dispatchEvent(new CustomEvent('terminal:focus-toggle')); return }
   if (id.startsWith('recipe:')) {
     window.dispatchEvent(new CustomEvent('recipe:run-binding', { detail: { recipeId: id.slice('recipe:'.length) } }))

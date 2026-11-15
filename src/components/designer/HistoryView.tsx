@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { TurnView } from './ConversationView'
 import { addShelfItem } from './shelf'
+import { openInEditor } from '../../lib/openInEditor'
+import { openDesignerView } from '../../state/designerNav'
 import {
   filterTurns, formatTokens, listTranscripts, pace, readMeter, takeHistoryFocus, windowLabel,
   type LimitWindow, type Meter, readTranscript, relativeTime, turnProse, usageLine,
@@ -15,7 +17,7 @@ import {
 const REFRESH_MS = 8_000
 /** Older turns are folded behind a button so a long session opens instantly. */
 const SHOWN_TURNS = 120
-const PROVIDER_LABEL = { claude: 'Claude Code', codex: 'Codex' } as const
+const PROVIDER_LABEL = { claude: 'Claude Code', codex: 'Codex', qwen: 'Qwen' } as const
 
 export function HistoryView({ project, sessionRunning, onResume }: {
   project: { id: string; name: string; path: string }
@@ -35,7 +37,8 @@ export function HistoryView({ project, sessionRunning, onResume }: {
 
   const refreshList = useCallback(async () => {
     try {
-      const next = await listTranscripts(project.path)
+      // Subagents are shown nested in the Agents and Timeline views; History lists conversations.
+      const next = (await listTranscripts(project.path)).filter(item => !item.parentId)
       setList(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
       setError(null)
       // A ticket page may have asked for one session to be open.
@@ -44,8 +47,9 @@ export function HistoryView({ project, sessionRunning, onResume }: {
         const match = next.find(item => `${item.provider}:${item.id}` === wanted)
         if (match) { stickToEnd.current = true; setTranscript(null); setQuery(''); setShowAll(false); setSelected(match) }
       }
-      // Follow the selected session as it grows.
-      setSelected(current => current ? next.find(item => item.id === current.id && item.provider === current.provider) ?? current : current)
+      // Follow the selected session as it grows; with nothing chosen, open the
+      // newest one so the view is never an empty page (reading starts nothing).
+      setSelected(current => current ? next.find(item => item.id === current.id && item.provider === current.provider) ?? current : wanted ? current : next[0] ?? null)
     } catch (failure) { setError(String(failure)) }
   }, [project.path, project.id])
 
@@ -128,8 +132,11 @@ export function HistoryView({ project, sessionRunning, onResume }: {
 
     <section style={styles.reader} aria-label="Conversation">
       {!selected && <div style={styles.empty}>
-        <p style={styles.emptyTitle}>Read any session, no resume needed</p>
-        <p style={styles.meta}>Pick one on the left. This reads the agent’s own session file, so it uses no tokens and works while a terminal is still running the same session.</p>
+        <p style={styles.emptyTitle}>{list?.length === 0 ? 'No conversations in this folder yet' : 'Pick a conversation on the left'}</p>
+        <p style={styles.meta}>{list?.length === 0
+          ? 'Start Claude, Codex or Gemini from the top bar, or open Session. Claude and Codex conversations in this folder then appear here by themselves.'
+          : 'Reading here only opens the agent’s own session file. Nothing is started, and it works while a terminal is still running the same session.'}</p>
+        {list?.length === 0 && <div style={styles.actions}><button style={styles.primary} onClick={() => openDesignerView('session')}>Open Session</button></div>}
       </div>}
       {selected && <>
         <header style={styles.readerHeader}>
@@ -149,7 +156,7 @@ export function HistoryView({ project, sessionRunning, onResume }: {
           {transcript?.truncated && <p style={styles.note}>This session is large; the most recent part is shown.</p>}
           {folded > 0 && <button style={styles.quiet} onClick={() => setShowAll(true)}>Show {folded} earlier turn{folded === 1 ? '' : 's'}</button>}
           {transcript && visible.length === 0 && <p style={styles.meta}>{query ? 'No turn matches that search.' : 'Nothing readable in this session yet.'}</p>}
-          {shown.map((turn, index) => <TurnView key={`${turn.at ?? ''}:${index}:${turn.role}`} turn={turn} pinned={pinned === index} onPin={() => pin(turn, index)} />)}
+          {shown.map((turn, index) => <TurnView key={`${turn.at ?? ''}:${index}:${turn.role}`} turn={turn} pinned={pinned === index} onPin={() => pin(turn, index)} agentLabel={selected.provider === 'claude' ? 'Claude' : selected.provider === 'qwen' ? 'Qwen' : 'Codex'} onOpenFile={file => { void openInEditor({ path: file }, { cwd: project.path }) }} />)}
         </div>
       </>}
     </section>
@@ -221,7 +228,7 @@ const styles: Record<string, React.CSSProperties> = {
   quiet: { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg)', cursor: 'pointer', alignSelf: 'flex-start' },
   link: { marginLeft: 'auto', border: 'none', background: 'transparent', color: 'var(--bs-fg-muted)', cursor: 'pointer', fontSize: 12 },
   search: { padding: '7px 10px', borderRadius: 8, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg)', font: 'inherit' },
-  scroll: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, paddingRight: 6 },
+  scroll: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 10px 12px 2px' },
   empty: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8, padding: 32, border: '1px dashed var(--bs-border)', borderRadius: 10 },
   emptyTitle: { margin: 0, fontSize: 22, fontWeight: 600 },
   turn: { padding: '10px 12px', borderRadius: 10, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', fontSize: 13, lineHeight: 1.55, flexShrink: 0 },
