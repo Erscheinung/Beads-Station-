@@ -7,6 +7,8 @@ const mock = vi.hoisted(() => ({
   onBell: null as null | (() => void), keyHandler: null as null | ((event: KeyboardEvent) => boolean),
   osc: new Map<number, (data: string) => boolean>(), scrollToTop: vi.fn(), notifyPane: vi.fn(), setPaneAgentCli: vi.fn(), setPaneAgentSession: vi.fn(), showInBrowserPane: vi.fn(() => true), openUrlInBrowserTab: vi.fn(() => true), spawnFileNavTab: vi.fn(),
   themeListeners: new Set<() => void>(), selection: '', hostKey: null as string | null, pendingWrite: null as null | (() => void),
+  scrollLines: vi.fn(), csi: new Map<string, (params: (number | number[])[]) => boolean>(),
+  markers: [] as Array<{ line: number; isDisposed: boolean; dispose: () => void; fireDispose: () => void }>,
 }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mock.invoke }))
 vi.mock('./listenerRegistry', () => ({ safeListen: mock.listen }))
@@ -26,7 +28,12 @@ vi.mock('xterm', () => ({ Terminal: class {
   getSelection() { return mock.selection }
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { mock.keyHandler = handler }
   onBell(handler: () => void) { mock.onBell = handler; return { dispose() {} } }
-  parser = { registerOscHandler(ident: number, handler: (data: string) => boolean) { mock.osc.set(ident, handler); return { dispose() {} } } }
+  parser = {
+    registerOscHandler(ident: number, handler: (data: string) => boolean) { mock.osc.set(ident, handler); return { dispose() {} } },
+    registerCsiHandler(id: { final: string }, handler: (params: (number | number[])[]) => boolean) { mock.csi.set(id.final, handler); return { dispose() {} } },
+  }
+  modes = { mouseTrackingMode: 'none' }
+  scrollLines = mock.scrollLines
   scrollToTop = mock.scrollToTop
   write = mock.write; refresh = mock.refresh; clearTextureAtlas = mock.clearTextureAtlas; dispose = mock.disposed
   onData(handler: (data: string) => void) { mock.onData = handler; return { dispose() {} } }
@@ -37,16 +44,27 @@ vi.mock('xterm', () => ({ Terminal: class {
   scrollToLine = mock.scrollToLine
   registerMarker(offset = 0) {
     const buffer = this.buffer.active
-    return { id: 1, line: buffer.baseY + buffer.cursorY + offset, isDisposed: false, dispose: mock.markerDispose, onDispose() { return { dispose() {} } } }
+    const handlers: Array<() => void> = []
+    const marker = {
+      id: 1, line: buffer.baseY + buffer.cursorY + offset, isDisposed: false,
+      dispose: () => { mock.markerDispose(); marker.fireDispose() },
+      // What xterm does when the marker's line leaves the buffer.
+      fireDispose: () => { if (marker.isDisposed) return; marker.isDisposed = true; marker.line = -1; handlers.forEach(handler => handler()) },
+      onDispose(handler: () => void) { handlers.push(handler); return { dispose() {} } },
+    }
+    mock.markers.push(marker)
+    return marker
   }
 } }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit = mock.fit } }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: class {} }))
 import { setTerminalAppearance, resetTerminalAppearance } from '../state/terminalAppearance'
-import { openTerminalLink, pasteHasOwnTarget, disposeTerminalSession, getTerminalSession, oscNotificationText, runInTerminalSession, SgrColorNormalizer, shellQuote, terminalFontStack, terminalSessionForNode } from './terminalSessions'
+import { getPaneUsage } from '../state/paneUsage'
+import { anchorAfterMarkerLoss, isTerminalReport, openTerminalLink, pasteHasOwnTarget, disposeTerminalSession, getTerminalSession, oscNotificationText, runInTerminalSession, SgrColorNormalizer, shellQuote, terminalFontStack, terminalSessionForNode, PASTE_FALLBACK_MS, textFromClipboardData, __resetPasteFallbackForTest } from './terminalSessions'
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mock.markers = []
   mock.selection = ''
   mock.hostKey = null
   mock.listen.mockResolvedValue(mock.released)
@@ -54,7 +72,12 @@ beforeEach(() => {
 })
 afterEach(() => { vi.useRealTimers(); disposeTerminalSession('pane'); resetTerminalAppearance(); mock.themeListeners.clear(); document.body.innerHTML = ''; vi.unstubAllGlobals() })
 
+const settle = () => new Promise(resolve => setTimeout(resolve, 5))
+
 function userScroll(session: { element: HTMLElement }) {
+  // Whatever moved the buffer before this gesture (output, a resize) has
+  // already been reported; xterm fires onScroll for it.
+  mock.onScroll?.()
   session.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }))
   mock.onScroll?.()
 }
@@ -218,6 +241,8 @@ describe('terminal session ownership', () => {
     userScroll(session)
     expect((await session.snapshot()).viewport.followOutput).toBe(false)
 
+    // xterm's scrollOnUserInput scrolls to the bottom before onData fires.
+    Object.assign(buffer, { viewportY: 100 })
     mock.onData?.('x')
     expect((await session.snapshot()).viewport.followOutput).toBe(true)
 
@@ -273,6 +298,186 @@ describe('terminal session ownership', () => {
     const session = getTerminalSession('pane', '/repo', vi.fn())
     await session.ready
     expect(session.phase).toBe('exited')
+  })
+})
+
+// Code-7xc.5: scroll fights in Gemini (Ink) and plain shells.
+describe('history reader against redraws, replies and view moves', () => {
+  type Buf = { type: 'normal' | 'alternate'; viewportY: number; baseY: number; cursorY: number }
+  async function reading() {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const buffer = session.terminal.buffer.active as unknown as Buf
+    Object.assign(buffer, { viewportY: 40, baseY: 100, cursorY: 10 })
+    userScroll(session)
+    mock.scrollToBottom.mockClear()
+    mock.scrollToLine.mockClear()
+    return { session, buffer, host }
+  }
+  const follows = async (session: { snapshot(): Promise<{ viewport: { followOutput: boolean } }> }) => (await session.snapshot()).viewport.followOutput
+
+  it('tells the terminal answering the program apart from typing', () => {
+    for (const reply of ['\x1b[I', '\x1b[O', '\x1b[?1;2c', '\x1b[>0;276;0c', '\x1b[0n', '\x1b[?2004;1$y', '\x1b[8;24;80t', '\x1b]11;rgb:1f1f/2323/3535\x07', '\x1b]10;rgb:c0c0/caca/f5f5\x1b\\', '\x1bP1$r0m\x1b\\', '\x1b[O\x1b[I']) {
+      expect(isTerminalReport(reply), JSON.stringify(reply)).toBe(true)
+    }
+    for (const typed of ['x', '\r', '\x1b', '\x1b[A', '\x1bOA', '\x1b[1;5R', '\x1b[<64;10;5M', '\x1b[200~text\x1b[201~', 'ls\x1b[I']) {
+      expect(isTerminalReport(typed), JSON.stringify(typed)).toBe(false)
+    }
+  })
+
+  it('a focus report or device reply does not pull a reader back to live output', async () => {
+    const { session } = await reading()
+    mock.onData?.('\x1b[I')
+    mock.onData?.('\x1b[?1;2c')
+    mock.onWriteParsed?.()
+    expect(await follows(session)).toBe(false)
+    expect(mock.scrollToBottom).not.toHaveBeenCalled()
+    expect(mock.scrollToLine).toHaveBeenLastCalledWith(40)
+    // Replies are still delivered to the program.
+    await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith('pty_write', { id: 7, data: '\x1b[I' }))
+  })
+
+  it('a reply xterm did not scroll to the bottom for (a CPR) leaves the reader in place', async () => {
+    const { session } = await reading()
+    mock.onData?.('\x1b[1;5R')
+    expect(await follows(session)).toBe(false)
+  })
+
+  it('a scrollback clear that lands inside the wheel window is output, not the user', async () => {
+    const { session, buffer } = await reading()
+    // Still inside the 400 ms gesture window: Ink clears scrollback (ESC[3J)
+    // and xterm reports a scroll to the new, tiny bottom.
+    mock.csi.get('J')?.([3])
+    mock.markers[mock.markers.length - 1]?.fireDispose()
+    Object.assign(buffer, { viewportY: 0, baseY: 0 })
+    mock.onScroll?.()
+    expect(await follows(session)).toBe(false)
+  })
+
+  it('after a clear and reprint, the reader returns to the same absolute line and re-anchors', async () => {
+    const { session, buffer } = await reading()
+    vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 5000)
+    mock.csi.get('J')?.([3])
+    mock.markers[mock.markers.length - 1]?.fireDispose()
+    Object.assign(buffer, { viewportY: 0, baseY: 0 })
+    mock.onScroll?.()
+    // The reprint arrives in a later read: line 40 does not exist yet.
+    Object.assign(buffer, { viewportY: 20, baseY: 20 })
+    mock.onScroll?.()
+    mock.onWriteParsed?.()
+    expect(mock.scrollToLine).toHaveBeenLastCalledWith(20)
+    expect(mock.scrollToBottom).not.toHaveBeenCalled()
+    const markersBefore = mock.markers.length
+    Object.assign(buffer, { viewportY: 100, baseY: 100 })
+    mock.onScroll?.()
+    mock.onWriteParsed?.()
+    expect(mock.scrollToLine).toHaveBeenLastCalledWith(40)
+    expect(mock.markers.length).toBe(markersBefore + 1)
+    expect(await follows(session)).toBe(false)
+  })
+
+  it('when scrollback eviction drops the anchored line, the reader stays at the oldest surviving line', async () => {
+    await reading()
+    vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 5000)
+    // No ESC[3J: the marker died because the scrollback limit trimmed it.
+    mock.markers[mock.markers.length - 1]?.fireDispose()
+    mock.onWriteParsed?.()
+    expect(mock.scrollToLine).toHaveBeenLastCalledWith(0)
+  })
+
+  it('anchorAfterMarkerLoss waits at the newest line until the old one is back', () => {
+    expect(anchorAfterMarkerLoss(40, 10)).toEqual({ line: 10, reanchor: false })
+    expect(anchorAfterMarkerLoss(40, 40)).toEqual({ line: 40, reanchor: true })
+    expect(anchorAfterMarkerLoss(0, 3000)).toEqual({ line: 0, reanchor: true })
+  })
+
+  it('a downward scroll that ends one row short of the bottom follows live output', async () => {
+    const { session, buffer } = await reading()
+    session.element.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }))
+    Object.assign(buffer, { viewportY: 99 })
+    mock.onScroll?.()
+    expect(await follows(session)).toBe(true)
+    expect(mock.scrollToBottom).toHaveBeenCalled()
+  })
+
+  it('an upward scroll to one row above the bottom is still reading', async () => {
+    const host = visibleHost()
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    session.attach(host)
+    await session.ready
+    const buffer = session.terminal.buffer.active as unknown as Buf
+    Object.assign(buffer, { viewportY: 100, baseY: 100, cursorY: 10 })
+    mock.onScroll?.()
+    session.element.dispatchEvent(new WheelEvent('wheel', { deltaY: -20 }))
+    Object.assign(buffer, { viewportY: 99 })
+    mock.onScroll?.()
+    expect(await follows(session)).toBe(false)
+  })
+
+  it('a wheel down at the end (which xterm reports as no scroll) follows live output', async () => {
+    const { session, buffer } = await reading()
+    // A stale reader one row above baseY (set outside any gesture); the DOM
+    // viewport is already at its end.
+    vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 5000)
+    Object.assign(buffer, { viewportY: 99 })
+    mock.onScroll?.()
+    expect(await follows(session)).toBe(false)
+    session.element.dispatchEvent(new WheelEvent('wheel', { deltaY: 40 }))
+    expect(await follows(session)).toBe(true)
+    expect(mock.scrollToBottom).toHaveBeenCalled()
+  })
+
+  it('with mouse tracking on, plain wheel stays with the program and Shift+wheel scrolls the normal buffer history', async () => {
+    const { session } = await reading()
+    const terminal = session.terminal as unknown as { modes: { mouseTrackingMode: string } }
+    terminal.modes.mouseTrackingMode = 'vt200'
+    // Plain wheel: xterm turns it into mouse reports (fzf --height scrolls its list).
+    const plain = new WheelEvent('wheel', { deltaY: -3, deltaMode: 1, cancelable: true })
+    session.element.dispatchEvent(plain)
+    expect(plain.defaultPrevented).toBe(false)
+    expect(mock.scrollLines).not.toHaveBeenCalled()
+
+    const up = new WheelEvent('wheel', { deltaY: -3, deltaMode: 1, shiftKey: true, cancelable: true })
+    session.element.dispatchEvent(up)
+    expect(up.defaultPrevented).toBe(true)
+    expect(mock.scrollLines).toHaveBeenLastCalledWith(-3)
+    // macOS reports Shift+wheel as a horizontal delta.
+    session.element.dispatchEvent(new WheelEvent('wheel', { deltaX: -2, deltaMode: 1, shiftKey: true, cancelable: true }))
+    expect(mock.scrollLines).toHaveBeenLastCalledWith(-2)
+    expect((await session.snapshot()).viewport.mouseTracking).toBe('vt200')
+
+    // Shift+wheel down to the end returns to live output.
+    session.element.dispatchEvent(new WheelEvent('wheel', { deltaY: 70, deltaMode: 1, shiftKey: true, cancelable: true }))
+    expect(await follows(session)).toBe(true)
+    expect(mock.scrollToBottom).toHaveBeenCalled()
+
+    // The alternate screen is left alone.
+    mock.scrollLines.mockClear()
+    ;(session.terminal.buffer as unknown as { active: Buf }).active = { type: 'alternate', viewportY: 0, baseY: 0, cursorY: 0 }
+    const alt = new WheelEvent('wheel', { deltaY: -3, deltaMode: 1, shiftKey: true, cancelable: true })
+    session.element.dispatchEvent(alt)
+    expect(alt.defaultPrevented).toBe(false)
+    expect(mock.scrollLines).not.toHaveBeenCalled()
+  })
+
+  it('re-syncs the scrollbar after a reattach so a quiet shell is not left at a stale scrollTop', async () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return frames.length })
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    const { session, host } = await reading()
+    while (frames.length) frames.shift()!(0)
+    session.detach(host)
+    const next = visibleHost()
+    mock.scrollLines.mockClear()
+    mock.scrollToLine.mockClear()
+    session.attach(next)
+    while (frames.length) frames.shift()!(0)
+    // One line away and back makes xterm rewrite the DOM scrollTop itself.
+    expect(mock.scrollLines).toHaveBeenCalledWith(-1)
+    expect(mock.scrollToLine).toHaveBeenLastCalledWith(40)
+    expect(await follows(session)).toBe(false)
   })
 })
 
@@ -538,7 +743,12 @@ describe('agent CLI resume support', () => {
     await session.ready
     session.checkpointScreen()
     await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', 'claude'))
+    await settle()
     mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? { cli: null, sessionId: null } : 7)
+    // One listing that misses the agent is not enough to drop it; two in a row are.
+    session.checkpointScreen()
+    await settle()
+    expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', 'claude')
     session.checkpointScreen()
     await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', null))
   })
@@ -551,11 +761,16 @@ describe('agent CLI resume support', () => {
     const asked = () => mock.invoke.mock.calls.filter(([cmd]) => cmd === 'pty_foreground').map(([, args]) => (args as { wantSession: boolean }).wantSession)
     session.checkpointScreen()
     await vi.waitFor(() => expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', 'codex'))
+    // Found: its session is asked for at once, not on the next poll.
+    await settle()
+    expect(asked()).toEqual([false, true])
     answer = { cli: 'codex', sessionId: id }
     session.checkpointScreen()
     await vi.waitFor(() => expect(mock.setPaneAgentSession).toHaveBeenCalledWith('pane', 'codex', id))
-    session.checkpointScreen()
-    await vi.waitFor(() => expect(asked()).toEqual([false, true, false]))
+    // Known: asked again only every third poll, so a /new inside Codex is still noticed.
+    for (let poll = 0; poll < 3; poll++) { await settle(); session.checkpointScreen() }
+    await settle()
+    expect(asked()).toEqual([false, true, true, false, false, true])
   })
   it('records the session a Claude Code hook reports, and ignores a malformed one', async () => {
     getTerminalSession('pane', '/repo', vi.fn())
@@ -565,6 +780,34 @@ describe('agent CLI resume support', () => {
     expect(mock.setPaneAgentSession).not.toHaveBeenCalled()
     report('session;claude;2c975569-13c1-43b2-8e7a-f88d6138d7d8')
     expect(mock.setPaneAgentSession).toHaveBeenCalledWith('pane', 'claude', '2c975569-13c1-43b2-8e7a-f88d6138d7d8')
+  })
+  it('takes live usage from the status line report and drops it with the agent', async () => {
+    const id = '2c975569-13c1-43b2-8e7a-f88d6138d7d8'
+    const session = getTerminalSession('pane', '/repo', vi.fn(), vi.fn())
+    await session.ready
+    const report = mock.osc.get(7770)!
+    expect(report('usage;claude;not json')).toBe(true)
+    expect(getPaneUsage('pane')).toBeNull()
+    report(`usage;claude;{"session_id":"${id}","context_window_size":200000,"five_hour":{"used_percentage":81,"resets_at":1763650800},"used_percentage":42}`)
+    expect(getPaneUsage('pane')).toMatchObject({ provider: 'claude', sessionId: id, contextPercent: 42, contextWindow: 200000, fiveHour: { usedPercent: 81, windowMinutes: 300 } })
+    // Any alias works: the report itself names the CLI and the session.
+    expect(mock.setPaneAgentSession).toHaveBeenCalledWith('pane', 'claude', id)
+    expect(mock.invoke).toHaveBeenCalledWith('session_usage', { provider: 'claude', sessionId: id, cwd: null })
+    // A listing that misses Claude right after a report does not drop the numbers.
+    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? { cli: null, sessionId: null } : 7)
+    session.checkpointScreen(); await settle(); session.checkpointScreen(); await settle()
+    expect(getPaneUsage('pane')?.contextPercent).toBe(42)
+    disposeTerminalSession('pane')
+    expect(getPaneUsage('pane')).toBeNull()
+  })
+  it('follows a Gemini CLI for usage without offering to resume it', async () => {
+    mock.invoke.mockImplementation(async cmd => cmd === 'pty_foreground' ? { cli: 'gemini', sessionId: null, cwd: '/repo/sub' } : 7)
+    const session = getTerminalSession('pane', '/repo', vi.fn(), vi.fn())
+    await session.ready
+    session.checkpointScreen()
+    await vi.waitFor(() => expect(getPaneUsage('pane')?.provider).toBe('gemini'))
+    expect(mock.setPaneAgentCli).toHaveBeenLastCalledWith('pane', null)
+    await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith('session_usage', { provider: 'gemini', sessionId: null, cwd: '/repo/sub' }))
   })
   it('types a requested startup command only after the shell has printed', async () => {
     const session = getTerminalSession('pane', '/repo', vi.fn())
@@ -610,5 +853,76 @@ describe('paste with no focused field', () => {
     expect(paste(document.body).defaultPrevented).toBe(true)
     expect(mock.paste).toHaveBeenCalledWith('from another app')
     expect(pasteHasOwnTarget(null)).toBe(false)
+  })
+})
+
+describe('Command+V fallback', () => {
+  const press = () => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', metaKey: true, bubbles: true, cancelable: true }))
+  const nativePaste = (data: Record<string, string>) => {
+    const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent
+    Object.defineProperty(event, 'clipboardData', { value: { getData: (type: string) => data[type] ?? '' } })
+    document.body.dispatchEvent(event)
+    return event
+  }
+  const readClipboard = (text: string | null) => mock.invoke.mockImplementation(async (cmd: string) => cmd === 'clipboard_read_text' ? text : 7)
+
+  beforeEach(() => { vi.useFakeTimers(); __resetPasteFallbackForTest(); ;(window as unknown as { __bsVim?: unknown }).__bsVim = { focused: 'terminal' } })
+  afterEach(() => { delete (window as unknown as { __bsVim?: unknown }).__bsVim })
+
+  async function runningSession() {
+    const session = getTerminalSession('pane', '/repo', vi.fn())
+    await session.ready
+    mock.paste.mockClear()
+    return session
+  }
+
+  it('reads the clipboard natively when no paste event arrives', async () => {
+    await runningSession(); readClipboard('from outside')
+    press()
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS + 10)
+    expect(mock.paste).toHaveBeenCalledTimes(1)
+    expect(mock.paste).toHaveBeenCalledWith('from outside')
+  })
+
+  it('does nothing when the native paste event arrives in time (never twice)', async () => {
+    await runningSession(); readClipboard('from outside')
+    press()
+    await vi.advanceTimersByTimeAsync(10)
+    nativePaste({ 'text/plain': 'native' })
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS + 10)
+    expect(mock.invoke.mock.calls.some(([cmd]) => cmd === 'clipboard_read_text')).toBe(false)
+    expect(mock.paste).toHaveBeenCalledTimes(1) // the stray-paste route, once
+  })
+
+  it('swallows a native paste that shows up just after the fallback pasted', async () => {
+    await runningSession(); readClipboard('late')
+    press()
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS + 10)
+    const event = nativePaste({ 'text/plain': 'late' })
+    expect(event.defaultPrevented).toBe(true)
+    expect(mock.paste).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the native clipboard when the event has no text/plain and no usable alternative', async () => {
+    await runningSession(); readClipboard('read natively')
+    nativePaste({})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mock.paste).toHaveBeenCalledWith('read natively')
+  })
+
+  it('turns copied file URLs into quoted paths and rich text into its text', async () => {
+    await runningSession()
+    nativePaste({ 'text/uri-list': 'file:///tmp/My%20Dir/a.txt\r\nfile:///tmp/b.txt' })
+    expect(mock.paste).toHaveBeenCalledWith("'/tmp/My Dir/a.txt' /tmp/b.txt ")
+    mock.paste.mockClear()
+    expect(textFromClipboardData({ getData: type => type === 'text/html' ? '<p>Hello <b>world</b></p>' : '' })).toBe('Hello world')
+  })
+
+  it('ignores Command+V when another surface has focus', async () => {
+    await runningSession(); readClipboard('nope')
+    ;(window as unknown as { __bsVim?: unknown }).__bsVim = { focused: 'board' }
+    press()
+    await vi.advanceTimersByTimeAsync(PASTE_FALLBACK_MS + 10)
+    expect(mock.paste).not.toHaveBeenCalled()
   })
 })

@@ -228,6 +228,11 @@ export function useBdSnapshot(repoPath: string): BdSnapshotState {
   return state
 }
 
+/** Outside React: the issues currently cached for a repo (no fetch). */
+export function peekBdIssues(repoPath: string): Issue[] {
+  return getSnapshot(repoPath).all
+}
+
 // Test-only seam: reset the module store between cases.
 export function __resetBdCacheForTest(): void {
   store.forEach(clearHeal)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentResumeCommand, agentStartCommand, isAgentSessionId } from './agentHooks'
+import { agentForkCommand, agentResumeCommand, agentStartCommand, isAgentSessionId } from './agentHooks'
 
 const ID = '2c975569-13c1-43b2-8e7a-f88d6138d7d8'
 const SETTINGS = '/tmp/Application Support/ai.beads-station.desktop/agent-hooks/claude-settings.json'
@@ -20,5 +20,15 @@ describe('agent CLI command lines', () => {
     expect(agentResumeCommand('claude', ID, SETTINGS)).toBe(`claude --settings '${SETTINGS}' --resume ${ID}`)
     expect(agentStartCommand('claude', "Fix Bob's header", SETTINGS)).toBe(`claude --settings '${SETTINGS}' 'Fix Bob'\\''s header'`)
     expect(agentStartCommand('codex', null, SETTINGS)).toBe('codex -c tui.notifications=true -c tui.notification_method=osc9')
+  })
+})
+
+describe('fork command lines', () => {
+  it('forks the whole session for each CLI, never a guessed one', () => {
+    expect(agentForkCommand('claude', ID, null)).toBe(`claude --resume ${ID} --fork-session`)
+    expect(agentForkCommand('claude', ID, SETTINGS)).toBe(`claude --settings '${SETTINGS}' --resume ${ID} --fork-session`)
+    expect(agentForkCommand('codex', ID, null)).toBe(`codex fork ${ID} -c tui.notifications=true -c tui.notification_method=osc9`)
+    expect(agentForkCommand('claude', undefined, null)).toBeNull()
+    expect(agentForkCommand('codex', '$(whoami)', null)).toBeNull()
   })
 })

@@ -61,6 +61,8 @@ pub struct Meter {
     pub codex: Option<CodexLimits>,
     /// Oldest first, one entry per local day including empty days.
     pub claude_days: Vec<DayUsage>,
+    /// Same days for Codex, from the growth of each rollout's running total.
+    pub codex_days: Vec<DayUsage>,
     /// True when a session file was larger than the read window, so totals may be low.
     pub incomplete: bool,
 }
@@ -125,6 +127,37 @@ pub(crate) fn add_claude_usage(text: &str, days: &mut BTreeMap<NaiveDate, DayUsa
     }
 }
 
+/// Add one Codex rollout's tokens into `days`, by the day of each
+/// `token_count` event. Codex repeats its running total, so each event counts
+/// what the total grew by; the first event in the text (and any total that
+/// went backwards) counts its own last turn instead, which is exact for a
+/// fresh session and the best available for a cut or resumed one.
+pub(crate) fn add_codex_usage(text: &str, days: &mut BTreeMap<NaiveDate, DayUsage>) {
+    let mut previous: Option<(u64, u64, u64)> = None;
+    for line in text.lines() {
+        if !line.contains("total_token_usage") { continue }
+        let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(info) = value.get("payload").and_then(|payload| payload.get("info")) else { continue };
+        let Some(total) = info.get("total_token_usage") else { continue };
+        let read = |usage: &Value| {
+            let get = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+            (get("input_tokens"), get("cached_input_tokens"), get("output_tokens"))
+        };
+        let now = read(total);
+        let delta = match previous {
+            Some(before) if now.0 >= before.0 && now.1 >= before.1 && now.2 >= before.2 => (now.0 - before.0, now.1 - before.1, now.2 - before.2),
+            _ => info.get("last_token_usage").map(read).unwrap_or((0, 0, 0)),
+        };
+        previous = Some(now);
+        let Some(day) = value.get("timestamp").and_then(Value::as_str).and_then(local_day) else { continue };
+        if let Some(sum) = days.get_mut(&day) {
+            sum.input += delta.0.saturating_sub(delta.1);
+            sum.cache_read += delta.1;
+            sum.output += delta.2;
+        }
+    }
+}
+
 pub(crate) fn build(claude_home: &Path, codex_home: &Path, today: NaiveDate) -> Meter {
     let mut days: BTreeMap<NaiveDate, DayUsage> = (0..DAYS)
         .map(|back| today - chrono::Days::new(back as u64))
@@ -153,15 +186,27 @@ pub(crate) fn build(claude_home: &Path, codex_home: &Path, today: NaiveDate) -> 
         }
     }
 
+    let mut codex_by_day: BTreeMap<NaiveDate, DayUsage> = days.keys().map(|day| (*day, DayUsage { day: day.to_string(), ..DayUsage::default() })).collect();
+    let rollouts = codex_rollouts(codex_home);
+    // The scan stops at the newest files; if even the oldest of those is recent, older days may be missing some.
+    if rollouts.len() >= crate::transcripts::MAX_CODEX_SCAN && rollouts.iter().all(|(_, modified)| *modified >= oldest_ms) { incomplete = true }
+    for (path, modified) in &rollouts {
+        if *modified < oldest_ms { continue }
+        if let Ok((text, cut)) = read_window(path, MAX_FILE_READ, true) {
+            incomplete |= cut;
+            add_codex_usage(&text, &mut codex_by_day);
+        }
+    }
+
     // Several sessions can run at once; the reading written last is the current one.
-    let mut recent = codex_rollouts(codex_home);
+    let mut recent = rollouts;
     recent.sort_by(|a, b| b.1.cmp(&a.1));
     let codex = recent
         .into_iter()
         .take(6)
         .filter_map(|(path, _)| read_window(&path, CODEX_TAIL, true).ok().and_then(|(text, _)| last_codex_limits(&text)))
         .max_by(|a, b| a.observed_at.cmp(&b.observed_at));
-    Meter { codex, claude_days: days.into_values().collect(), incomplete }
+    Meter { codex, claude_days: days.into_values().collect(), codex_days: codex_by_day.into_values().collect(), incomplete }
 }
 
 /// Local usage numbers from the agents' own files. Reads files only.
@@ -208,6 +253,30 @@ mod tests {
     }
 
     #[test]
+    fn codex_days_count_growth_of_the_running_total_once() {
+        let today = Local::now().date_naive();
+        let at = |hour: u32| today.and_hms_opt(hour, 0, 0).unwrap().and_local_timezone(Local).unwrap().to_rfc3339();
+        let event = |hour: u32, total: (u64, u64, u64), last: (u64, u64, u64)| format!(
+            r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}},"last_token_usage":{{"input_tokens":{},"cached_input_tokens":{},"output_tokens":{}}}}}}}}}"#,
+            at(hour), total.0, total.1, total.2, last.0, last.1, last.2);
+        let text = [
+            // A cut window: the first event counts only its own turn.
+            event(9, (5000, 4000, 300), (1000, 800, 50)),
+            // Repeated event: no growth, nothing counted.
+            event(9, (5000, 4000, 300), (1000, 800, 50)),
+            event(10, (8000, 6000, 500), (3000, 2000, 200)),
+            r#"{"payload":{"type":"token_count","info":null}}"#.to_string(),
+        ].join("
+");
+        let mut days: BTreeMap<NaiveDate, DayUsage> = BTreeMap::new();
+        days.insert(today, DayUsage { day: today.to_string(), ..DayUsage::default() });
+        add_codex_usage(&text, &mut days);
+        let total = &days[&today];
+        // input is fresh input (cached split out), as for Claude.
+        assert_eq!((total.input, total.cache_read, total.output), (200 + 1000, 800 + 2000, 50 + 200));
+    }
+
+    #[test]
     fn build_reads_both_homes_and_fills_empty_days() {
         let root = std::env::temp_dir().join(format!("bs-meter-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -225,6 +294,7 @@ mod tests {
         assert_eq!(meter.claude_days.last().unwrap().output, 4);
         assert_eq!(meter.claude_days.first().unwrap().output, 0);
         assert_eq!(meter.codex.unwrap().primary.unwrap().used_percent, 7.0);
+        assert_eq!(meter.codex_days.len(), 7);
         assert!(!meter.incomplete);
         let _ = fs::remove_dir_all(&root);
     }

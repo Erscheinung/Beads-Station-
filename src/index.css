@@ -58,6 +58,8 @@
 :root[data-bs-density='compact'] { --bs-density-factor: .75; }
 
 html, body, #root { height: 100%; margin: 0; padding: 0; }
+/* Dictation and long pastes must never scroll the whole window sideways. */
+html, body { overflow-x: clip; }
 
 /* JetBrains Mono everywhere in chrome. */
 html, body, button, input, textarea, select {
@@ -720,3 +722,17 @@ body {
 .bs-file-drop-target { outline: 2px dashed var(--bs-orange, var(--bs-blue)); outline-offset: -4px; }
 .bs-vault-note .bs-md h1 { font-size: 22px; } .bs-vault-note .bs-md h2 { font-size: 18px; } .bs-vault-note .bs-md h3 { font-size: 15px; }
 .bs-vault-note .bs-md p, .bs-vault-note .bs-md li { line-height: 1.6; }
+
+/* Dictation / IME: the composition preview and xterm's hidden textarea sit at the
+ * cursor and grow rightwards while text is composed. Clipping them to the
+ * terminal keeps the browser from scrolling the whole window sideways before the
+ * line wraps. */
+.xterm { overflow: hidden; contain: paint; }
+.xterm .composition-view { max-width: 100%; overflow: hidden; }
+.xterm .xterm-helper-textarea { overflow: hidden; resize: none; }
+[data-terminal-pane] { overflow: hidden; }
+
+/* A session file written in the last few seconds (History, transcript side view). */
+@keyframes bs-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.35; transform: scale(0.75); } }
+.bs-pulse-dot { animation: bs-pulse 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .bs-pulse-dot { animation: none; } }

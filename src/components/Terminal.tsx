@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { disposeTerminalSession, getTerminalSession, type PersistedTerminalScreen, type TerminalSession } from '../lib/terminalSessions'
 import { useThemePaletteId } from '../state/theme'
+import { keepScrolledHome } from '../lib/composition'
 import 'xterm/css/xterm.css'
 
 /** A view of a session. Unmounting the view never replaces its shell or screen. */
@@ -38,11 +39,13 @@ export function Terminal({ paneId, cwd, onSpawn, onScreen, focused, insert, view
     }
   }, [paneId, cwd, onSpawn, onScreen, attempt])
   useEffect(() => { sessionRef.current?.applyTheme() }, [paletteId])
+  const wrapper = useRef<HTMLDivElement>(null)
+  useEffect(() => wrapper.current ? keepScrolledHome(wrapper.current) : undefined, [])
   useEffect(() => {
     if (focused && insert) sessionRef.current?.focus()
   }, [focused, insert, phase, attempt, viewEpoch])
 
-  return <div data-terminal-pane={paneId} data-terminal-phase={phase} style={{ width: '100%', height: '100%', position: 'relative' }}>
+  return <div ref={wrapper} data-terminal-pane={paneId} data-terminal-phase={phase} style={{ width: '100%', height: '100%', position: 'relative' }}>
     <div ref={host} style={{ width: '100%', height: '100%' }} />
     {(phase === 'error' || phase === 'exited') && <div role={phase === 'error' ? 'alert' : 'status'} style={{ position: 'absolute', bottom: 8, left: 8, right: 8, padding: 8, background: 'var(--bs-bg-elev)', color: 'var(--bs-fg)', fontSize: 12 }}>
       {error ?? 'Shell exited.'} <button onClick={() => { disposeTerminalSession(paneId); setAttempt(n => n + 1) }}>Restart terminal</button>

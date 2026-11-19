@@ -20,6 +20,8 @@ const DURABLE_EXACT_KEYS = new Set([
   'beads-station.theme',
   'beads-station.themePaletteId',
   'beads-station.view-themes.v1',
+  'beads-station.match-system-theme.v1',
+  'beads-station.theme-toggle.v1',
   'beads-station.skin',
   'beads-station.command-bindings.v1',
   'beads-station.recipe-bindings.v1',
@@ -35,6 +37,7 @@ const DURABLE_EXACT_KEYS = new Set([
   'beads-station.terminalHeight',
   'beads-station.designer-layout.v1',
   'beads-station.last-seen-version',
+  'beads-station.beads-setup-dismissed.v1',
 ])
 
 const DURABLE_PREFIXES = ['beads-station.terminalHeight.']

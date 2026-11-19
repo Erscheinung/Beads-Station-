@@ -853,12 +853,22 @@ export function paneResumeCommand(leaf: Pick<Leaf, 'agentCli' | 'agentSessionId'
 }
 
 const startupCommands = new Map<string, string>()
+// Commands that are typed at the prompt but not submitted (no conversation to resume).
+const typedOnlyStartups = new Set<string>()
 
 /** The command a freshly started shell should run once, if the user asked for one. */
 export function takePaneStartupCommand(paneId: string): string | null {
   const command = startupCommands.get(paneId) ?? null
   startupCommands.delete(paneId)
+  typedOnlyStartups.delete(paneId)
   return command
+}
+
+/** Like `takePaneStartupCommand`, and says whether Enter may be pressed after typing it. */
+export function takePaneStartup(paneId: string): { command: string; submit: boolean } | null {
+  const submit = !typedOnlyStartups.has(paneId)
+  const command = takePaneStartupCommand(paneId)
+  return command ? { command, submit } : null
 }
 
 /**
@@ -953,9 +963,9 @@ export function setRatio(splitId: string, ratio: number): void {
 }
 
 /** Split the active pane; new shell takes cwd of the active pane. */
-export function splitActive(dir: SplitDir): void {
+export function splitActive(dir: SplitDir, cwd?: string): void {
   const tab = activeTab(state)
-  const leaf = newLeaf(spawnCwd())
+  const leaf = newLeaf(cwd || spawnCwd())
   const next: Tab = {
     ...tab,
     root: mapLeaf(tab.root, tab.activePaneId, existing => ({
@@ -976,6 +986,19 @@ export function splitActive(dir: SplitDir): void {
 export function launchInTerminalPane(command: string): void {
   splitActive('v')
   startupCommands.set(activeTab(state).activePaneId, command)
+}
+
+/**
+ * Open a split in `cwd` (a folder brought in from outside the app). With a
+ * command it runs once the shell is ready; with `submit: false` it is only
+ * typed, so the user presses Enter. Explicit user action only.
+ */
+export function openSplitInFolder(cwd: string, command?: string, submit = true): void {
+  splitActive('v', cwd)
+  const paneId = activeTab(state).activePaneId
+  if (!command) return
+  startupCommands.set(paneId, command)
+  if (!submit) typedOnlyStartups.add(paneId)
 }
 
 /**
@@ -1440,4 +1463,9 @@ export function setInsert(b: boolean): void {
   if (state.insert === b) return
   state = { ...state, insert: b }
   emit()
+}
+
+/** Every pane of the visible workspace with its 1-based tab number, for workspace-wide search. */
+export function workspaceLeaves(): Array<{ tabNumber: number; leaf: Leaf }> {
+  return state.tabs.flatMap((tab, index) => leavesOf(tab.root).map(leaf => ({ tabNumber: index + 1, leaf })))
 }

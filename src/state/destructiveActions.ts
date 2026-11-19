@@ -1,12 +1,14 @@
 import { shouldConfirmDestructiveActions, setSessionPreferences } from './sessionPreferences'
 
-export type DestructiveActionKind = 'pane' | 'workspace'
+export type DestructiveActionKind = 'pane' | 'workspace' | 'external-process'
 
 export interface DestructiveActionRequest {
   kind: DestructiveActionKind
   title: string
   detail: string
   onConfirm: () => void | Promise<void>
+  /** Always ask, even after "Don't ask again" (stopping another app's process). */
+  always?: boolean
 }
 
 interface PendingDestructiveAction extends DestructiveActionRequest {
@@ -36,7 +38,7 @@ function emit(): void {
  * Settings or checks "Don't ask again" on the confirmation surface.
  */
 export function requestDestructiveAction(request: DestructiveActionRequest): void {
-  if (!shouldConfirmDestructiveActions()) {
+  if (!request.always && !shouldConfirmDestructiveActions()) {
     void request.onConfirm()
     return
   }

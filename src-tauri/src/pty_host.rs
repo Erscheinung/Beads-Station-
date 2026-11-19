@@ -158,7 +158,9 @@ impl Host {
         let mut command = CommandBuilder::new("zsh");
         command.arg("-il");
         command.cwd(&cwd);
-        crate::pty::configure_pane_command(&mut command, pair.master.as_ref());
+        // Optional and additive: an older app sends no cmdColor.
+        let cmd_color = request.get("cmdColor").and_then(Value::as_str);
+        crate::pty::configure_pane_command(&mut command, pair.master.as_ref(), cmd_color);
         let child = pair.slave.spawn_command(command).map_err(|error| format!("spawn failed: {error}"))?;
         let pid = child.process_id();
         drop(pair.slave);

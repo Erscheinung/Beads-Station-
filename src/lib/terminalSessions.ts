@@ -3,10 +3,12 @@
 import { Terminal as XTerm, type IMarker } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import type { SearchAddon } from '@xterm/addon-search'
+import type { FindOptions } from './find'
 import { invoke } from '@tauri-apps/api/core'
 import { safeListen as listen } from './listenerRegistry'
 import { getActivePalette, subscribeTheme } from '../state/theme'
-import { getTerminalAppearance, subscribeTerminalAppearance } from '../state/terminalAppearance'
+import { getTerminalAppearance, resolveCmdColor, subscribeTerminalAppearance } from '../state/terminalAppearance'
 import { matchedCommand } from '../state/commands'
 import { notifyPane } from '../state/paneNotifications'
 import { activeTerminalPaneId, isLocalUrl, openUrlInBrowserTab, paneHostKey, setPaneAgentCli, setPaneAgentSession, showInBrowserPane, type AgentCli } from '../state/termPanes'
@@ -14,8 +16,11 @@ import { findFilePaths, isOpenableWebUrl } from './terminalLinks'
 import { openInEditor } from './openInEditor'
 import { macTerminalKeyAction } from './terminalKeys'
 import { shellQuote } from './shellQuote'
-import { shouldKeepTerminalsRunning, subscribeSessionPreferences } from '../state/sessionPreferences'
+import { fileUrlToPath } from './abbreviatePath'
+import { shouldJournalPrompts, shouldKeepTerminalsRunning, subscribeSessionPreferences } from '../state/sessionPreferences'
 import { isAgentSessionId } from '../state/agentHooks'
+import { PromptInputAccumulator, journalPrompt } from './promptJournal'
+import { applyStatuslineUsage, clearPaneUsage, notePaneAgent, parseUsageReport, refreshPaneUsage, type UsageProvider } from '../state/paneUsage'
 
 type Phase = 'starting' | 'running' | 'exited' | 'error'
 
@@ -43,7 +48,7 @@ export interface TerminalLifecycleSnapshot {
   font: { family: string; size: number; lineHeight: number }
   terminal: { cols: number; rows: number }
   native: { cols: number; rows: number } | null
-  viewport: { buffer: 'normal' | 'alternate'; line: number; base: number; followOutput: boolean }
+  viewport: { buffer: 'normal' | 'alternate'; line: number; base: number; followOutput: boolean; mouseTracking: string }
   activeElement: string | null
   ownsInputFocus: boolean
 }
@@ -85,6 +90,39 @@ const ACK_IDLE_MS = 50
 const SCREEN_CHECKPOINT_MS = 5000
 // Output this soon after a keystroke is echo, not work.
 const ECHO_WINDOW_MS = 300
+// How often a visible pane checks which agent CLI (and session) it is running.
+const FOREGROUND_POLL_MS = 3000
+
+// A downward gesture that lands this close to the live bottom means "back to
+// live output". Rounding of fractional row heights can leave the last wheel
+// step one row short of baseY, and a wheel at the end emits no scroll event.
+const FOLLOW_SLACK_ROWS = 1
+
+/**
+ * True when `data` (from xterm's onData) is only the terminal answering the
+ * program: focus reports (mode 1004), device attributes, mode and status
+ * reports, window reports, OSC and DCS replies. These are not the user
+ * typing and must not pull a history reader back to live output. Mouse
+ * reports are user gestures and CPR (`ESC[r;cR`) is byte-identical to a
+ * modified F3, so neither is listed.
+ */
+export function isTerminalReport(data: string): boolean {
+  if (!data.startsWith(ESC)) return false
+  return /^(?:\x1b\[[IO]|\x1b\[[?>][\d;]*c|\x1b\[\d*n|\x1b\[\??[\d;]+\$y|\x1b\[\d+(?:;\d+)*t|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/.test(data)
+}
+
+/**
+ * Where a history reader should be shown when its anchor marker is gone.
+ * A marker dies when its line leaves the buffer: either bounded scrollback
+ * evicted it (the caller then passes fallbackLine 0, the nearest surviving
+ * history), or the program cleared scrollback with ESC[3J. Ink-based CLIs
+ * (Gemini) clear and reprint their whole transcript, so after a clear the
+ * same absolute line holds the same content again once it is reprinted;
+ * until then the reader waits at the newest line that exists.
+ */
+export function anchorAfterMarkerLoss(fallbackLine: number, baseY: number): { line: number; reanchor: boolean } {
+  return { line: Math.max(0, Math.min(fallbackLine, baseY)), reanchor: fallbackLine <= baseY }
+}
 
 /** Text of an OSC 9 / 99 / 777 desktop-notification sequence, or null if it is not one. */
 export function oscNotificationText(ident: 9 | 99 | 777, data: string): string | null {
@@ -198,9 +236,11 @@ export class SgrColorNormalizer {
   }
 }
 
+export interface FindColors { match: string; matchBorder: string; active: string; activeBorder: string }
+
 export class TerminalSession {
   readonly element = document.createElement('div')
-  readonly terminal = new XTerm({ fontFamily: terminalFontStack("'JetBrains Mono'"), fontSize: 13, cursorBlink: true, scrollback: 3000, altClickMovesCursor: true, macOptionClickForcesSelection: true })
+  readonly terminal = new XTerm({ fontFamily: terminalFontStack("'JetBrains Mono'"), fontSize: 13, cursorBlink: true, scrollback: 3000, allowProposedApi: true, altClickMovesCursor: true, macOptionClickForcesSelection: true })
   readonly fit = new FitAddon()
   readonly ready: Promise<void>
   id: number | null = null
@@ -226,6 +266,15 @@ export class TerminalSession {
   private userScrollUntil = 0
   private pointerScrolling = false
   private viewport: ViewportState = { buffer: 'normal', followOutput: true, marker: null, fallbackLine: 0 }
+  // Output (new lines, ESC[3J) moves baseY; a user's scroll never does. A
+  // scroll event that arrives with a different baseY came from output, even
+  // inside the gesture window, and must not be read as the user's position.
+  private lastBaseY = 0
+  private lastViewportY = 0
+  // Set by a CSI 3 J (clear scrollback) for the rest of that write, so a marker
+  // it disposes is told apart from one evicted by the scrollback limit.
+  private clearingScrollback = false
+  private wheelRemainder = 0
   private screenTimer: ReturnType<typeof setTimeout> | null = null
   private nativeResizeTimer: ReturnType<typeof setTimeout> | null = null
   private quietTimer: ReturnType<typeof setTimeout> | null = null
@@ -233,9 +282,19 @@ export class TerminalSession {
   private lastOutputAt = 0
   private lastInputAt = 0
   private startupCommand: string | null = null
+  private startupSubmit = true
   private sawOutput = false
-  private agentCli: AgentCli | null = null
+  // The agent CLI in the foreground; Gemini is tracked for usage only (no resume).
+  private agentCli: UsageProvider | null = null
+  // What was typed since the last Enter, for the prompt journal (agent panes only).
+  private readonly promptInput = new PromptInputAccumulator()
   private codexSessionKnown = false
+  private foregroundTimer: ReturnType<typeof setInterval> | null = null
+  private foregroundPolls = 0
+  private foregroundInFlight = false
+  // Polls in a row that found no agent; one miss is not enough to drop live usage.
+  private agentMisses = 0
+  private lastUsageReportAt = -Infinity
   // A program that sends its own notifications does not need the quiet-after-work guess.
   private selfReporting = false
   private replaying = false
@@ -275,16 +334,37 @@ export class TerminalSession {
     this.applyAppearance()
     const onData = this.terminal.onData(data => {
       if (this.phase !== 'running' || this.closed) return
-      // xterm's scrollOnUserInput snaps typing back to the live prompt; adopt
-      // that as the new intent so the next write does not scroll away again.
-      if (this.terminal.options.scrollOnUserInput !== false) this.followLiveOutput()
+      // xterm's scrollOnUserInput snaps typing back to the live prompt before
+      // onData fires, and only for user input; adopt that as the new intent so
+      // the next write does not scroll away again. Replies xterm sends on the
+      // program's behalf (a focus report on every focus change, DA, DECRQM)
+      // arrive here too but are not typing: they leave the reader in place.
+      if (this.terminal.options.scrollOnUserInput !== false && !isTerminalReport(data)) {
+        const buffer = this.terminal.buffer.active
+        if (buffer.type === 'alternate' || buffer.viewportY >= buffer.baseY) this.followLiveOutput()
+      }
+      this.journalInput(data, cwd)
       this.send(data)
     })
     this.releases.push(() => onData.dispose())
-    const onScroll = this.terminal.onScroll(() => {
-      if (!this.restoringViewport && this.userIsScrolling()) this.captureViewport()
-    })
+    // xterm 5.3 fires onScroll only for scrolls it starts itself (output,
+    // scrollLines/scrollToBottom, ESC[3J). A wheel or scrollbar drag moves the
+    // DOM viewport, whose scroll listener updates ydisp with the API event
+    // suppressed, so the user's own scroll is read from that DOM event. Ours is
+    // added after xterm's, so ydisp is already current when it runs.
+    const onScroll = this.terminal.onScroll(() => this.handleScroll())
     this.releases.push(() => onScroll.dispose())
+    const viewportElement = this.element.querySelector('.xterm-viewport')
+    if (viewportElement) {
+      const onDomScroll = () => this.handleScroll()
+      viewportElement.addEventListener('scroll', onDomScroll, { passive: true })
+      this.releases.push(() => viewportElement.removeEventListener('scroll', onDomScroll))
+    }
+    const onEraseDisplay = this.terminal.parser.registerCsiHandler({ final: 'J' }, params => {
+      this.clearingScrollback = params[0] === 3
+      return false // xterm's own handler still erases
+    })
+    this.releases.push(() => onEraseDisplay.dispose())
     this.trackUserScrollIntent()
     const onBufferChange = this.terminal.buffer.onBufferChange(() => this.captureViewport())
     this.releases.push(() => onBufferChange.dispose())
@@ -293,6 +373,9 @@ export class TerminalSession {
     // behavior and only get corrected if a resize left them above baseY.
     const onWriteParsed = this.terminal.onWriteParsed(() => {
       this.restoreViewport()
+      this.clearingScrollback = false
+      this.lastBaseY = this.terminal.buffer.active.baseY
+      this.lastViewportY = this.terminal.buffer.active.viewportY
       this.scheduleScreenCheckpoint()
     })
     this.releases.push(() => onWriteParsed.dispose())
@@ -325,6 +408,20 @@ export class TerminalSession {
     const bytes = this.unacknowledged
     this.unacknowledged = 0
     if (bytes > 0 && !this.closed) void invoke('pty_ack', { id, bytes }).catch(() => {})
+  }
+
+  /** Keep what the user submits to an agent. A plain shell is never journaled. */
+  private journalInput(data: string, cwd: string) {
+    if (!this.agentCli || !shouldJournalPrompts()) { this.promptInput.reset(); return }
+    if (isTerminalReport(data)) return
+    const text = this.promptInput.feed(data)
+    if (!text) return
+    const provider = this.agentCli
+    // The workspace folder names the journal; loaded on demand so this module stays free of the workspace store.
+    void import('./paneWorkspace')
+      .then(module => module.paneWorkspace(this.paneId)?.path ?? cwd)
+      .catch(() => cwd)
+      .then(workspace => journalPrompt(workspace, provider, text))
   }
 
   private send(data: string) {
@@ -375,10 +472,26 @@ export class TerminalSession {
       })
       this.releases.push(() => handler.dispose())
     }
-    // Private to Beads Station: a Claude Code hook reporting its session id.
+    // Private to Beads Station: a Claude Code hook reporting its session id,
+    // and the status line wrapper reporting context and limit use.
     const session = this.terminal.parser.registerOscHandler(7770, data => {
       const [kind, cli, id] = data.split(';')
-      if (kind === 'session' && cli === 'claude' && isAgentSessionId(id)) setPaneAgentSession(this.paneId, 'claude', id)
+      if (kind === 'session' && cli === 'claude' && isAgentSessionId(id)) {
+        setPaneAgentSession(this.paneId, 'claude', id)
+        notePaneAgent(this.paneId, 'claude', id)
+        refreshPaneUsage(this.paneId, null, true)
+      } else if (kind === 'usage') {
+        // A replayed report is from before the restart; the next live one follows soon.
+        if (this.replaying) return true
+        const report = parseUsageReport(data)
+        if (!report) return true
+        this.lastUsageReportAt = performance.now()
+        this.agentCli = 'claude'
+        this.agentMisses = 0
+        applyStatuslineUsage(this.paneId, report)
+        if (report.sessionId) setPaneAgentSession(this.paneId, 'claude', report.sessionId)
+        refreshPaneUsage(this.paneId)
+      }
       return true
     })
     this.releases.push(() => session.dispose())
@@ -408,6 +521,15 @@ export class TerminalSession {
 
   private trackUserScrollIntent() {
     const extend = () => { this.userScrollUntil = performance.now() + 400 }
+    const onWheel = (event: WheelEvent) => {
+      extend()
+      const buffer = this.terminal.buffer.active
+      if (buffer.type !== 'normal') return
+      if (this.wheelScrollsHistory(event)) return
+      // At (or a rounding row above) the end a wheel down produces no scroll
+      // event, so it is read here: the user asked for live output.
+      if (event.deltaY > 0 && !this.viewport.followOutput && buffer.viewportY >= buffer.baseY - FOLLOW_SLACK_ROWS) this.returnToLiveOutput()
+    }
     const onKey = (event: KeyboardEvent) => {
       if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key) && (event.shiftKey || event.metaKey)) extend()
     }
@@ -421,18 +543,80 @@ export class TerminalSession {
       if (getTerminalAppearance().copyOnSelect && this.terminal.hasSelection()) copyText(this.terminal.getSelection())
     }
     const options = { capture: true, passive: true }
-    this.element.addEventListener('wheel', extend, options)
+    // Not passive: with mouse tracking on, the wheel is taken from xterm.
+    this.element.addEventListener('wheel', onWheel, { capture: true, passive: false })
     this.element.addEventListener('touchmove', extend, options)
     this.element.addEventListener('keydown', onKey, true)
     this.element.addEventListener('pointerdown', onPointerDown, options)
     window.addEventListener('pointerup', onPointerUp, true)
     this.releases.push(() => {
-      this.element.removeEventListener('wheel', extend, options)
+      this.element.removeEventListener('wheel', onWheel, { capture: true })
       this.element.removeEventListener('touchmove', extend, options)
       this.element.removeEventListener('keydown', onKey, true)
       this.element.removeEventListener('pointerdown', onPointerDown, options)
       window.removeEventListener('pointerup', onPointerUp, true)
     })
+  }
+
+  /**
+   * A program that turns on mouse tracking gets the wheel as mouse reports
+   * (and xterm snaps to the bottom for each), so the scrollback above it
+   * cannot be read with the wheel. Plain wheel stays the program's: programs
+   * such as `fzf --height` run in the normal buffer with the mouse on and
+   * scroll their own list. Shift+wheel, which xterm 5.3 ignores (no report,
+   * no scroll), scrolls the normal buffer's history instead. The alternate
+   * screen has no scrollback and is left alone.
+   */
+  private wheelScrollsHistory(event: WheelEvent): boolean {
+    const mode = this.terminal.modes?.mouseTrackingMode ?? 'none'
+    const buffer = this.terminal.buffer.active
+    if (!event.shiftKey || mode === 'none' || buffer.type !== 'normal' || buffer.baseY === 0) return false
+    event.preventDefault()
+    event.stopPropagation()
+    // macOS turns Shift+wheel into a horizontal delta.
+    const delta = event.deltaY || (event.shiftKey ? event.deltaX : 0)
+    if (!delta) return true
+    let lines: number
+    if (event.deltaMode === 1) lines = delta
+    else if (event.deltaMode === 2) lines = delta * this.terminal.rows
+    else {
+      const screen = this.element.querySelector('.xterm-screen')
+      const rowHeight = (screen?.getBoundingClientRect().height ?? 0) / Math.max(1, this.terminal.rows) || 16
+      lines = delta / rowHeight
+    }
+    this.wheelRemainder += lines
+    const whole = Math.trunc(this.wheelRemainder)
+    this.wheelRemainder -= whole
+    if (whole === 0) return true
+    if (whole > 0 && buffer.viewportY + whole >= buffer.baseY - FOLLOW_SLACK_ROWS) {
+      this.returnToLiveOutput()
+      return true
+    }
+    this.terminal.scrollLines(whole)
+    return true
+  }
+
+  /** The user scrolled back to the end: follow live output from here. */
+  private returnToLiveOutput() {
+    this.followLiveOutput()
+    this.restoringViewport = true
+    try { this.terminal.scrollToBottom() } finally { this.restoringViewport = false }
+    this.lastBaseY = this.terminal.buffer.active.baseY
+    this.lastViewportY = this.terminal.buffer.active.viewportY
+  }
+
+  private handleScroll() {
+    const buffer = this.terminal.buffer.active
+    const outputMoved = buffer.baseY !== this.lastBaseY
+    const movedDown = buffer.viewportY > this.lastViewportY
+    this.lastBaseY = buffer.baseY
+    this.lastViewportY = buffer.viewportY
+    if (this.restoringViewport || outputMoved || !this.userIsScrolling()) return
+    if (buffer.type === 'normal' && movedDown && buffer.viewportY >= buffer.baseY - FOLLOW_SLACK_ROWS) {
+      this.returnToLiveOutput()
+      return
+    }
+    this.captureViewport()
   }
 
   private userIsScrolling() {
@@ -446,8 +630,24 @@ export class TerminalSession {
   }
 
   private disposeViewportMarker() {
-    this.viewport.marker?.dispose()
+    const marker = this.viewport.marker
     this.viewport.marker = null
+    marker?.dispose()
+  }
+
+  /** Anchor the reader at an absolute buffer line with a marker that follows trimming. */
+  private anchorAt(line: number): IMarker | null {
+    const buffer = this.terminal.buffer.active
+    const marker = this.terminal.registerMarker(line - (buffer.baseY + buffer.cursorY))
+    if (!marker) return null
+    marker.onDispose(() => {
+      if (this.viewport.marker !== marker) return
+      this.viewport.marker = null
+      // Evicted by the scrollback limit: what survives starts at line 0.
+      // Cleared by the program: keep the absolute line for its reprint.
+      if (!this.clearingScrollback) this.viewport.fallbackLine = 0
+    })
+    return marker
   }
 
   private captureViewport() {
@@ -461,8 +661,7 @@ export class TerminalSession {
 
     if (this.viewport.buffer !== 'normal' || this.viewport.marker?.line !== buffer.viewportY) {
       this.disposeViewportMarker()
-      const cursorLine = buffer.baseY + buffer.cursorY
-      this.viewport.marker = this.terminal.registerMarker(buffer.viewportY - cursorLine)
+      this.viewport.marker = this.anchorAt(buffer.viewportY)
     }
     this.viewport = {
       buffer: 'normal',
@@ -483,11 +682,18 @@ export class TerminalSession {
       if (buffer.type === 'normal' && this.viewport.followOutput) {
         if (buffer.viewportY < buffer.baseY) this.terminal.scrollToBottom()
       } else if (buffer.type === 'normal' && !this.viewport.followOutput) {
-        const line = this.viewport.marker?.line ?? -1
-        // A marker is disposed when bounded scrollback evicts its line. In
-        // that case show the nearest surviving history instead of jumping to
-        // live output or to an unrelated old numeric offset.
-        this.terminal.scrollToLine(line >= 0 ? line : Math.min(this.viewport.fallbackLine, buffer.baseY))
+        const marker = this.viewport.marker
+        const line = marker && !marker.isDisposed ? marker.line : -1
+        if (line >= 0) {
+          this.viewport.fallbackLine = line
+          this.terminal.scrollToLine(line)
+        } else {
+          // The marker's line left the buffer (see anchorAfterMarkerLoss).
+          // Never jump to live output: the user is still reading.
+          const next = anchorAfterMarkerLoss(this.viewport.fallbackLine, buffer.baseY)
+          this.terminal.scrollToLine(next.line)
+          if (next.reanchor) this.viewport.marker = this.anchorAt(next.line)
+        }
       }
     } finally {
       this.restoringViewport = false
@@ -532,42 +738,78 @@ export class TerminalSession {
     }
     this.observeForeground()
   }
-  /** Remember which agent CLI (and, for Codex, which session) owns this shell, for an explicit resume after a restart. */
+  /**
+   * Which agent CLI (and which session) owns this shell: for an explicit
+   * resume after a restart, and for the pane's live usage. Reads process
+   * information and small files only; starts nothing.
+   */
   private observeForeground() {
-    if (this.id === null || this.phase !== 'running') return
-    // Finding Codex's session costs an lsof; ask until it is known, then stop.
-    // Claude's is one small file read and can change (/clear, /resume), so it is asked every time.
-    const wantSession = this.agentCli === 'claude' || (this.agentCli === 'codex' && !this.codexSessionKnown)
-    void invoke<{ cli: AgentCli | null; sessionId: string | null } | null>('pty_foreground', { id: this.id, wantSession })
+    if (this.id === null || this.phase !== 'running' || this.foregroundInFlight) return
+    this.foregroundPolls++
+    // Claude's session is one small file read and can change (/clear, /resume),
+    // so it is asked every time. Codex's costs an lsof: every poll until known,
+    // then every third poll, so a /new inside Codex is still picked up.
+    const wantSession = this.agentCli === 'claude' || this.agentCli === 'gemini'
+      || (this.agentCli === 'codex' && (!this.codexSessionKnown || this.foregroundPolls % 3 === 0))
+    this.foregroundInFlight = true
+    void invoke<{ cli: string | null; sessionId: string | null; cwd?: string | null } | null>('pty_foreground', { id: this.id, wantSession })
       .then(foreground => {
         if (this.closed) return
-        const cli = foreground?.cli === 'claude' || foreground?.cli === 'codex' ? foreground.cli : null
+        const found = foreground?.cli
+        let cli: UsageProvider | null = found === 'claude' || found === 'codex' || found === 'gemini' ? found : null
+        if (cli) this.agentMisses = 0
+        else if (this.agentCli) {
+          // A status line report proves Claude is there even if one process listing missed it.
+          const recentReport = performance.now() - this.lastUsageReportAt < 15_000
+          if (recentReport || ++this.agentMisses < 2) cli = this.agentCli
+        }
         if (cli !== this.agentCli) {
           this.agentCli = cli
           this.codexSessionKnown = false
           // A different program now owns the pane; what the last one reported no longer applies.
           this.selfReporting = false
+          // Ask for the session right away rather than on the next poll.
+          if (cli) setTimeout(() => this.observeForeground(), 0)
         }
-        setPaneAgentCli(this.paneId, cli)
-        if (cli && isAgentSessionId(foreground?.sessionId)) {
-          if (cli === 'codex') this.codexSessionKnown = true
-          setPaneAgentSession(this.paneId, cli, foreground.sessionId)
+        // Gemini has no resume here; it is followed for usage only.
+        const resumable: AgentCli | null = cli === 'claude' || cli === 'codex' ? cli : null
+        setPaneAgentCli(this.paneId, resumable)
+        const sessionId = cli && isAgentSessionId(foreground?.sessionId) ? foreground.sessionId : null
+        if (resumable && sessionId) {
+          if (resumable === 'codex') this.codexSessionKnown = true
+          setPaneAgentSession(this.paneId, resumable, sessionId)
         }
+        notePaneAgent(this.paneId, cli, sessionId)
+        if (cli) refreshPaneUsage(this.paneId, foreground?.cwd ?? null)
       })
       .catch(() => { /* exited, or a backend without foreground inspection */ })
+      .finally(() => { this.foregroundInFlight = false })
+  }
+  /** Poll the foreground every few seconds while this pane is on screen. */
+  private startForegroundPolling() {
+    if (this.foregroundTimer !== null) return
+    this.foregroundTimer = setInterval(() => {
+      if (this.closed || this.phase !== 'running') return
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      // Parked or detached views are not on screen; checkpoints still observe them now and then.
+      if (!this.attachedHost || !this.attachedHost.isConnected || this.element.parentElement !== this.attachedHost) return
+      this.observeForeground()
+    }, FOREGROUND_POLL_MS)
   }
   /** Run one command in the new shell after it has printed its first output. */
-  runWhenReady(command: string) {
+  runWhenReady(command: string, submit = true) {
     this.startupCommand = command
+    this.startupSubmit = submit
     if (this.sawOutput) this.flushStartupCommand()
   }
   private flushStartupCommand() {
     const command = this.startupCommand
     if (command === null) return
     this.startupCommand = null
+    const submit = this.startupSubmit
     // Let the login shell finish drawing its prompt before typing into it.
     setTimeout(() => {
-      if (!this.closed && this.phase === 'running') this.send(`${command}\r`)
+      if (!this.closed && this.phase === 'running') this.send(submit ? `${command}\r` : command)
     }, 400)
   }
   subscribe(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -612,18 +854,21 @@ export class TerminalSession {
         const pending = this.outputNormalizer.finish()
         if (pending) this.terminal.write(pending)
         this.phase = 'exited'
+        if (this.foregroundTimer !== null) { clearInterval(this.foregroundTimer); this.foregroundTimer = null }
+        clearPaneUsage(this.paneId)
         this.terminal.write('\r\n[process exited]\r\n')
         this.notify()
       })
       if (this.closed) { exit(); return }
       this.releases.push(exit)
       this.nativeSize = `${this.terminal.cols}:${this.terminal.rows}`
-      const id = await invoke<number>('pty_spawn', { cwd, eventKey, cols: this.terminal.cols, rows: this.terminal.rows, persistKey: paneHostKey(this.paneId) })
+      const id = await invoke<number>('pty_spawn', { cwd, eventKey, cols: this.terminal.cols, rows: this.terminal.rows, persistKey: paneHostKey(this.paneId), cmdColor: resolveCmdColor() })
       if (this.closed) { await invoke('pty_kill', { id }); return }
       this.id = id
       // A fast-exiting shell can emit exit before spawn's response arrives.
       if (this.phase === 'starting') this.phase = 'running'
       onSpawn(this.paneId, id)
+      this.startForegroundPolling()
       this.resize()
       // Layout may have changed while spawn was pending; apply it now rather
       // than after the settle delay, so the first prompt wraps correctly.
@@ -674,6 +919,7 @@ export class TerminalSession {
     this.repaintFrame = requestAnimationFrame(() => {
       if (this.closed || attachment !== this.attachment) return
       this.repaint(attachment)
+      this.resyncViewport()
       // xterm measures its cell size when its screen first intersects the
       // viewport, which the browser reports after this frame's callbacks.
       // Until then a fit is a no-op, and a host that never changes size would
@@ -682,8 +928,34 @@ export class TerminalSession {
         if (this.closed || attachment !== this.attachment) return
         this.repaintFrame = null
         this.resize()
+        this.resyncViewport()
       })
     })
+  }
+  /**
+   * Moving the screen between React hosts (and through the 1px parking host)
+   * resets or clamps the DOM scrollTop of `.xterm-viewport`. xterm 5.3 only
+   * rewrites scrollTop when its own position changes, so a quiet shell keeps
+   * a stale scrollbar and the next wheel jumps from it (toward the top), or a
+   * clamp's scroll event moves the view. Restore the tracked position, then
+   * step one line away and back so xterm itself rewrites scrollTop. Nothing
+   * here is a user gesture.
+   */
+  private resyncViewport() {
+    if (this.closed || !this.attachedHost) return
+    this.restoreViewport()
+    const buffer = this.terminal.buffer.active
+    if (buffer.type !== 'normal' || buffer.baseY === 0) return
+    const line = buffer.viewportY
+    this.restoringViewport = true
+    try {
+      this.terminal.scrollLines(line > 0 ? -1 : 1)
+      this.terminal.scrollToLine(line)
+    } finally {
+      this.restoringViewport = false
+    }
+    this.lastBaseY = buffer.baseY
+    this.lastViewportY = buffer.viewportY
   }
   applyTheme() {
     const palette = getActivePalette()
@@ -741,6 +1013,67 @@ export class TerminalSession {
     this.nativeSize = size
     void invoke('pty_resize', { id: this.id, cols: this.terminal.cols, rows: this.terminal.rows }).catch(error => this.fail(error))
   }
+  // ---------- Find (Cmd+F) ----------
+  private searchAddon: SearchAddon | null = null
+  private searchLoading: Promise<SearchAddon> | null = null
+  private findListeners = new Set<(result: { index: number; count: number }) => void>()
+
+  /** Loaded on the first search only; most panes never need it. */
+  private loadSearch(): Promise<SearchAddon> {
+    if (this.searchAddon) return Promise.resolve(this.searchAddon)
+    this.searchLoading ??= import('@xterm/addon-search').then(module => {
+      const addon = new module.SearchAddon({ highlightLimit: 1000 })
+      this.terminal.loadAddon(addon)
+      addon.onDidChangeResults(result => this.findListeners.forEach(listener => listener({ index: result.resultIndex, count: result.resultCount })))
+      this.searchAddon = addon
+      return addon
+    })
+    return this.searchLoading
+  }
+  onFindResults(listener: (result: { index: number; count: number }) => void) {
+    this.findListeners.add(listener)
+    return () => { this.findListeners.delete(listener) }
+  }
+  /**
+   * Select the next or previous match and highlight all of them. Moving to a
+   * match is the user's own scroll: it must not be read as output, and the
+   * reader's new position becomes the position to keep.
+   */
+  async find(query: string, options: FindOptions, direction: 'next' | 'previous', colors: FindColors, incremental = false): Promise<boolean> {
+    if (this.closed) return false
+    const addon = await this.loadSearch()
+    this.userScrollUntil = performance.now() + 400
+    const decorations = {
+      matchBackground: colors.match, matchBorder: colors.matchBorder, matchOverviewRuler: colors.match,
+      activeMatchBackground: colors.active, activeMatchBorder: colors.activeBorder, activeMatchColorOverviewRuler: colors.active,
+    }
+    const found = direction === 'next'
+      ? addon.findNext(query, { regex: options.regex, caseSensitive: options.caseSensitive, incremental, decorations })
+      : addon.findPrevious(query, { regex: options.regex, caseSensitive: options.caseSensitive, decorations })
+    this.captureViewport()
+    return found
+  }
+  clearFind() {
+    this.searchAddon?.clearDecorations()
+    this.terminal.clearSelection()
+  }
+  /** Every line of the active buffer, scrollback included, as plain text. */
+  bufferLines(): string[] {
+    const buffer = this.terminal.buffer.active
+    const lines: string[] = []
+    for (let row = 0; row < buffer.length; row++) lines.push(buffer.getLine(row)?.translateToString(true) ?? '')
+    return lines
+  }
+  /** Scroll to a buffer line and select the match there. */
+  reveal(line: number, col: number, length: number) {
+    this.userScrollUntil = performance.now() + 400
+    const buffer = this.terminal.buffer.active
+    if (line < buffer.viewportY || line >= buffer.viewportY + this.terminal.rows) {
+      this.terminal.scrollToLine(Math.max(0, line - Math.floor(this.terminal.rows / 2)))
+    }
+    this.terminal.select(col, line, length)
+    this.captureViewport()
+  }
   focus() {
     if (!this.attachedHost || this.element.parentElement !== this.attachedHost) return false
     const active = document.activeElement
@@ -783,7 +1116,7 @@ export class TerminalSession {
       },
       terminal: { cols: this.terminal.cols, rows: this.terminal.rows },
       native: native ? { cols: native.cols, rows: native.rows } : null,
-      viewport: { buffer: buffer.type, line: buffer.viewportY, base: buffer.baseY, followOutput: this.viewport.followOutput },
+      viewport: { buffer: buffer.type, line: buffer.viewportY, base: buffer.baseY, followOutput: this.viewport.followOutput, mouseTracking: this.terminal.modes?.mouseTrackingMode ?? 'none' },
       activeElement: active instanceof HTMLElement ? `${active.tagName.toLowerCase()}${active.className ? `.${String(active.className).split(/\s+/).join('.')}` : ''}` : null,
       ownsInputFocus: active instanceof Node && this.element.contains(active),
     }
@@ -798,6 +1131,8 @@ export class TerminalSession {
     if (this.ackTimer !== null) clearTimeout(this.ackTimer)
     if (this.nativeResizeTimer !== null) clearTimeout(this.nativeResizeTimer)
     if (this.quietTimer !== null) clearTimeout(this.quietTimer)
+    if (this.foregroundTimer !== null) clearInterval(this.foregroundTimer)
+    clearPaneUsage(this.paneId)
     this.disposeViewportMarker()
     this.releases.splice(0).forEach(release => release())
     this.listeners.clear()
@@ -859,8 +1194,12 @@ export function disposeTerminalSession(paneId: string) {
   sessions.delete(paneId)
 }
 /** Queue a command for a pane's freshly spawned shell (explicit user action only). */
-export function runInTerminalSession(paneId: string, command: string) {
-  sessions.get(paneId)?.runWhenReady(command)
+export function runInTerminalSession(paneId: string, command: string, submit = true) {
+  sessions.get(paneId)?.runWhenReady(command, submit)
+}
+/** The live session of a pane, if it has been created. Never creates one. */
+export function findTerminalSession(paneId: string): TerminalSession | undefined {
+  return sessions.get(paneId)
 }
 export function hasTerminalSession(paneId: string) {
   return sessions.has(paneId)
@@ -886,13 +1225,94 @@ export function pasteHasOwnTarget(target: EventTarget | null): boolean {
 // pasted, never submitted.
 function onStrayPaste(event: ClipboardEvent) {
   if (event.defaultPrevented || pasteHasOwnTarget(event.target)) return
-  const vim = (window as unknown as { __bsVim?: { focused?: string } }).__bsVim
-  if (vim?.focused !== 'terminal') return
+  if (!terminalIsFocusedSurface()) return
   const text = event.clipboardData?.getData('text/plain')
   if (!text) return
   if (pasteIntoTerminalSession(activeTerminalPaneId(), text)) event.preventDefault()
 }
 window.addEventListener('paste', onStrayPaste)
+
+function terminalIsFocusedSurface(): boolean {
+  return (window as unknown as { __bsVim?: { focused?: string } }).__bsVim?.focused === 'terminal'
+}
+
+// Command+V fallback. WebKit sometimes delivers no paste event at all (the Edit
+// menu route is lost after a focus change), or one whose clipboard has no
+// text/plain (rich text, a copied file). Then the system clipboard is read
+// natively and pasted through xterm's own paste, so bracketed paste still
+// applies. A paste is never made twice: a native event seen after the
+// keydown cancels the fallback, and one arriving just after a fallback is swallowed.
+export const PASTE_FALLBACK_MS = 50
+const FALLBACK_SWALLOW_MS = 500
+let pasteSeen = 0
+let fallbackPastedAt = -Infinity
+let pasteTimer: ReturnType<typeof setTimeout> | null = null
+
+/** The terminal pane a Command+V aimed at, or null when it is not a terminal paste. */
+function pasteTargetPane(target: EventTarget | null): string | null {
+  const node = target instanceof Node ? target : null
+  const session = node ? terminalSessionForNode(node) : null
+  if (session) return session.paneId
+  if (pasteHasOwnTarget(target) || !terminalIsFocusedSurface()) return null
+  return activeTerminalPaneId()
+}
+
+export async function pasteFromSystemClipboard(paneId: string): Promise<boolean> {
+  let text: string | null = null
+  try { text = await invoke<string | null>('clipboard_read_text') } catch { /* no native clipboard */ }
+  if (!text) return false
+  fallbackPastedAt = performance.now()
+  return pasteIntoTerminalSession(paneId, text)
+}
+
+function onPasteKey(event: KeyboardEvent) {
+  if (event.key.toLowerCase() !== 'v' || !event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.repeat) return
+  const paneId = pasteTargetPane(event.target)
+  if (!paneId) return
+  const seenAtPress = pasteSeen
+  if (pasteTimer) clearTimeout(pasteTimer)
+  pasteTimer = setTimeout(() => {
+    pasteTimer = null
+    if (pasteSeen !== seenAtPress) return
+    void pasteFromSystemClipboard(paneId)
+  }, PASTE_FALLBACK_MS)
+}
+
+/** Text for a clipboard with no text/plain: dragged file URLs as quoted paths, else the visible text of rich text. */
+export function textFromClipboardData(data: Pick<DataTransfer, 'getData'>): string {
+  const plain = data.getData('text/plain')
+  if (plain) return plain
+  const uris = data.getData('text/uri-list').split(/\r?\n/).filter(line => line && !line.startsWith('#'))
+  if (uris.length > 0 && uris.every(line => /^file:/i.test(line))) return uris.map(line => shellQuote(fileUrlToPath(line))).join(' ') + ' '
+  const html = data.getData('text/html')
+  return html ? new DOMParser().parseFromString(html, 'text/html').body.textContent ?? '' : ''
+}
+
+function onPasteCapture(event: ClipboardEvent) {
+  const since = performance.now() - fallbackPastedAt
+  if (since >= 0 && since < FALLBACK_SWALLOW_MS) {
+    // The fallback already pasted this very Command+V.
+    event.preventDefault(); event.stopImmediatePropagation()
+    return
+  }
+  pasteSeen++
+  const data = event.clipboardData
+  if (!data || data.getData('text/plain')) return
+  const paneId = pasteTargetPane(event.target)
+  if (!paneId) return
+  event.preventDefault(); event.stopImmediatePropagation()
+  const text = textFromClipboardData(data)
+  if (text) pasteIntoTerminalSession(paneId, text)
+  else void pasteFromSystemClipboard(paneId)
+}
+/** Test hook: forget a fallback paste and any pending one. */
+export function __resetPasteFallbackForTest() {
+  fallbackPastedAt = -Infinity
+  if (pasteTimer) clearTimeout(pasteTimer)
+  pasteTimer = null
+}
+window.addEventListener('keydown', onPasteKey, true)
+window.addEventListener('paste', onPasteCapture, true)
 
 export function inspectTerminalSession(paneId: string): Promise<TerminalLifecycleSnapshot | null> {
   return sessions.get(paneId)?.snapshot() ?? Promise.resolve(null)

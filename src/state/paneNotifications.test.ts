@@ -9,6 +9,8 @@ import { activeTerminalTabId, activeTabRoot, leavesOf, locatePane, newTab, setAc
 import { __resetPaneNotificationsForTest, setWorkspaceNameLookup, clearAllPaneNotifications, getPaneNotifications, jumpToLatestPaneNotification, notifiedWorkspaceIds, notifyPane } from './paneNotifications'
 import { setNotificationPreferences } from './notificationPreferences'
 import { setSkin } from './skin'
+import { __resetSoundsForTest } from '../lib/sounds'
+import { DEFAULT_SOUNDS } from './notificationPreferences'
 
 let workspace = 0
 let focused = true
@@ -137,5 +139,39 @@ describe('pane notifications', () => {
     clearAllPaneNotifications()
     notifyPane(first, 'osc', 'Build finished')
     expect(system.send).toHaveBeenCalledWith('Beads Station · sample-project', 'Build finished')
+  })
+})
+
+describe('notification sounds', () => {
+  let started = 0
+  beforeEach(() => {
+    started = 0
+    class Ctx {
+      state = 'running'; currentTime = 0; destination = {}
+      createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} } }
+      createOscillator() { return { frequency: {}, connect() {}, start() { started++ }, stop() {} } }
+    }
+    vi.stubGlobal('AudioContext', Ctx)
+    __resetSoundsForTest()
+    setNotificationPreferences({ sounds: DEFAULT_SOUNDS })
+  })
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('sounds for a background pane, not for the one being looked at', () => {
+    const { first, second } = twoPanes()
+    notifyPane(second, 'bell')
+    expect(started).toBe(0)
+    notifyPane(first, 'osc', 'Claude Code: Finished, waiting for you')
+    expect(started).toBeGreaterThan(0)
+  })
+
+  it('a subagent sound is silent by default and never rings the pane when on', () => {
+    const { first } = twoPanes()
+    notifyPane(first, 'osc', 'Claude Code: Subagent finished')
+    expect(started).toBe(0)
+    setNotificationPreferences({ sounds: { ...DEFAULT_SOUNDS, subagent: { enabled: true, sound: 'tick' } } })
+    notifyPane(first, 'osc', 'Claude Code: Subagent finished')
+    expect(started).toBeGreaterThan(0)
+    expect(getPaneNotifications().size).toBe(0)
   })
 })

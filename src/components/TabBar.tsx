@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { abbreviatePath } from '../lib/abbreviatePath'
 import type { Project } from '../state/projects'
 import { useClaudeStatus, type ClaudeStatus } from '../state/claudeStatus'
@@ -55,6 +55,34 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
   // A workspace is marked while one of its panes is waiting. The visible
   // workspace shows the pane's own ring instead.
   const waitingWorkspaces = notifiedWorkspaceIds(usePaneNotifications())
+  const strip = useRef<HTMLDivElement>(null)
+  const [overflowing, setOverflowing] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  // The chevron exists only while the strip really scrolls. One observer on the
+  // strip itself; tab additions change scrollWidth without resizing it, hence
+  // the re-check when the list changes.
+  const measure = () => {
+    const el = strip.current
+    if (el) setOverflowing(el.scrollWidth > el.clientWidth + 1)
+  }
+  useLayoutEffect(measure, [projects, onClose, onOpen])
+  useEffect(() => {
+    const el = strip.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+  useEffect(() => { if (!overflowing) setMenuOpen(false) }, [overflowing])
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = (event: Event) => { if (!(event.target as Element | null)?.closest?.('[data-tab-overflow]')) setMenuOpen(false) }
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenuOpen(false) }
+    document.addEventListener('pointerdown', close, true)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('pointerdown', close, true); document.removeEventListener('keydown', onKey) }
+  }, [menuOpen])
 
   useEffect(() => {
     if (!activeId) return
@@ -73,7 +101,9 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
   }
 
   return (
+    <div className="bs-tabbar" style={{ display: 'flex', flexShrink: 0, position: 'relative', minWidth: 0, background: 'var(--bs-bg)', borderBottom: '1px solid var(--bs-border)' }}>
     <div
+      ref={strip}
       className="bs-tabstrip"
       role="tablist"
       aria-label="Workspaces"
@@ -82,11 +112,10 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
         flexDirection: 'row',
         alignItems: 'stretch',
         height: 32,
-        background: 'var(--bs-bg)',
-        borderBottom: '1px solid var(--bs-border)',
+        flex: '1 1 auto',
+        minWidth: 0,
         overflowX: 'auto',
         overflowY: 'hidden',
-        flexShrink: 0,
       }}
     >
       <span role="status" aria-live="polite" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{announcement}</span>
@@ -178,6 +207,33 @@ export function TabBar({ projects, activeId, onSelect, onReorder, onOpen, onClos
         )
       })}
       {onOpen && <button onClick={onOpen} aria-label="Open workspace" title="Open workspace" style={{ border: 0, background: 'transparent', color: 'var(--bs-blue)', padding: '0 12px', cursor: 'pointer', flexShrink: 0 }}><span className="codicon codicon-add" aria-hidden /></button>}
+    </div>
+    {overflowing && <div data-tab-overflow style={{ display: 'flex', flexShrink: 0 }}>
+      <button
+        type="button"
+        aria-label={`All workspaces (${projects.length})`}
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        title="Show every workspace"
+        onClick={() => setMenuOpen(open => !open)}
+        style={{ border: 0, borderLeft: '1px solid var(--bs-border)', background: 'transparent', color: 'var(--bs-fg)', padding: '0 10px', cursor: 'pointer', fontSize: 12, fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 4 }}
+      >
+        <span aria-hidden>»</span><span style={{ color: 'var(--bs-fg-muted)' }}>{projects.length}</span>
+        {projects.some(p => p.id !== activeId && waitingWorkspaces.has(p.id)) && <span className="bs-notification-dot" role="img" aria-label="a pane is waiting" />}
+      </button>
+      {menuOpen && <div role="menu" aria-label="Workspaces" style={{ position: 'absolute', right: 0, top: '100%', zIndex: 40, minWidth: 220, maxWidth: 360, maxHeight: '60vh', overflowY: 'auto', background: 'var(--bs-bg-elev)', border: '1px solid var(--bs-border)', borderRadius: 4, padding: 4, boxShadow: '0 6px 20px rgba(0,0,0,.35)' }}>
+        {projects.map(p => {
+          const active = p.id === activeId
+          return <button key={p.id} role="menuitemradio" aria-checked={active} title={`${p.name}\n${abbreviatePath(p.path)}`}
+            onClick={() => { setMenuOpen(false); onSelect(p.id) }}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', border: 0, background: active ? 'var(--bs-bg)' : 'transparent', color: 'var(--bs-fg)', fontFamily: 'inherit', fontSize: 12, padding: '5px 8px', borderRadius: 3, cursor: 'pointer' }}>
+            <span aria-hidden style={{ width: 12, color: 'var(--bs-blue)' }}>{active && <span className="codicon codicon-check" />}</span>
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+            {!active && waitingWorkspaces.has(p.id) && <span className="bs-notification-dot" role="img" aria-label="a pane is waiting" />}
+          </button>
+        })}
+      </div>}
+    </div>}
     </div>
   )
 }

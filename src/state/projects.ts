@@ -216,6 +216,12 @@ function subscribe(listener: () => void) {
   return () => { listeners.delete(listener) }
 }
 function getSnapshot() { return state }
+
+/** Outside React: a workspace by id (open or merely discovered). */
+export function getProject(id: string): Project | null {
+  return state.availableProjects.find(project => project.id === id) ?? null
+}
+export function getActiveProjectId(): string | null { return state.activeId }
 export function useProjects() {
   const snap = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
   const projects = useMemo(() => snap.openIds.flatMap(id => { const project = snap.availableProjects.find(p => p.id === id); return project ? [project] : [] }), [snap.openIds, snap.availableProjects])

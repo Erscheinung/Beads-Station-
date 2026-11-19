@@ -7,6 +7,9 @@ const turn = (role: 'user' | 'assistant', text: string, extra: Partial<Transcrip
   ({ role, at: null, blocks: [{ kind: 'text', text }], files: [], thinking: 0, ...extra })
 
 describe('classifyInput', () => {
+  it('turns a dragged file URL into a decoded path', () => {
+    expect(classifyInput('file:///tmp/My%20Notes/caf%C3%A9.md')).toEqual({ kind: 'markdown', value: '/tmp/My Notes/café.md' })
+  })
   it('tells paths from text without a mode switch', () => {
     expect(classifyInput('  ')).toBeNull()
     expect(classifyInput('~/Documents/nAI/Plan.md')).toEqual({ kind: 'markdown', value: '~/Documents/nAI/Plan.md' })

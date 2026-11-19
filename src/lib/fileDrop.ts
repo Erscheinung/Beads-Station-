@@ -12,6 +12,7 @@
 // left half of the window.
 
 import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { invoke } from '@tauri-apps/api/core'
 import { terminalSessionForNode } from './terminalSessions'
 
 const TARGET_CLASS = 'bs-terminal-drop-target'
@@ -24,6 +25,31 @@ function sessionAt(position: { x: number; y: number }) {
   const { x, y } = dropPoint(position, window.devicePixelRatio || 1, /Mac/.test(navigator.platform))
   const node = document.elementFromPoint(x, y)
   return node ? terminalSessionForNode(node) : null
+}
+
+export type DropRoute = 'paste' | 'folder' | 'ignore'
+
+/**
+ * Where a drop goes. On a pane, paths are pasted as before; with Option held a
+ * folder is brought in instead (Code-7xc.4). Elsewhere (tab bar, workspace
+ * chrome) only a folder does anything: it opens a split there. Areas with a
+ * drop target of their own (Pinned) are left to it.
+ */
+export function routeDrop(over: 'pane' | 'other' | 'own-target', optionHeld: boolean, hasFolder: boolean): DropRoute {
+  if (over === 'own-target') return 'ignore'
+  if (over === 'pane') return optionHeld && hasFolder ? 'folder' : 'paste'
+  return hasFolder ? 'folder' : 'ignore'
+}
+
+async function optionHeldNow(): Promise<boolean> {
+  try { return (await invoke<boolean>('external_option_held')) === true } catch { return false }
+}
+
+async function firstFolder(paths: string[]): Promise<string | null> {
+  for (const path of paths) {
+    try { if (await invoke<boolean>('external_path_is_dir', { path })) return path } catch { /* not a folder */ }
+  }
+  return null
 }
 
 export async function installTerminalFileDrop(): Promise<() => void> {
@@ -42,7 +68,16 @@ export async function installTerminalFileDrop(): Promise<() => void> {
     const session = sessionAt(payload.position)
     if (payload.type === 'drop') {
       highlight(null)
-      session?.pastePaths(payload.paths)
+      const { x, y } = dropPoint(payload.position, window.devicePixelRatio || 1, /Mac/.test(navigator.platform))
+      const node = document.elementFromPoint(x, y)
+      const over = session ? 'pane' : node?.closest('[data-file-drop-own]') ? 'own-target' : 'other'
+      void (async () => {
+        const option = over === 'pane' ? await optionHeldNow() : false
+        const folder = over === 'own-target' || (over === 'pane' && !option) ? null : await firstFolder(payload.paths)
+        const route = routeDrop(over, option, folder !== null)
+        if (route === 'paste') session?.pastePaths(payload.paths)
+        else if (route === 'folder' && folder) await (await import('./externalAgents')).bringInFolder(folder)
+      })()
       return
     }
     highlight(session?.element ?? null)

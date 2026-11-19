@@ -3,91 +3,96 @@
 A local macOS workspace for terminals, Neovim/LazyVim, tickets, and coding agents, built with Tauri 2, Rust, React, and xterm. The conductor and designer workspace are evolving toward a shared request → implementation → review workflow.
 
 
-> **Early preview — v0.2.1.** The Developer workspace is usable for local evaluation. The new Designer Desk features are covered by automated browser tests only; none has been confirmed by hand in the packaged app yet. The complete provider-to-approval workflow also remains unverified there.
+> **Early preview — v0.2.2.** The Developer workspace is usable for local evaluation. The new Designer Desk features are covered by automated browser tests only; none has been confirmed by hand in the packaged app yet. The complete provider-to-approval workflow also remains unverified there.
 
 ## Preview
 
-The screenshots below were taken from the v0.2.1 frontend running in the Chromium test harness with mock data and a made-up sample project. They are not screenshots of the packaged app.
+The screenshots below were taken from the v0.2.2 frontend running in the Chromium test harness with mock data and a made-up sample project. They are not screenshots of the packaged app.
 
 ### Designer — Requests
 
 Your tickets as a board, with a focus lens that hides what needs no attention, epic groups, and a compact mode.
 
-![Designer requests board with the focus lens](docs/images/releases/v0.2.1/designer-requests.png)
+![Designer requests board with the focus lens](docs/images/releases/v0.2.2/designer-requests.png)
 
 ### Designer — Session
 
 The real Claude Code or Codex CLI on the left and the files it changed on the right. Nothing starts until you click.
 
-![Designer Session before a start, with the changed files list](docs/images/releases/v0.2.1/designer-session.png)
+![Designer Session before a start, with the changed files list](docs/images/releases/v0.2.2/designer-session.png)
 
 ### Designer — History
 
 Every Claude Code and Codex session that ran in the folder, read as a formatted conversation with collapsed tool calls. The usage card sits at the bottom of the left column.
 
-![Designer History with a session open and the usage card](docs/images/releases/v0.2.1/designer-history.png)
+![Designer History with a session open and the usage card](docs/images/releases/v0.2.2/designer-history.png)
 
 ### Designer — Pinned
 
 Text, file paths, folders, links and notes you reuse in prompts, typed into a running agent on demand.
 
-![Designer Pinned with a note, a markdown path and a file path](docs/images/releases/v0.2.1/designer-shelf.png)
+![Designer Pinned with a note, a markdown path and a file path](docs/images/releases/v0.2.2/designer-shelf.png)
 
 ### Designer — Agents and Timeline
 
 Agents lists running sessions with their subagents and the local conductor. Timeline lists closed tickets and agent sessions, newest first.
 
-![Designer Agents view](docs/images/releases/v0.2.1/designer-agents.png)
+![Designer Agents view](docs/images/releases/v0.2.2/designer-agents.png)
 
-![Designer Timeline view](docs/images/releases/v0.2.1/designer-timeline.png)
+![Designer Timeline view](docs/images/releases/v0.2.2/designer-timeline.png)
 
 ### Designer — ticket and bead map
 
 A ticket lists the sessions whose opening prompt names it.
 
-![A ticket page with Sessions on this ticket](docs/images/releases/v0.2.1/designer-ticket-sessions.png)
+![A ticket page with Sessions on this ticket](docs/images/releases/v0.2.2/designer-ticket-sessions.png)
 
 Each epic is a lane, arrows mean "must finish first", and selecting a bead lights up what it waits for and what it holds up.
 
-![Designer bead map with a bead selected](docs/images/releases/v0.2.1/designer-bead-map.png)
+![Designer bead map with a bead selected](docs/images/releases/v0.2.2/designer-bead-map.png)
 
 ### Terminal workspace
 
 The shared top bar carries Terminal, every Designer view and the Claude, Codex and Gemini launchers.
 
-![Split terminals](docs/images/releases/v0.2.1/terminal-splits.png)
+![Split terminals](docs/images/releases/v0.2.2/terminal-splits.png)
 
 After Unsplit to tabs, Restore split brings the layout back:
 
-![Restore split button after Unsplit](docs/images/releases/v0.2.1/terminal-restore-split.png)
+![Restore split button after Unsplit](docs/images/releases/v0.2.2/terminal-restore-split.png)
 
 ### About
 
-![Beads Station v0.2.1 About](docs/images/releases/v0.2.1/about.png)
+![Beads Station v0.2.2 About](docs/images/releases/v0.2.2/about.png)
 
 ### Developer workspace — Fahrenheit theme
 
-![Developer workspace using the Fahrenheit theme](docs/images/releases/v0.2.1/developer-fahrenheit.png)
+![Developer workspace using the Fahrenheit theme](docs/images/releases/v0.2.2/developer-fahrenheit.png)
 
-![Workspace picker over the Fahrenheit theme](docs/images/releases/v0.2.1/workspace-picker-fahrenheit.png)
+![Workspace picker over the Fahrenheit theme](docs/images/releases/v0.2.2/workspace-picker-fahrenheit.png)
 
 The v0.1.0 screenshots of this theme are kept in `docs/images/releases/v0.1.0/`.
 
-## Install the v0.2.1 preview
+## Install the v0.2.2 preview
 
-The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.2.1_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
+The current release is an ad-hoc-signed, unnotarized Apple Silicon macOS DMG; it is not signed with an Apple Developer ID. Download `Beads.Station_0.2.2_aarch64.dmg` from the Releases page, open it, and drag **Beads Station** to **Applications**. If Gatekeeper blocks the first launch, right-click the app and choose **Open**, or allow it once in **System Settings → Privacy & Security**.
 
-Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.2.1 release notes](docs/releases/v0.2.1.md) for the feature list, known limitations and test checklist.
+Install `bd` to use ticket surfaces. `codex`, `claude`, and `nvim` are optional and are launched only when you explicitly use them. Authentication stays in each CLI's own login flow. See the [v0.2.2 release notes](docs/releases/v0.2.2.md) for the feature list, known limitations and test checklist.
 
-## What is new in v0.2.1
+## What is new in v0.2.2
 
-- **Restored agent panes are conversations.** After a restart, a pane that ran Claude or Codex shows that conversation, searchable, with a message box. Enter reopens the CLI on exactly that conversation (typed text becomes the first message). Nothing starts until you act. An opt-in setting, off by default, can continue them automatically when a pane is shown.
-- **One top bar** for Terminal and the Designer views, with Claude, Codex and Gemini launchers that use the commands in Settings → Sessions.
-- **Shortcuts:** Cmd+Shift+D flips Terminal and Designer, Cmd+Y opens History, Cmd+/ shows every shortcut, Cmd+Shift+H/J/K/L move between panes. The browser pane is now Cmd+Shift+B.
-- **Cmd+click opens files in your editor** (`path`, `path:line:col`, `~/path`), reusing a running Neovim when one is in the foreground.
-- **Designer:** Pinned (was Shelf) accepts drops and Obsidian notes; Agents shows live sessions with subagents; Timeline lists closed work; Requests has a focus lens, epic groups and a compact mode.
+- **Live usage** on each agent pane and in the status bar for Claude, Codex and Gemini, read from the CLIs' own data. An offline **handoff note** is written at 95% of a context window, with a prompt journal; no model is called.
+- **Find:** Cmd+F in a pane with every match highlighted, Cmd+Shift+F across the workspace, highlighted matches in restored panes and History.
+- **Bring in a terminal…** adopts a Claude, Codex or Gemini session started elsewhere, attaches to a live tmux session and takes folder drops.
+- **Notification sounds** for waiting, responded and subagent events; eight new themes, Match system appearance, Toggle theme cycling and a colour for the command you type.
+- **Restored chat panes** read as conversations; History goes to a running session, follows live and can Fork here.
+- Terminal scroll fixes (Gemini, tab switches), a saved screen that wraps, `~` instead of home paths, a Beads-database hint, a workspace tab overflow menu, dictation and paste fixes.
 
-Not confirmed by hand in the packaged app: everything above. See the [release notes](docs/releases/v0.2.1.md) and the [hands-on checklist](docs/roadmap-0.2/prompts/HANDS-ON-0.2.1.md).
+![Live usage chip and status-bar limits](docs/images/releases/v0.2.2/usage-chip.png)
+
+![Find in pane with highlighted matches](docs/images/releases/v0.2.2/find-bar.png)
+
+Not confirmed by hand in the packaged app: everything above. See the [release notes](docs/releases/v0.2.2.md) and the [hands-on checklist](docs/roadmap-0.2/prompts/HANDS-ON-0.2.2.md).
 
 ## Designer Desk (v0.2.0)
 

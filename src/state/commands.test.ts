@@ -20,8 +20,8 @@ describe('command bindings', () => {
   it('exposes fullscreen as a safe configurable command and keeps leader help truthful', () => {
     expect(getBinding('fullscreen')).toBe('Mod+Shift+Enter')
     expect(setBinding('workspace', 'Mod+Shift+Enter')).toContain('Fullscreen terminal focus')
-    expect(setBinding('fullscreen', 'Mod+Shift+F')).toBeNull()
-    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'F', metaKey: true, shiftKey: true }))).toBe('fullscreen')
+    expect(setBinding('fullscreen', 'Mod+Shift+G')).toBeNull()
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'G', metaKey: true, shiftKey: true }))).toBe('fullscreen')
     expect(LEADER_SHORTCUTS.global.find(h => h.key === 'p')?.label).toBe('Cycle project')
     expect(LEADER_SHORTCUTS.terminal.find(h => h.key === 'e')?.label).toBe('Open files explorer')
 
@@ -133,5 +133,14 @@ describe('keys whose character changes with a modifier', () => {
     expect(getBinding('workspaceSelect1')).toBe('Mod+1')
     localStorage.removeItem('beads-station.command-bindings.v1')
     vi.resetModules()
+  })
+  it('binds Command+F and Command+Shift+F for find and leaves Control+F to the shell', () => {
+    expect(getBinding('findInPane')).toBe('Mod+F')
+    expect(getBinding('findInWorkspace')).toBe('Mod+Shift+F')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'f', metaKey: true }), true)).toBe('findInPane')
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'F', metaKey: true, shiftKey: true }), true)).toBe('findInWorkspace')
+    // macOS: Control+F is readline/nvim, so it is never a command; Ctrl+Shift+F is not bound either.
+    expect(matchedCommand(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true }), true)).toBeUndefined()
+    expect(setBinding('findInPane', 'Ctrl+F')).toContain('Control with a single key')
   })
 })

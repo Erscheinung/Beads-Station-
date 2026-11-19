@@ -11,6 +11,7 @@ const GROUPS: readonly Group[] = [
   { title: 'Go to', match: id => id === 'toggleSkin' || id === 'designer' || id === 'terminal' || id.startsWith('designer.') || id === 'palette' || id === 'settings' || id === 'shortcuts' },
   { title: 'Panes', match: id => /^(focus|resize|split|zoomPane|closePane|fullscreen|unsplit|restoreSplit|joinTabs|browser|files)/.test(id) },
   { title: 'Tabs and workspaces', match: id => /^(terminal(Previous|Next|Move|Select)|workspace|newTab|closeWorkspace)/.test(id) },
+  { title: 'Find', match: id => id.startsWith('find') },
   { title: 'Agents', match: id => /^(launch|chatPanel|agent|notification)/.test(id) },
 ]
 

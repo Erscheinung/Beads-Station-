@@ -61,6 +61,31 @@ test('a restored Claude pane shows its conversation, searches it, and continues 
   await expect.poll(async () => (await log(page, 'pty_spawn')).length).toBe(1)
 })
 
+test('the saved screen wraps long lines and its last line is fully visible', async ({ page }) => {
+  const long = 'x'.repeat(200)
+  const pane901 = JSON.parse(JSON.stringify(restoredClaudePane))
+  const leaf = pane901.projects['proj-a'].tabs[0].root
+  leaf.savedScreen.lines = ['first line', long, ...Array.from({ length: 60 }, (_, i) => `row ${i}`), 'LAST LINE']
+  await page.addInitScript(() => localStorage.setItem('beads-station.themePaletteId', 'fahrenheit'))
+  await open(page, { panes: pane901 })
+  const pane = page.locator('[data-restored-pane="pane901"]')
+  await pane.getByRole('button', { name: 'Show saved screen' }).click()
+  const scroller = pane.locator('.bs-saved-screen').last()
+  await expect(scroller.getByLabel('Saved terminal screen')).toContainText('LAST LINE')
+  const m = await scroller.evaluate(el => {
+    el.scrollTop = el.scrollHeight
+    const pre = el.querySelector('pre')!
+    const range = document.createRange()
+    range.selectNodeContents(pre)
+    const rects = Array.from(range.getClientRects())
+    const last = rects[rects.length - 1]
+    const box = el.getBoundingClientRect()
+    return { overflowX: el.scrollWidth - el.clientWidth, scrollbarH: el.offsetHeight - el.clientHeight, lastBottom: last.bottom, boxBottom: box.bottom - (el.offsetHeight - el.clientHeight) }
+  })
+  expect(m.overflowX).toBeLessThanOrEqual(0)
+  expect(m.lastBottom).toBeLessThanOrEqual(m.boxBottom + 0.5)
+})
+
 test('with the opt-in setting, a restored pane whose conversation is known reopens by itself', async ({ page }) => {
   await open(page, { panes: restoredClaudePane, prefs: { autoResumeAgents: true } })
   await expect.poll(async () => (await log(page, 'pty_spawn')).length).toBe(1)

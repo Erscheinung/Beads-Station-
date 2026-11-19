@@ -1,21 +1,13 @@
-// Session usage only: how big the agent session running in this pane is.
-// Read from the CLI's own session file; it starts nothing and needs no tokens.
+// Live usage of the agent session running in a pane: context use, its size
+// and subagents, from the CLI's status line and its own session file
+// (src/state/paneUsage.ts). It starts nothing and needs no tokens. Hidden
+// while nothing is known.
 
-import { useEffect, useState } from 'react'
-import { readTranscript, usageLine, type TranscriptProvider, type TranscriptUsage } from './designer/transcripts'
+import { usePaneUsage, usageChipText, usageTooltip } from '../state/paneUsage'
 
-export function SessionUsageChip({ workspacePath, provider, sessionId }: { workspacePath: string; provider: TranscriptProvider; sessionId: string }) {
-  const [usage, setUsage] = useState<TranscriptUsage | null | undefined>(undefined)
-  useEffect(() => {
-    let cancelled = false
-    const load = () => {
-      if (document.visibilityState !== 'visible') return
-      Promise.resolve(readTranscript(workspacePath, provider, sessionId)).then(t => { if (!cancelled) setUsage(t?.usage ?? null) }).catch(() => { if (!cancelled) setUsage(null) })
-    }
-    load()
-    const timer = setInterval(load, 20_000)
-    return () => { cancelled = true; clearInterval(timer) }
-  }, [workspacePath, provider, sessionId])
-  if (!usage) return null
-  return <span className="bs-session-usage" data-testid="session-usage" title="Tokens used by this session so far, read from the session file. Cached input is billed differently.">{usageLine(usage)}</span>
+export function SessionUsageChip({ paneId }: { paneId: string }) {
+  const usage = usePaneUsage(paneId)
+  const text = usageChipText(usage)
+  if (!usage || !text) return null
+  return <span className="bs-session-usage" data-testid="session-usage" data-provider={usage.provider} title={usageTooltip(usage)}>{text}</span>
 }

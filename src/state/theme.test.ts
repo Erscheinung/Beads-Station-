@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getTheme, setTheme, toggleTheme, setThemePalette, getThemePaletteId } from './theme'
+import { getTheme, setTheme, toggleTheme, setThemePalette, getThemePaletteId, BUNDLED_THEMES } from './theme'
 
 import { setSkin } from './skin'
 
@@ -16,13 +16,14 @@ describe('theme store', () => {
     expect(getTheme()).toBe('dark')
   })
 
-  it('toggles dark <-> light and persists to localStorage', () => {
+  it('toggle moves to the next theme in the list and persists it', () => {
+    const before = getThemePaletteId()
     toggleTheme()
-    expect(getTheme()).toBe('light')
-    expect(localStorage.getItem('beads-station.theme')).toBe('light')
-    toggleTheme()
-    expect(getTheme()).toBe('dark')
-    expect(localStorage.getItem('beads-station.theme')).toBe('dark')
+    const after = getThemePaletteId()
+    expect(after).not.toBe(before)
+    const ids = BUNDLED_THEMES.map(t => t.name)
+    expect(ids.indexOf(after)).toBe((ids.indexOf(before) + 1) % ids.length)
+    expect(localStorage.getItem('beads-station.view-themes.v1')).toContain(after)
   })
 
   it('mirrors onto window.__bsTheme', () => {

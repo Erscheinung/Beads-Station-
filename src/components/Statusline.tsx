@@ -11,7 +11,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { safeInvoke } from '../lib/invokeErrorBoundary'
 import { abbreviatePath } from '../lib/abbreviatePath'
+import { InitializeBeadsAction } from './InitializeBeadsAction'
+import { setBeadsSetupDismissed, useBeadsSetupDismissed } from '../state/beadsSetupHint'
 import { useBdSnapshot } from '../lib/bdCache'
+import { activeTerminalPaneId, useTermPanes } from '../state/termPanes'
+import { limitsText, usePaneUsage, USAGE_PROVIDER_LABEL } from '../state/paneUsage'
 
 declare global {
   interface Window {
@@ -43,6 +47,8 @@ export function Statusline({ repoPath, projectPath }: Props) {
   const [branch, setBranch] = useState<string>('…')
   const [clock, setClock] = useState<string>(nowHHMM())
   const [pending, setPending] = useState<boolean>(false)
+  const [setupOpen, setSetupOpen] = useState(false)
+  const setupDismissed = useBeadsSetupDismissed(repoPath)
 
   // RV3.3 — counts derived client-side from the shared snapshot (same match
   // arms the old bd_counts used). No independent bd subprocess.
@@ -168,7 +174,19 @@ export function Statusline({ repoPath, projectPath }: Props) {
       ) : snap.error ? (
         <span style={{ ...labelStyle, color: 'var(--bs-red)' }}>bd error</span>
       ) : snap.noDb ? (
-        <span style={labelStyle}>no beads db</span>
+        setupDismissed ? null : <span style={{ position: 'relative' }}>
+          <button type="button" aria-expanded={setupOpen} onClick={() => setSetupOpen(open => !open)} title="This folder has no Beads tickets yet. Click to set them up."
+            style={{ ...labelStyle, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', textDecoration: 'underline dotted' }}>
+            no beads db · set up
+          </button>
+          {setupOpen && <div style={{ position: 'absolute', bottom: '100%', left: 0, width: 340, zIndex: 20 }}>
+            <InitializeBeadsAction repoPath={repoPath} compact />
+            <button type="button" onClick={() => { setBeadsSetupDismissed(repoPath, true); setSetupOpen(false) }}
+              style={{ ...labelStyle, background: 'var(--bs-bg-elev)', border: '1px solid var(--bs-border)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', fontSize: 11 }}>
+              Don’t show for this folder
+            </button>
+          </div>}
+        </span>
       ) : (
         <span>
           <span style={labelStyle}>ready=</span>
@@ -182,6 +200,8 @@ export function Statusline({ repoPath, projectPath }: Props) {
 
       {/* Spacer */}
       <span style={{ marginLeft: 'auto' }} />
+
+      <PaneLimits />
 
       {/* Clock */}
       <span style={valueStyle}>{clock}</span>
@@ -202,5 +222,35 @@ export function Statusline({ repoPath, projectPath }: Props) {
         </>
       )}
     </div>
+  )
+}
+
+/**
+ * Rate-limit windows of the agent in the focused pane: `5h 81% · wk 69% ·
+ * resets 14:20`. Claude's come from its status line, Codex's from its
+ * session file; nothing is shown while they are unknown.
+ */
+function PaneLimits() {
+  useTermPanes()
+  const usage = usePaneUsage(activeTerminalPaneId())
+  // Re-evaluate old readings and passed resets once a minute.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+  const limits = limitsText(usage, now / 1000)
+  if (!usage || !limits) return null
+  const label = USAGE_PROVIDER_LABEL[usage.provider]
+  const seen = usage.limitsAt ? new Date(usage.limitsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null
+  const title = `${label} usage limits${seen ? `, read at ${seen}` : ''}${limits.stale ? '. This reading is old or a window has reset since; it updates when the agent next reports.' : ''}`
+  return (
+    <>
+      <span data-testid="statusline-limits" data-stale={limits.stale ? 'true' : undefined} title={title}
+        style={{ color: 'var(--bs-fg)', opacity: limits.stale ? 0.6 : 1 }}>
+        <span style={{ color: 'var(--bs-fg-muted)' }}>{label} </span>{limits.text}{limits.stale ? ' (old)' : ''}
+      </span>
+      <span style={{ width: 1, alignSelf: 'stretch', background: 'var(--bs-border)', margin: '0 8px' }} />
+    </>
   )
 }

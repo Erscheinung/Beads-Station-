@@ -11,6 +11,7 @@ import { useState } from 'react'
 import './TerminalPanes.css'
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from './Terminal'
+import { FindBar } from './FindBar'
 import { ClaudeChat } from './ClaudeChat'
 import { FileTree } from './FileTree'
 import { BrowserPane } from './BrowserPane'
@@ -21,8 +22,7 @@ import {
   useZoom,
   registerPty,
   updatePaneScreen,
-  activateRestoredPane,
-  takePaneStartupCommand,
+  takePaneStartup,
   focusPane,
   setInsert,
   setRatio,
@@ -33,7 +33,7 @@ import {
   type Leaf,
 } from '../state/termPanes'
 import { setFocused } from '../state/vim'
-import { clearObservedProviderSession, observedProviderSession } from '../state/sessionPreferences'
+import { observedProviderSession } from '../state/sessionPreferences'
 import { requestDestructiveAction } from '../state/destructiveActions'
 import { clearPaneNotification, usePaneNotifications, type PaneNotification } from '../state/paneNotifications'
 import { runInTerminalSession } from '../lib/terminalSessions'
@@ -41,11 +41,12 @@ import { startPointerDrag, startPointerReorder } from '../lib/pointerDrag'
 import { PaneBoundary } from './PaneBoundary'
 import { SessionUsageChip } from './SessionUsageChip'
 import { RestoredPane } from './RestoredPane'
+import { RestoredChatPane } from './RestoredChatPane'
 
 function onSpawn(paneId: string, ptyId: number) {
   registerPty(paneId, ptyId)
-  const command = takePaneStartupCommand(paneId)
-  if (command) runInTerminalSession(paneId, command)
+  const startup = takePaneStartup(paneId)
+  if (startup) runInTerminalSession(paneId, startup.command, startup.submit)
 }
 
 
@@ -126,7 +127,7 @@ function PaneLeaf({
       }}
     >
       {notification && <PaneNotificationChip notification={notification} />}
-      {!leaf.restored && leaf.agentCli && leaf.agentSessionId && <SessionUsageChip workspacePath={leaf.cwd} provider={leaf.agentCli} sessionId={leaf.agentSessionId} />}
+      {!leaf.restored && <SessionUsageChip paneId={paneId} />}
       {leaf.restored ? <RestoredPane leaf={leaf} focused={isActive && ctx.termFocused} /> : <Terminal
         paneId={paneId}
         cwd={leaf.cwd}
@@ -204,18 +205,7 @@ function AgentPaneLeaf({ leaf, ctx }: { leaf: Leaf; ctx: RenderCtx }) {
         <button className="bs-pane-close" aria-label="Close agent pane" title="Stop this agent and close the pane" onClick={closeFocusedPane}><span className="codicon codicon-close" aria-hidden /></button>
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
-        {leaf.restored ? <div data-restored-provider={a.bridgeId} style={{ height: '100%', display: 'grid', placeContent: 'center', gap: 10, padding: 20, textAlign: 'center', color: 'var(--bs-fg-muted)' }}>
-          <strong style={{ color: 'var(--bs-fg)' }}>Saved {provider === 'claude' ? 'Claude session' : 'Codex thread'}</strong>
-          <span>{observedId ?? 'No provider-observed session ID'} · {a.configurationId ?? `native:${provider}`}</span>
-          <span>This transcript context is restored. No live process is attached and no model turn was started.</span>
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 8 }}>
-            {provider === 'claude' && observedId && <button onClick={() => activateRestoredPane(leaf.paneId)}>Resume session</button>}
-            <button onClick={() => {
-              clearObservedProviderSession(provider, a.bridgeId)
-              activateRestoredPane(leaf.paneId)
-            }}>Start new session</button>
-          </div>
-        </div> : <ClaudeChat
+        {leaf.restored ? <RestoredChatPane leaf={leaf} provider={provider} observedId={observedId} focused={isActive && ctx.termFocused} /> : <ClaudeChat
           projectId={a.projectId}
           bridgeId={a.bridgeId}
           cwd={leaf.cwd}
@@ -477,6 +467,7 @@ export function TerminalPanes({ termFocused, fullscreen = false }: { termFocused
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>{renderNode(tab.root, ctx)}</div>
+      <FindBar />
     </div>
   )
 }

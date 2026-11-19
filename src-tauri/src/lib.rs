@@ -5,6 +5,7 @@
 // Keep that block easy to merge into.
 
 mod bd;
+mod clipboard;
 mod app_lifecycle;
 mod agent_hooks;
 mod artifacts;
@@ -20,15 +21,18 @@ mod envloader;
 #[cfg(target_os = "macos")]
 mod finder_service;
 mod fs;
+mod handoff;
 mod pinned;
 mod herdr_bridge;
 mod menu;
 mod meter;
 mod projects;
 mod pty;
+mod external_agents;
 #[cfg(unix)]
 mod pty_host;
 mod sense;
+mod session_usage;
 mod spawngov;
 mod spending;
 mod telemetry;
@@ -214,7 +218,9 @@ pub fn run() {
             conductors::codex_thread_activity,
             transcripts::transcripts_list,
             meter::meter_summary,
+            session_usage::session_usage,
             transcripts::transcript_read,
+            transcripts::transcript_stamp,
             conductor::conductor_start,
             conductor::conductor_stop,
             conductor::conductor_pulse_now,
@@ -222,10 +228,15 @@ pub fn run() {
             conductor::conductor_defer_bead,
             conductor::conductor_set_default_tier,
             daily::daily_append,
+            handoff::handoff_write,
+            handoff::handoff_collect,
+            handoff::journal_append,
+            handoff::journal_path,
             fs::list_dir,
             fs::read_file,
             pinned::pin_kinds,
             pinned::pin_open,
+            clipboard::clipboard_read_text,
             pinned::vault_list,
             pinned::vault_read,
             projects::projects_get,
@@ -238,6 +249,10 @@ pub fn run() {
             projects::projects_set_claude_session,
             pty::pty_ack,
             pty::pty_foreground,
+            external_agents::external_agents,
+            external_agents::external_agent_stop,
+            external_agents::external_path_is_dir,
+            external_agents::external_option_held,
             pty::pty_kill,
             pty::pty_persisted,
             pty::pty_release_keys,

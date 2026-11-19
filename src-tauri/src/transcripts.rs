@@ -29,7 +29,7 @@ const MAX_LIST: usize = 60;
 const MAX_SUBAGENTS: usize = 20;
 const SUBAGENT_PARENTS: usize = 15;
 /// Codex keeps every workspace's rollouts together, so only the newest are scanned.
-const MAX_CODEX_SCAN: usize = 150;
+pub(crate) const MAX_CODEX_SCAN: usize = 150;
 const PREVIEW_CHARS: usize = 400;
 const TITLE_CHARS: usize = 90;
 const PROMPT_CHARS: usize = 600;
@@ -137,7 +137,7 @@ pub(crate) fn created_ms(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-fn is_session_id(id: &str) -> bool {
+pub(crate) fn is_session_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 80 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
@@ -168,7 +168,7 @@ fn claude_dir(claude_home: &Path, workspace: &str) -> PathBuf {
     claude_home.join("projects").join(claude_slug(workspace))
 }
 
-fn jsonl_files(dir: &Path) -> Vec<(PathBuf, u64)> {
+pub(crate) fn jsonl_files(dir: &Path) -> Vec<(PathBuf, u64)> {
     let mut files: Vec<(PathBuf, u64)> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -185,7 +185,7 @@ fn jsonl_files(dir: &Path) -> Vec<(PathBuf, u64)> {
 
 /// A user message as the person typed it: injected reminders and local-command
 /// plumbing are removed. None when nothing readable is left.
-fn clean_user_text(raw: &str) -> Option<String> {
+pub(crate) fn clean_user_text(raw: &str) -> Option<String> {
     let mut text = raw.to_string();
     while let (Some(start), Some(end)) = (text.find("<system-reminder>"), text.find("</system-reminder>")) {
         if end < start { break }
@@ -209,7 +209,7 @@ fn clean_user_text(raw: &str) -> Option<String> {
     Some(text.to_string())
 }
 
-fn is_codex_preamble(text: &str) -> bool {
+pub(crate) fn is_codex_preamble(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with("<environment_context>") || t.starts_with("<user_instructions>") || t.starts_with("# AGENTS.md") || t.starts_with("<permissions") || t.starts_with("<INSTRUCTIONS>")
 }
@@ -466,7 +466,7 @@ pub(crate) fn codex_rollouts(codex_home: &Path) -> Vec<(PathBuf, u64)> {
 }
 
 /// The session id is the last 36 characters (a UUID) of `rollout-<time>-<uuid>.jsonl`.
-fn codex_id(path: &Path) -> Option<String> {
+pub(crate) fn codex_id(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     if stem.len() < 36 { return None }
     let id = &stem[stem.len() - 36..];
@@ -610,9 +610,10 @@ pub(crate) fn list(claude_home: &Path, codex_home: &Path, workspace: &str) -> Ve
     all
 }
 
-pub(crate) fn read(claude_home: &Path, codex_home: &Path, workspace: &str, provider: &str, id: &str) -> Result<Transcript, String> {
+/// The file a session lives in, or None when it is gone.
+fn session_path(claude_home: &Path, codex_home: &Path, workspace: &str, provider: &str, id: &str) -> Result<Option<PathBuf>, String> {
     if !is_session_id(id) { return Err("Invalid session id".into()) }
-    let path = match provider {
+    Ok(match provider {
         "claude" => {
             let dir = claude_dir(claude_home, workspace);
             jsonl_files(&dir).into_iter().map(|(path, _)| path).find(|path| path.file_stem().and_then(|s| s.to_str()) == Some(id))
@@ -620,7 +621,21 @@ pub(crate) fn read(claude_home: &Path, codex_home: &Path, workspace: &str, provi
         }
         "codex" => codex_rollouts(codex_home).into_iter().map(|(path, _)| path).find(|path| codex_id(path).as_deref() == Some(id)),
         _ => return Err("Unknown provider".into()),
-    }
+    })
+}
+
+/// Cheap change check for a live follower: when the session file was last written and how big it is.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptStamp { pub modified_ms: u64, pub bytes: u64 }
+
+pub(crate) fn stamp(claude_home: &Path, codex_home: &Path, workspace: &str, provider: &str, id: &str) -> Result<Option<TranscriptStamp>, String> {
+    Ok(session_path(claude_home, codex_home, workspace, provider, id)?
+        .map(|path| TranscriptStamp { modified_ms: modified_ms(&path), bytes: fs::metadata(&path).map(|m| m.len()).unwrap_or(0) }))
+}
+
+pub(crate) fn read(claude_home: &Path, codex_home: &Path, workspace: &str, provider: &str, id: &str) -> Result<Transcript, String> {
+    let path = session_path(claude_home, codex_home, workspace, provider, id)?
     .ok_or("That session file is gone")?;
     let (text, truncated) = read_window(&path, MAX_READ, true).map_err(|error| error.to_string())?;
     let is_subagent = provider == "claude" && path.parent().and_then(|p| p.file_name()).is_some_and(|n| n == "subagents");
@@ -646,6 +661,17 @@ pub async fn transcripts_list(workspace_path: String) -> Result<Vec<TranscriptSu
     tauri::async_runtime::spawn_blocking(move || {
         let (claude, codex) = homes()?;
         Ok(list(&claude, &codex, &workspace_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Modified time and size of one session's file; null when it is gone. Reads no content.
+#[tauri::command]
+pub async fn transcript_stamp(workspace_path: String, provider: String, session_id: String) -> Result<Option<TranscriptStamp>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (claude, codex) = homes()?;
+        stamp(&claude, &codex, &workspace_path, &provider, &session_id)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -732,6 +758,10 @@ mod tests {
         let transcript = read(&home, &home.join("none"), workspace, "claude", "abc-123").unwrap();
         assert_eq!(transcript.turns.len(), 2);
         assert!(!transcript.truncated);
+        let stamp = stamp(&home, &home.join("none"), workspace, "claude", "abc-123").unwrap().unwrap();
+        assert_eq!(stamp.bytes, CLAUDE_SESSION.len() as u64);
+        assert!(super::stamp(&home, &home.join("none"), workspace, "claude", "gone-1").unwrap().is_none());
+        assert!(super::stamp(&home, &home, "/w", "claude", "../x").is_err());
     }
 
     #[test]

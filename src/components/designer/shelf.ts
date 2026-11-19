@@ -7,6 +7,7 @@
 // workspace in the browser store: a convenience, not the system of record.
 
 import { useSyncExternalStore } from 'react'
+import { fileUrlToPath } from '../../lib/abbreviatePath'
 
 export type ShelfKind = 'note' | 'file' | 'markdown' | 'folder' | 'link'
 const KINDS: ShelfKind[] = ['note', 'file', 'markdown', 'folder', 'link']
@@ -29,7 +30,7 @@ export const MAX_INLINE_BYTES = 64 * 1024
 
 /** Decide what a pasted string is. One box, no mode switch. */
 export function classifyInput(raw: string): { kind: ShelfKind; value: string } | null {
-  const text = raw.trim()
+  const text = fileUrlToPath(raw.trim())
   if (!text) return null
   if (isLink(text)) return { kind: 'link', value: text }
   // "/review this" is a slash command, not a path: an absolute path needs a second segment.

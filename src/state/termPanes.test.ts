@@ -689,3 +689,19 @@ describe('restoring the split layout after unsplit', () => {
     expect(panes.restoreSplit()).toBe(false)
   })
 })
+
+describe('bringing a folder in from outside', () => {
+  it('opens a split in that folder; a typed-only command is never submitted', async () => {
+    const panes = await import('./termPanes')
+    const before = panes.leavesOf(panes.activeTabRoot()).length
+    panes.openSplitInFolder('/work/foo', 'claude', false)
+    expect(panes.leavesOf(panes.activeTabRoot())).toHaveLength(before + 1)
+    const pane = panes.activeTerminalPaneId()
+    expect(panes.leavesOf(panes.activeTabRoot()).find(leaf => leaf.paneId === pane)?.cwd).toBe('/work/foo')
+    expect(panes.takePaneStartup(pane)).toEqual({ command: 'claude', submit: false })
+    panes.openSplitInFolder('/work/bar', 'codex resume x')
+    expect(panes.takePaneStartup(panes.activeTerminalPaneId())).toEqual({ command: 'codex resume x', submit: true })
+    panes.openSplitInFolder('/work/baz')
+    expect(panes.takePaneStartup(panes.activeTerminalPaneId())).toBeNull()
+  })
+})

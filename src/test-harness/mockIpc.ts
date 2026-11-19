@@ -251,6 +251,15 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
       return []
     case 'pty_foreground':
       return { cli: null, sessionId: null }
+    // Outside agents (Code-7xc.4): none unless a spec seeds `external_agents`.
+    case 'external_agents':
+      return []
+    case 'external_agent_stop':
+      return { exited: true }
+    case 'external_path_is_dir':
+      return String(args?.path ?? '').endsWith('/')
+    case 'external_option_held':
+      return false
     case 'meter_summary': {
       const now = Date.now()
       const day = (back: number, out: number) => ({ day: new Date(now - back * 86_400_000).toISOString().slice(0, 10), input: out / 100, output: out, cacheRead: out * 90, cacheCreate: out / 10 })
@@ -260,13 +269,36 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
           primary: { usedPercent: 85, windowMinutes: 300, resetsAt: Math.floor(now / 1000) + 90 * 60 },
           secondary: { usedPercent: 20, windowMinutes: 10080, resetsAt: Math.floor(now / 1000) + 4 * 86_400 } },
         claudeDays: [6, 5, 4, 3, 2, 1, 0].map((back, i) => day(back, [0, 120_000, 60_000, 310_000, 20_000, 90_000, 140_000][i])),
+        codexDays: [6, 5, 4, 3, 2, 1, 0].map((back, i) => day(back, [10_000, 0, 0, 45_000, 80_000, 0, 30_000][i])),
       }
+    }
+    // Live usage of a pane's agent session (session_usage.rs). Plausible
+    // numbers per provider; a spec overrides it through __bsMockOverride.
+    case 'session_usage': {
+      const now = Math.floor(Date.now() / 1000)
+      if (args?.provider === 'claude') return {
+        provider: 'claude', sessionId: args?.sessionId ?? null, truncated: false,
+        usage: { input: 1_200, output: 24_000, cacheRead: 1_500_000, cacheCreate: 38_000 },
+        subagents: 2, subagentUsage: { input: 300, output: 6_000, cacheRead: 200_000, cacheCreate: 9_000 },
+        contextTokens: 84_000, contextWindow: null, limits: null,
+      }
+      if (args?.provider === 'codex') return {
+        provider: 'codex', sessionId: args?.sessionId ?? null, truncated: false,
+        usage: { input: 20_000, output: 3_000, cacheRead: 100_000, cacheCreate: 0 },
+        subagents: 0, subagentUsage: null, contextTokens: 96_000, contextWindow: 475_000,
+        limits: { plan: 'plus', observedAt: new Date().toISOString(),
+          primary: { usedPercent: 81, windowMinutes: 300, resetsAt: now + 90 * 60 },
+          secondary: { usedPercent: 69, windowMinutes: 10080, resetsAt: now + 3 * 86_400 } },
+      }
+      return null
     }
     case 'transcripts_list':
       return [
         { id: 'aaaa1111-0000-4000-8000-000000000001', provider: 'claude', title: 'Fix the header spacing', firstPrompt: 'Work on tickets Code-aaa and Code-bbb: Fix the header spacing. Read them with bd show first.', modifiedMs: Date.now() - 3 * 3_600_000, bytes: 1200 },
         { id: 'bbbb2222-0000-4000-8000-000000000002', provider: 'codex', title: 'Add a dark mode toggle', firstPrompt: 'Add a dark mode toggle', modifiedMs: Date.now() - 2 * 86_400_000, bytes: 900 },
       ]
+    case 'transcript_stamp':
+      return { modifiedMs: Date.now() - 3_600_000, bytes: 1200 }
     case 'transcript_read':
       return {
         id: String(args?.sessionId), provider: String(args?.provider), truncated: false,
@@ -290,10 +322,21 @@ function route(cmd: string, args: Record<string, unknown> | undefined): unknown 
         ],
         diff: 'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1,2 @@\n-old\n+new\n+more',
       }
+    // Offline handoff note + prompt journal (handoff.rs).
+    case 'handoff_collect':
+      return { firstPrompt: 'Build the settings page', recentPrompts: ['Add tests', 'Now the empty state'], todos: [{ text: 'Wire the form', status: 'completed' }, { text: 'Add tests', status: 'in_progress' }], truncated: false }
+    case 'handoff_write':
+      return `/tmp/mock-notes/Handoffs/2026-01-01-0900-${String(args?.workspace ?? 'workspace').split('/').pop()}-${args?.provider}.md`
+    case 'journal_append':
+      return null
+    case 'journal_path':
+      return '/tmp/mock-journal/workspace-12345678.md'
     case 'pin_kinds':
       return ((args?.paths as string[]) ?? []).map(path => (path.endsWith('/') || !path.includes('.')) ? 'dir' : 'file')
     case 'pin_open':
       return null
+    case 'clipboard_read_text':
+      return (window.__bsMockOverride?.clipboard_read_text as string | undefined) ?? null
     case 'vault_list':
       return { truncated: false, notes: [
         { rel: 'Daily/Monday.md', name: 'Monday', modifiedMs: Date.now() - 3_600_000, size: 120 },

@@ -5,12 +5,15 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { TurnView } from './ConversationView'
+import { ConversationSearch, useConversationFind } from './ConversationSearch'
 import { addShelfItem } from './shelf'
 import { openInEditor } from '../../lib/openInEditor'
 import { openDesignerView } from '../../state/designerNav'
+import { canFork, forkSession } from '../../lib/forkSession'
+import { isRunningSession, lastTurnLabel, nearEnd, pendingNewTurns, useNow, useSessionFollow } from './follow'
 import {
   filterTurns, formatTokens, listTranscripts, pace, readMeter, takeHistoryFocus, windowLabel,
-  type LimitWindow, type Meter, readTranscript, relativeTime, turnProse, usageLine,
+  type LimitWindow, type Meter, relativeTime, turnProse, usageLine,
   type Transcript, type TranscriptSummary, type TranscriptTurn,
 } from './transcripts'
 
@@ -19,16 +22,19 @@ const REFRESH_MS = 8_000
 const SHOWN_TURNS = 120
 const PROVIDER_LABEL = { claude: 'Claude Code', codex: 'Codex', qwen: 'Qwen' } as const
 
-export function HistoryView({ project, sessionRunning, onResume }: {
+export function HistoryView({ project, sessionRunning, onResume, onGoToSession, onResumeInPane }: {
   project: { id: string; name: string; path: string }
   /** The Session view already has a live terminal; resuming must not type into it. */
   sessionRunning: boolean
   onResume: (summary: TranscriptSummary) => void
+  /** Show the Session view that is already running. */
+  onGoToSession: () => void
+  /** Open a terminal split in the session's folder and resume there. */
+  onResumeInPane: (summary: TranscriptSummary) => void
 }) {
   const [list, setList] = useState<TranscriptSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<TranscriptSummary | null>(null)
-  const [transcript, setTranscript] = useState<Transcript | null>(null)
   const [query, setQuery] = useState('')
   const [pinned, setPinned] = useState<number | null>(null)
   const [showAll, setShowAll] = useState(false)
@@ -45,7 +51,7 @@ export function HistoryView({ project, sessionRunning, onResume }: {
       const wanted = takeHistoryFocus(project.id)
       if (wanted) {
         const match = next.find(item => `${item.provider}:${item.id}` === wanted)
-        if (match) { stickToEnd.current = true; setTranscript(null); setQuery(''); setShowAll(false); setSelected(match) }
+        if (match) { stickToEnd.current = true; setQuery(''); setShowAll(false); setSelected(match) }
       }
       // Follow the selected session as it grows; with nothing chosen, open the
       // newest one so the view is never an empty page (reading starts nothing).
@@ -53,49 +59,61 @@ export function HistoryView({ project, sessionRunning, onResume }: {
     } catch (failure) { setError(String(failure)) }
   }, [project.path, project.id])
 
-  useEffect(() => { setList(null); setSelected(null); setTranscript(null); void refreshList() }, [refreshList])
+  useEffect(() => { setList(null); setSelected(null); void refreshList() }, [refreshList])
   // Only look again while the window is in front: a hidden app reads nothing.
   useEffect(() => {
     const timer = setInterval(() => { if (document.visibilityState === 'visible') void refreshList() }, REFRESH_MS)
     return () => clearInterval(timer)
   }, [refreshList])
 
-  const selectedKey = selected ? `${selected.provider}:${selected.id}:${selected.modifiedMs}` : null
+  // The conversation follows its file: a cheap stamp every few seconds, a re-read only when it changed.
+  const follow = useSessionFollow({ cwd: project.path, provider: selected?.provider, sessionId: selected?.id })
+  const transcript: Transcript | null = follow.transcript
+  const readError = follow.error
+  const now = useNow()
+  const modifiedMs = Math.max(follow.stamp?.modifiedMs ?? 0, selected?.modifiedMs ?? 0)
+  const running = isRunningSession(modifiedMs, now)
+  const [behind, setBehind] = useState(0)
+  const lastCount = useRef<number | null>(null)
+  const selectedId = selected ? `${selected.provider}:${selected.id}` : null
+  useEffect(() => { lastCount.current = null; setBehind(0) }, [selectedId])
   useEffect(() => {
-    if (!selected) return
-    let cancelled = false
-    readTranscript(project.path, selected.provider, selected.id)
-      .then(result => { if (!cancelled) { setTranscript(result); setError(null) } })
-      .catch(failure => { if (!cancelled) setError(String(failure)) })
-    return () => { cancelled = true }
-    // Re-read when the file changed on disk (modifiedMs is part of the key).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project.path, selectedKey])
+    if (!transcript) return
+    // Read the refs now: the updater below runs later, after they change.
+    const previous = lastCount.current, atEnd = stickToEnd.current, count = transcript.turns.length
+    setBehind(current => pendingNewTurns(previous, count, atEnd, current))
+    lastCount.current = count
+  }, [transcript])
 
   const choose = (summary: TranscriptSummary) => {
     if (selected?.id === summary.id) return
     stickToEnd.current = true
-    setTranscript(null); setQuery(''); setShowAll(false)
+    setQuery(''); setShowAll(false)
     setSelected(summary)
   }
 
-  const visible = useMemo(() => transcript ? filterTurns(transcript.turns, query) : [], [transcript, query])
+  const [onlyMatching, setOnlyMatching] = useState(false)
+  const visible = useMemo(() => transcript ? (onlyMatching ? filterTurns(transcript.turns, query) : transcript.turns) : [], [transcript, query, onlyMatching])
   const shown = showAll || query ? visible : visible.slice(-SHOWN_TURNS)
   const folded = visible.length - shown.length
+  const find = useConversationFind(scroller, query, shown.length)
 
   // A session opens at its end, where the work is. Scrolling up stops following.
   useLayoutEffect(() => {
     const element = scroller.current
-    if (element && stickToEnd.current) element.scrollTop = element.scrollHeight
+    if (element && stickToEnd.current && !query) element.scrollTop = element.scrollHeight
   }, [transcript, shown.length])
   const onScroll = () => {
     const element = scroller.current
-    if (element) stickToEnd.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80
+    if (!element) return
+    stickToEnd.current = nearEnd(element)
+    if (stickToEnd.current) setBehind(current => current === 0 ? current : 0)
   }
   const jump = (to: 'start' | 'end') => {
     const element = scroller.current
     if (!element) return
     stickToEnd.current = to === 'end'
+    if (to === 'end') setBehind(0)
     element.scrollTo({ top: to === 'end' ? element.scrollHeight : 0 })
   }
 
@@ -142,21 +160,31 @@ export function HistoryView({ project, sessionRunning, onResume }: {
         <header style={styles.readerHeader}>
           <div style={{ minWidth: 0 }}>
             <h2 style={{ ...styles.title, ...styles.ellipsis }} title={selected.title}>{selected.title}</h2>
-            <p style={styles.meta} data-testid="history-usage">{PROVIDER_LABEL[selected.provider]} · {transcript ? usageLine(transcript.usage) : 'Loading…'}</p>
+            <p style={styles.meta} data-testid="history-usage">{PROVIDER_LABEL[selected.provider]} · {transcript ? usageLine(transcript.usage) : 'Loading…'}
+              {transcript && lastTurnLabel(transcript.turns, modifiedMs, now) && <span data-testid="history-last-turn"> · {lastTurnLabel(transcript.turns, modifiedMs, now)}</span>}
+              {running && <span data-testid="history-running" style={styles.running}><span className="bs-pulse-dot" style={styles.runningDot} aria-hidden />running</span>}</p>
           </div>
           <div style={styles.actions}>
             <button style={styles.quiet} onClick={() => jump('start')}>Top</button>
             <button style={styles.quiet} onClick={() => jump('end')}>Latest</button>
-            <button style={sessionRunning ? { ...styles.primary, ...styles.off } : styles.primary} disabled={sessionRunning} title={sessionRunning ? 'End the running session first (Session view)' : 'Starts the CLI and resumes this conversation'} onClick={() => onResume(selected)}>Resume in Session</button>
+            {sessionRunning
+              ? <>
+                <button style={styles.primary} title="Show the Session view that is already running" onClick={onGoToSession}>Go to running session</button>
+                {selected.provider !== 'qwen' && <button style={styles.quiet} title="Opens a terminal split in this session’s folder and resumes this conversation there" onClick={() => onResumeInPane(selected)}>Resume in a new pane</button>}
+              </>
+              : <button style={styles.primary} title="Starts the CLI and resumes this conversation" onClick={() => onResume(selected)}>Resume in Session</button>}
           </div>
         </header>
-        <input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search this conversation" aria-label="Search this conversation" style={styles.search} />
-        {error && <p role="alert" style={{ ...styles.meta, color: 'var(--bs-red)' }}>{error}</p>}
+        <ConversationSearch query={query} onQuery={setQuery} count={find.count} index={find.index} onNext={find.next} onPrev={find.prev} onlyMatching={onlyMatching} onOnlyMatching={setOnlyMatching} inputStyle={styles.search} type="text" />
+        {(error || readError) && <p role="alert" style={{ ...styles.meta, color: 'var(--bs-red)' }}>{error ?? readError}</p>}
+        <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {behind > 0 && <button style={styles.pill} data-testid="history-new-turns" onClick={() => jump('end')}>New turns ↓{behind > 1 ? ` (${behind})` : ''}</button>}
         <div ref={scroller} onScroll={onScroll} style={styles.scroll} data-testid="history-scroll">
           {transcript?.truncated && <p style={styles.note}>This session is large; the most recent part is shown.</p>}
           {folded > 0 && <button style={styles.quiet} onClick={() => setShowAll(true)}>Show {folded} earlier turn{folded === 1 ? '' : 's'}</button>}
-          {transcript && visible.length === 0 && <p style={styles.meta}>{query ? 'No turn matches that search.' : 'Nothing readable in this session yet.'}</p>}
-          {shown.map((turn, index) => <TurnView key={`${turn.at ?? ''}:${index}:${turn.role}`} turn={turn} pinned={pinned === index} onPin={() => pin(turn, index)} agentLabel={selected.provider === 'claude' ? 'Claude' : selected.provider === 'qwen' ? 'Qwen' : 'Codex'} onOpenFile={file => { void openInEditor({ path: file }, { cwd: project.path }) }} />)}
+          {transcript && (visible.length === 0 || (query && find.count === 0)) && <p style={styles.meta}>{query ? 'No turn matches that search.' : 'Nothing readable in this session yet.'}</p>}
+          {shown.map((turn, index) => <TurnView key={`${turn.at ?? ''}:${index}:${turn.role}`} turn={turn} pinned={pinned === index} onPin={() => pin(turn, index)} agentLabel={selected.provider === 'claude' ? 'Claude' : selected.provider === 'qwen' ? 'Qwen' : 'Codex'} highlight={find.words} onFork={canFork(selected.provider) ? () => { forkSession({ cwd: project.path, provider: selected.provider, sessionId: selected.id, showTerminal: true }) } : undefined} onOpenFile={file => { void openInEditor({ path: file }, { cwd: project.path }) }} />)}
+        </div>
         </div>
       </>}
     </section>
@@ -178,6 +206,9 @@ function MeterCard() {
   }, [])
   if (!meter) return null
   const peak = Math.max(1, ...meter.claudeDays.map(day => day.output))
+  // Older backends have no Codex days; a week with no Codex use is not worth a line.
+  const codexDays = (meter.codexDays ?? []).some(day => day.output > 0) ? meter.codexDays! : []
+  const codexPeak = Math.max(1, ...codexDays.map(day => day.output))
   const windows = [meter.codex?.primary, meter.codex?.secondary].filter((w): w is LimitWindow => Boolean(w))
   return <section style={styles.meter} aria-label="Usage" data-testid="history-meter">
     <p style={styles.role}>Usage</p>
@@ -197,6 +228,12 @@ function MeterCard() {
     <div style={styles.bars} aria-hidden>
       {meter.claudeDays.map(day => <div key={day.day} title={`${day.day}: ${formatTokens(day.output)} out`} style={{ ...styles.bar, height: `${Math.max(2, (day.output / peak) * 100)}%` }} />)}
     </div>
+    {codexDays.length > 0 && <>
+      <div style={{ ...styles.meterRow, marginTop: 8 }} data-testid="meter-codex-days"><span>Codex output, 7 days</span><span>{formatTokens(codexDays.reduce((sum, day) => sum + day.output, 0))}</span></div>
+      <div style={styles.bars} aria-hidden>
+        {codexDays.map(day => <div key={day.day} title={`${day.day}: ${formatTokens(day.output)} out`} style={{ ...styles.bar, height: `${Math.max(2, (day.output / codexPeak) * 100)}%` }} />)}
+      </div>
+    </>}
     {meter.incomplete && <p style={styles.meta}>Some large sessions were only partly read, so totals may be low.</p>}
   </section>
 }
@@ -223,12 +260,15 @@ const styles: Record<string, React.CSSProperties> = {
   meta: { margin: '2px 0 0', fontSize: 12, color: 'var(--bs-fg-muted)' },
   note: { margin: 0, fontSize: 12, color: 'var(--bs-fg-muted)' },
   actions: { display: 'flex', gap: 8, flexShrink: 0 },
+  running: { marginLeft: 8, display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--bs-green)' },
+  runningDot: { width: 7, height: 7, borderRadius: '50%', background: 'var(--bs-green)', display: 'inline-block' },
+  pill: { position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 2, padding: '5px 12px', borderRadius: 999, border: 'none', background: 'var(--bs-blue)', color: '#fff', fontWeight: 600, fontSize: 12, cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.3)' },
   off: { opacity: 0.45, cursor: 'not-allowed' },
   primary: { padding: '7px 12px', borderRadius: 8, border: 'none', background: 'var(--bs-orange)', color: '#fff', fontWeight: 600, cursor: 'pointer' },
   quiet: { padding: '6px 10px', borderRadius: 8, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg)', cursor: 'pointer', alignSelf: 'flex-start' },
   link: { marginLeft: 'auto', border: 'none', background: 'transparent', color: 'var(--bs-fg-muted)', cursor: 'pointer', fontSize: 12 },
   search: { padding: '7px 10px', borderRadius: 8, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', color: 'var(--bs-fg)', font: 'inherit' },
-  scroll: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 10px 12px 2px' },
+  scroll: { flex: 1, minHeight: 0, height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 10px 12px 2px' },
   empty: { flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8, padding: 32, border: '1px dashed var(--bs-border)', borderRadius: 10 },
   emptyTitle: { margin: 0, fontSize: 22, fontWeight: 600 },
   turn: { padding: '10px 12px', borderRadius: 10, border: '1px solid var(--bs-border)', background: 'var(--bs-bg)', fontSize: 13, lineHeight: 1.55, flexShrink: 0 },

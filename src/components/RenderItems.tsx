@@ -23,6 +23,7 @@ import { diffLines } from 'diff';
 
 import type { RenderItem, ToolResultBlock, ToolUseBlock } from '../lib/renderItems';
 import { resultToText } from '../lib/renderItems';
+import { rehypeMark } from '../lib/find';
 
 // RV3.7 (Code-dz5) — R8 §5/§8 mandated defense-in-depth sanitization. The
 // default react-markdown@10 pipeline renders no raw HTML, but that is an
@@ -73,10 +74,12 @@ function inputSummary(input: unknown): string {
   }
 }
 
-export function MarkdownText({ text }: { text: string }) {
+export function MarkdownText({ text, highlight }: { text: string; highlight?: string[] }) {
+  // The mark plugin runs after the sanitizer and only wraps text nodes.
+  const plugins = useMemo<PluggableList>(() => highlight?.length ? [...REHYPE_PLUGINS, rehypeMark(highlight)] : REHYPE_PLUGINS, [highlight])
   return (
     <div className="bs-md">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={plugins}>{text}</ReactMarkdown>
     </div>
   );
 }

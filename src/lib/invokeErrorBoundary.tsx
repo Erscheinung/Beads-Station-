@@ -34,6 +34,8 @@ export interface InvokeToast {
   timestamp: string
   /** RV3.1 — how many identical messages coalesced into this toast. */
   count: number
+  /** Optional one-click follow-up (a notice, not an error). */
+  action?: { label: string; run: () => void }
 }
 
 let counter = 0
@@ -112,6 +114,16 @@ export function pushInvokeToast(message: string, detail: string): number {
     toasts = toasts.slice(toasts.length - MAX_TOASTS)
   }
   emit()
+  return id
+}
+
+/** A plain notice with an optional action button (for example "Handoff saved"). */
+export function pushNoticeToast(message: string, action?: { label: string; run: () => void }): number {
+  const id = pushInvokeToast(message, message)
+  if (action) {
+    toasts = toasts.map(t => (t.id === id ? { ...t, action } : t))
+    emit()
+  }
   return id
 }
 
@@ -198,6 +210,9 @@ function ToastCard({ toast }: { toast: InvokeToast }) {
       </div>
       <div className="bs-invoke-toast-foot">
         <span className="bs-invoke-toast-ts">{toast.timestamp}</span>
+        {toast.action && (
+          <button className="bs-invoke-toast-copy" type="button" data-testid="toast-action" onClick={() => { toast.action?.run(); dismissToast(toast.id) }}>{toast.action.label}</button>
+        )}
         <button
           className="bs-invoke-toast-copy"
           onClick={() => copyDetail(toast.detail)}

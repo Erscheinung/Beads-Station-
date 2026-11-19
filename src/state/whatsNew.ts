@@ -7,6 +7,16 @@ import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
 export const LAST_SEEN_VERSION_KEY = 'beads-station.last-seen-version'
 
 export const RELEASE_HIGHLIGHTS: Record<string, readonly string[]> = {
+  '0.2.2': [
+    'A live usage chip and status-bar limits for Claude, Codex and Gemini. For a hand-typed claude, press Add in Settings → Sessions again to enable the status line.',
+    'At 95% of a context window the app saves an offline handoff note (opens in Pinned) and keeps a prompt journal. Nothing is sent to a model.',
+    'Optional notification sounds for waiting, responded and subagent events (Settings → Notifications).',
+    'Cmd+F finds in a pane, Cmd Shift F searches every pane in the workspace, and matches are highlighted in restored panes and History.',
+    'Bring in a terminal…: adopt a Claude, Codex or Gemini session started outside the app, attach to a tmux session, or drop a folder.',
+    'Eight new themes, Match system appearance, and toggle-theme cycling in order or shuffled. Commands you type get their own colour.',
+    'Restored chat panes read as conversations with Continue and Start new session. History can go to a running session, show a New turns pill and Fork here.',
+    'Fixes: Gemini scrolling, the saved screen, path decoding, ~ paths, dictation, paste fallback, a tab overflow menu and a hint when a folder has no Beads database.',
+  ],
   '0.2.1': [
     'A pane that ran Claude or Codex before a restart now shows that conversation: searchable, with a message box. Enter reopens the CLI on exactly that conversation, and typed text is sent as the first message.',
     'One top bar for Terminal and Designer, with Claude, Codex and Gemini launchers that use the commands set in Settings → Sessions.',

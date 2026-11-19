@@ -1,9 +1,9 @@
 [package]
 name = "beads-station"
-version = "0.2.1"
+version = "0.2.2"
+license = "MIT"
 description = "Beads Station — Phase 1 Tauri shell"
 authors = ["beads-station"]
-license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

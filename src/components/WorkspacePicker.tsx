@@ -7,6 +7,7 @@ import {
   useProjects, cloneRepository } from '../state/projects'
 import { setSkin, useSkin } from '../state/skin'
 import './WorkspacePicker.css'
+import { abbreviatePath } from '../lib/abbreviatePath'
 
 /** A path-shaped entry is always an explicit open request, never a project query. */
 export function isExplicitFolderPath(value: string): boolean {
@@ -74,7 +75,7 @@ function projectActionLabel(project: Project): string {
   // Include the canonical path in the accessible name even for unique names:
   // it makes the action unambiguous in VoiceOver and in automation, while the
   // visible row remains compact.
-  return `Open ${project.name} — ${project.path}`
+  return `Open ${project.name} — ${abbreviatePath(project.path)}`
 }
 
 /** Shared first-run and open-workspace flow; discovery never starts processes. */
@@ -287,7 +288,7 @@ export function WorkspacePicker({ onClose }: { onClose?: () => void }) {
               onClick={() => openProject(project)}
             >
               <span className={`codicon codicon-${project.hasGit ? 'repo' : 'folder'}`} aria-hidden />
-              <span className="workspace-picker__project-text"><strong>{project.name}</strong><small>{project.path}</small></span>
+              <span className="workspace-picker__project-text"><strong>{project.name}</strong><small title={abbreviatePath(project.path)}>{abbreviatePath(project.path)}</small></span>
               {openIds.includes(project.id) && <span className="workspace-picker__open">Open</span>}
               <span className="codicon codicon-chevron-right" aria-hidden />
             </button>)}

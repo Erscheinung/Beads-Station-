@@ -1,7 +1,11 @@
 import { useSyncExternalStore } from 'react'
 import { persistDurableUserConfigKey } from '../lib/durableUserConfig'
+import { getActivePalette } from './theme'
 const KEY = 'beads-station.terminal-appearance'
 export const TERMINAL_FONTS = ['JetBrains Mono', 'Menlo', 'Monaco', 'monospace']
+/** Typed shell commands: the theme's own colour, a custom hex, or left alone. */
+export type CmdColorMode = 'theme' | 'custom' | 'off'
+export const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
 export interface TerminalAppearance {
   fontFamily: string
   fontSize: number
@@ -13,12 +17,16 @@ export interface TerminalAppearance {
   macEditingKeys: boolean
   /** Finishing a mouse selection in a terminal copies it, as in iTerm and Ghostty. */
   copyOnSelect: boolean
+  /** Colour of the command you type at the prompt, to tell it from output. Applies to new shells. */
+  cmdColorMode: CmdColorMode
+  cmdColorCustom: string
 }
 export const DEFAULT_TERMINAL_APPEARANCE: TerminalAppearance = {
   fontFamily: 'JetBrains Mono', fontSize: 13, lineHeight: 1.2,
   cursorStyle: 'block', cursorBlink: true, scrollback: 3000,
   macEditingKeys: true,
   copyOnSelect: true,
+  cmdColorMode: 'theme', cmdColorCustom: '#fd9f4d',
 }
 function validated(next: Partial<TerminalAppearance>, base: TerminalAppearance): TerminalAppearance {
   const result = { ...base }
@@ -30,6 +38,8 @@ function validated(next: Partial<TerminalAppearance>, base: TerminalAppearance):
   if (typeof next.scrollback === 'number' && Number.isInteger(next.scrollback) && next.scrollback >= 100 && next.scrollback <= 50000) result.scrollback = next.scrollback
   if (typeof next.macEditingKeys === 'boolean') result.macEditingKeys = next.macEditingKeys
   if (typeof next.copyOnSelect === 'boolean') result.copyOnSelect = next.copyOnSelect
+  if (['theme', 'custom', 'off'].includes(next.cmdColorMode!)) result.cmdColorMode = next.cmdColorMode!
+  if (typeof next.cmdColorCustom === 'string' && HEX_COLOR.test(next.cmdColorCustom)) result.cmdColorCustom = next.cmdColorCustom.toLowerCase()
   return result
 }
 let state = { ...DEFAULT_TERMINAL_APPEARANCE }
@@ -56,3 +66,13 @@ export function stepTerminalFontSize(delta: 1 | -1 | null) {
   if (fontSize !== state.fontSize) setTerminalAppearance({ fontSize })
 }
 export function resetTerminalAppearance() { setTerminalAppearance(DEFAULT_TERMINAL_APPEARANCE) }
+
+/**
+ * The `#rrggbb` a new shell should colour typed commands with, or null for off.
+ * "Theme default" is the active theme's own command colour (orange for Fahrenheit).
+ */
+export function resolveCmdColor(appearance: TerminalAppearance = state, themeDefault: string | undefined = getActivePalette()?.cmdColor): string | null {
+  if (appearance.cmdColorMode === 'off') return null
+  const hex = appearance.cmdColorMode === 'custom' ? appearance.cmdColorCustom : themeDefault
+  return hex && HEX_COLOR.test(hex) ? hex.toLowerCase() : null
+}

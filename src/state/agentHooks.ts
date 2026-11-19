@@ -87,4 +87,16 @@ export function agentResumeCommand(cli: AgentCli, sessionId?: string | null, ses
   return `${agentLaunchCommand('codex')} resume ${exact ?? '--last'} ${CODEX_SIGNALS}${message}`
 }
 
+/**
+ * Command line that forks a conversation into a new session. Both CLIs fork the
+ * whole session (Claude has no fork-at-message); the original stays untouched.
+ * Null without an exact, valid session id: a fork of "the latest" would be a guess.
+ * Uses the user's own launch command (Settings → Sessions), like resume.
+ */
+export function agentForkCommand(cli: AgentCli, sessionId: string | null | undefined, sessionSettings = state.sessionSettings): string | null {
+  if (!isAgentSessionId(sessionId)) return null
+  if (cli === 'claude') return `${claudeBase(sessionSettings)} --resume ${sessionId} --fork-session`
+  return `${agentLaunchCommand('codex')} fork ${sessionId} ${CODEX_SIGNALS}`
+}
+
 export function __setAgentHooksForTest(next: Partial<AgentHooksState>) { set(next) }

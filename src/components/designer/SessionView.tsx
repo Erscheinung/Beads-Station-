@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { Terminal } from '../Terminal'
+import { SessionUsageChip } from '../SessionUsageChip'
 import { disposeTerminalSession, hasTerminalSession, pasteIntoTerminalSession, runInTerminalSession } from '../../lib/terminalSessions'
 import { agentStartCommand } from '../../state/agentHooks'
 import { openInEditor } from '../../lib/openInEditor'
@@ -170,6 +171,8 @@ export function SessionView({ project, issue, onClearIssue }: {
           <div style={styles.terminalFill}>
             <Terminal paneId={paneId} cwd={project.path} onSpawn={onSpawn} focused insert viewEpoch={paneId} />
           </div>
+          {/* Same live usage as a Terminal pane: the session learns its agent and id by itself. */}
+          <SessionUsageChip paneId={paneId} />
         </div>
         : <div style={styles.empty}>
           <p style={styles.emptyTitle}>What are we making?</p>

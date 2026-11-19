@@ -108,7 +108,7 @@ export function turnProse(turn: TranscriptTurn): string {
 export interface LimitWindow { usedPercent: number; windowMinutes: number; resetsAt: number }
 export interface CodexLimits { plan: string | null; primary: LimitWindow | null; secondary: LimitWindow | null; observedAt: string | null }
 export interface DayUsage { day: string; input: number; output: number; cacheRead: number; cacheCreate: number }
-export interface Meter { codex: CodexLimits | null; claudeDays: DayUsage[]; incomplete: boolean }
+export interface Meter { codex: CodexLimits | null; claudeDays: DayUsage[]; codexDays?: DayUsage[]; incomplete: boolean }
 
 export function readMeter(): Promise<Meter> {
   return invoke<Meter>('meter_summary')

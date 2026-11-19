@@ -16,6 +16,7 @@ import { openInEditor } from '../../lib/openInEditor'
 import { useSessionPreferences } from '../../state/sessionPreferences'
 import { designerSessionPaneId } from './SessionView'
 import { relativeTime } from './transcripts'
+import { abbreviatePathsIn } from '../../lib/abbreviatePath'
 import { openDesignerView } from '../../state/designerNav'
 
 const KIND_LABEL: Record<ShelfItem['kind'], string> = { note: 'Text', file: 'File', markdown: 'Note', folder: 'Folder', link: 'Link' }
@@ -97,7 +98,7 @@ export function ShelfView({ project }: { project: { id: string; name: string; pa
     try { await navigator.clipboard.writeText(await payload()); setMessage('Copied.') } catch { setMessage('Could not copy.') }
   }
 
-  return <div ref={root} style={styles.root} data-testid="designer-shelf" onDragOver={event => event.preventDefault()} onDrop={onDomDrop}>
+  return <div ref={root} style={styles.root} data-testid="designer-shelf" data-file-drop-own onDragOver={event => event.preventDefault()} onDrop={onDomDrop}>
     <header>
       <h2 style={styles.title}>Pinned</h2>
       <p style={styles.meta}>Keep the things you reuse in prompts for {project.name}: a paragraph, a file, a folder, a link or a note. Drop a file, folder or link anywhere on this page to pin it: only its location is kept. Double-click an item to open it. One click types them into a running agent’s prompt. It never presses Enter, so you can still edit before sending.</p>
@@ -123,7 +124,7 @@ export function ShelfView({ project }: { project: { id: string; name: string; pa
           {items.map(item => <li key={item.id} style={styles.item} onDoubleClick={() => void open(item)} title={openAction(item) === 'none' ? undefined : 'Double-click to open'}>
             <input type="checkbox" checked={!skipped.has(item.id)} onChange={() => toggle(item.id)} aria-label={`Include ${item.label}`} />
             <span style={styles.kind}>{KIND_LABEL[item.kind]}</span>
-            <span style={styles.label} title={item.value}>{item.label}</span>
+            <span style={styles.label} title={abbreviatePathsIn(item.value)}>{item.label}</span>
             <span style={styles.meta}>{item.source ? `${item.source} · ` : ''}{relativeTime(item.addedAt)}</span>
             <button style={styles.link} onClick={() => removeShelfItem(project.id, item.id)} aria-label={`Remove ${item.label}`}>Remove</button>
           </li>)}

@@ -13,6 +13,7 @@ import { getClaudeStatus, subscribeClaudeStatus, type ClaudeStatus } from './cla
 import { getSkin, setSkin, subscribeSkin } from './skin'
 import { setFocused } from './vim'
 import { sendSystemNotification } from '../lib/systemNotifications'
+import { classifySoundEvent, requestSound } from '../lib/sounds'
 
 export type PaneNotificationSource = 'bell' | 'osc' | 'quiet' | 'agent'
 
@@ -66,9 +67,14 @@ function isAttended(paneId: string): boolean {
 
 export function notifyPane(paneId: string, source: PaneNotificationSource, message = ''): void {
   const preferences = getNotificationPreferences()
-  if (!preferences.enabled) return
   if (source === 'quiet' && !preferences.notifyOnQuiet) return
-  if (!locatePane(paneId) || isAttended(paneId)) return
+  if (!locatePane(paneId)) return
+  // Sounds have their own switches and their own "am I looking" rule; they do
+  // not depend on the ring being enabled.
+  const soundEvent = classifySoundEvent(source, message)
+  requestSound(paneId, soundEvent, isAttended(paneId))
+  // A subagent finishing is only worth a sound, not a ring on the pane.
+  if (soundEvent === 'subagent' || !preferences.enabled || isAttended(paneId)) return
   const text = (message.trim() || DEFAULT_MESSAGE[source]).slice(0, MESSAGE_LIMIT)
   const next = new Map(notifications)
   next.set(paneId, { paneId, source, message: text, at: Date.now() })

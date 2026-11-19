@@ -22,6 +22,10 @@ export interface SessionPreferences {
   autoResumeAgents: boolean
   /** An Obsidian vault (any folder of markdown notes) that Pinned lists and renders read-only. Empty: none. */
   obsidianVaultPath: string
+  /** Save a handoff note when an agent's context or 5-hour limit reaches this percent. 0 = off. */
+  handoffThreshold: number
+  /** Keep every prompt submitted in an agent pane in a journal file, so a crash never loses a long one. */
+  journalPrompts: boolean
 }
 
 /** The CLIs the top bar can start. Gemini has no session reading yet. */
@@ -33,7 +37,7 @@ export const LAUNCHERS: readonly { id: LauncherId; label: string }[] = [
 ]
 
 const STORAGE_KEY = 'beads-station.session-preferences'
-const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false, chatSurface: 'terminal', claudeCommand: 'claude', codexCommand: 'codex', geminiCommand: 'gemini', editorCommand: 'nvim', autoResumeAgents: false, obsidianVaultPath: '' }
+const DEFAULTS: SessionPreferences = { askBeforeResume: true, restoreContextOnLaunch: true, confirmDestructiveActions: true, keepTerminalsRunning: false, chatSurface: 'terminal', claudeCommand: 'claude', codexCommand: 'codex', geminiCommand: 'gemini', editorCommand: 'nvim', autoResumeAgents: false, obsidianVaultPath: '', handoffThreshold: 95, journalPrompts: true }
 
 function load(): SessionPreferences {
   try {
@@ -50,6 +54,8 @@ function load(): SessionPreferences {
       editorCommand: typeof parsed.editorCommand === 'string' ? parsed.editorCommand : DEFAULTS.editorCommand,
       autoResumeAgents: parsed.autoResumeAgents === true,
       obsidianVaultPath: typeof parsed.obsidianVaultPath === 'string' ? parsed.obsidianVaultPath : DEFAULTS.obsidianVaultPath,
+      handoffThreshold: typeof parsed.handoffThreshold === 'number' && Number.isFinite(parsed.handoffThreshold) ? Math.min(100, Math.max(0, Math.round(parsed.handoffThreshold))) : DEFAULTS.handoffThreshold,
+      journalPrompts: parsed.journalPrompts !== false,
     }
   } catch {
     return { ...DEFAULTS }
@@ -100,6 +106,20 @@ export function editorCommand(): string {
 /** Synchronous read used when a restored agent pane is shown. */
 export function shouldAutoResumeAgents(): boolean {
   return state.autoResumeAgents
+}
+
+/** Percent at which a handoff note is saved; 0 means never. */
+export function handoffThreshold(): number {
+  return state.handoffThreshold
+}
+
+export function shouldJournalPrompts(): boolean {
+  return state.journalPrompts
+}
+
+/** The Obsidian vault folder, or empty. */
+export function obsidianVaultPath(): string {
+  return state.obsidianVaultPath.trim()
 }
 
 /** Synchronous read used when a pane's shell is about to start. */

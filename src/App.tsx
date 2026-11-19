@@ -23,6 +23,7 @@ import { usePermissionMode, PermissionModePicker } from './state/claudeSettings'
 import { BdLiveProvider } from './lib/BdLiveProvider'
 import { openSettings } from './state/settings'
 import { openNotificationPanel } from './state/notificationPanel'
+import { startHandoffWatcher } from './lib/handoffRunner'
 import { clearPaneNotification, usePaneNotifications } from './state/paneNotifications'
 import { startPointerDrag } from './lib/pointerDrag'
 import { useCommandBindings, shortcutLabel } from './state/commands'
@@ -271,6 +272,8 @@ export default function App() {
 
   const appUpdate = useAppUpdate()
   useEffect(() => { checkForUpdatesOnLaunch() }, [])
+  // Offline handoff note when an agent's context or 5-hour limit nears its end (Code-7xc.2).
+  useEffect(() => startHandoffWatcher(), [])
 
   // Sidebar collapse toggle (leader-b, dispatched by the vim keymap) + width
   // persistence. Drag-resize is handled inline on the divider (startResize).

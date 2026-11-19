@@ -68,34 +68,77 @@ describe('TerminalPanes tab accessibility', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith('pty_spawn', expect.anything())
   })
 
-  it('renders restored provider context without mounting a provider adapter', () => {
+  const restoredChat = (projectId: string, tabId: string, paneId: string) => {
     restoreProjects(JSON.stringify({
       v: 2,
       projects: {
-        'restore-no-turn': {
+        [projectId]: {
           tabs: [{
-            id: 'tab900',
-            activePaneId: 'pane901',
+            id: tabId,
+            activePaneId: paneId,
             root: {
-              kind: 'leaf', paneId: 'pane901', ptyId: 88, cwd: '/tmp/restore',
-              agent: { bridgeId: 'agent902', projectId: 'restore-no-turn', sessionId: 'allocation', provider: 'claude', configurationId: 'native:claude:plan', permissionMode: 'plan' },
+              kind: 'leaf', paneId, ptyId: 88, cwd: '/tmp/restore',
+              agent: { bridgeId: `agent-${paneId}`, projectId, sessionId: 'allocation', provider: 'claude', configurationId: 'native:claude:plan', permissionMode: 'plan' },
             },
           }],
-          activeTabId: 'tab900',
+          activeTabId: tabId,
           insert: true,
         },
       },
     }))
-    setActiveProject('restore-no-turn', '/tmp/restore')
-    localStorage.setItem('bs.claude.session:agent902', 'stale-provider-id')
+    setActiveProject(projectId, '/tmp/restore')
+  }
+  const started = () => mocks.invoke.mock.calls.some(([command]) => command === 'claude_start' || command === 'codex_chat_start' || command === 'codex_chat_send')
+
+  it('shows a restored chat pane as its conversation and starts nothing until Continue', async () => {
+    const SESSION = '2c975569-13c1-43b2-8e7a-f88d6138d7d8'
+    mocks.invoke.mockImplementation(async (command: string) => command === 'transcript_read'
+      ? { id: SESSION, provider: 'claude', truncated: false, usage: null, turns: [
+        { role: 'user', at: null, blocks: [{ kind: 'text', text: 'Fix the header spacing' }], files: [], thinking: 0 },
+        { role: 'assistant', at: null, blocks: [{ kind: 'text', text: 'Tightened the padding.' }], files: [], thinking: 0 },
+      ] }
+      : null)
+    restoredChat('restore-chat', 'tab900', 'pane901')
+    localStorage.setItem('bs.claude.session:agent-pane901', SESSION)
 
     render(<TerminalPanes termFocused />)
 
-    expect(screen.getByText('Saved Claude session')).toBeInTheDocument()
-    expect(screen.getByText(/stale-provider-id/)).toBeInTheDocument()
-    expect(screen.getByText(/No live process is attached and no model turn was started/)).toBeInTheDocument()
+    expect(await screen.findByText('Fix the header spacing')).toBeInTheDocument()
+    expect(screen.getByText('Tightened the padding.')).toBeInTheDocument()
+    expect(mocks.invoke).toHaveBeenCalledWith('transcript_read', expect.objectContaining({ provider: 'claude', sessionId: SESSION }))
     expect(mocks.ClaudeChat).not.toHaveBeenCalled()
-    expect(mocks.invoke.mock.calls.some(([command]) => command === 'claude_start' || command === 'codex_chat_start' || command === 'codex_chat_send')).toBe(false)
+    expect(started()).toBe(false)
+    // The old grey card and its extra button are gone: one primary, one secondary.
+    expect(screen.queryByText('Saved Claude session')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Resume session' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Start new session' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    await waitFor(() => expect(mocks.ClaudeChat).toHaveBeenCalled())
+    expect(localStorage.getItem('bs.claude.session:agent-pane901')).toBe(SESSION)
+  })
+
+  it('Start new session forgets the observed conversation and mounts a fresh chat', async () => {
+    mocks.invoke.mockImplementation(async () => null)
+    restoredChat('restore-chat-new', 'tab902', 'pane903')
+    localStorage.setItem('bs.claude.session:agent-pane903', '2c975569-13c1-43b2-8e7a-f88d6138d7d8')
+    render(<TerminalPanes termFocused />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start new session' }))
+    await waitFor(() => expect(mocks.ClaudeChat).toHaveBeenCalled())
+    expect(localStorage.getItem('bs.claude.session:agent-pane903')).toBeNull()
+  })
+
+  it('without an observed session id keeps a plain card that says what to do, and starts nothing', () => {
+    restoredChat('restore-no-turn', 'tab905', 'pane906')
+
+    render(<TerminalPanes termFocused />)
+
+    expect(screen.getByText('Saved Claude chat')).toBeInTheDocument()
+    expect(screen.getByText(/never recorded which conversation it was/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
+    expect(mocks.ClaudeChat).not.toHaveBeenCalled()
+    expect(started()).toBe(false)
+    expect(mocks.invoke).not.toHaveBeenCalledWith('transcript_read', expect.anything())
   })
 
   it('restarts a plain restored shell, and resumes an agent CLI only when asked', () => {

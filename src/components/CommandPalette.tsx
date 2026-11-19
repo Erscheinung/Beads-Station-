@@ -12,7 +12,9 @@ import { toggleTheme, setThemePalette, useThemePaletteId, BUNDLED_THEMES } from 
 import { setSkin, toggleSkin } from '../state/skin'
 import { setBeadsView, setUiPreferences, type BeadsView } from '../state/uiPreferences'
 import { closeFocusedPane } from './TerminalPanes'
+import { runFindCommand } from '../state/find'
 import { toggleNotificationPanel } from '../state/notificationPanel'
+import { openPromptJournal, saveHandoffNow } from '../lib/handoffRunner'
 import { stepTerminalFontSize } from '../state/terminalAppearance'
 import { spawnBrowser, newTab, unsplitToTabs, toggleZoom, resizePane, cycleTab, switchTab, moveActiveTab, typeIntoActiveShell, joinTabs, restoreSplit } from '../state/termPanes'
 import { startLauncher } from './TopBar'
@@ -25,6 +27,7 @@ import { setFocused } from '../state/vim'
 import { dispatchSemanticCommand } from '../state/recipeIntegration'
 import { clearAllPaneNotifications, jumpToLatestPaneNotification } from '../state/paneNotifications'
 import { checkForUpdates } from '../state/appUpdate'
+import { adoptExternalAgent, agentsInFolder, EXTERNAL_PICKER_EVENT, externalAgentLabel, listExternalAgents, openExternalPicker, OUTSIDE_WINDOW_HINT, type ExternalAgent } from '../lib/externalAgents'
 import './CommandPalette.css'
 
 // Phase 9 (Code-ky4.9) — cmdk command palette. Opens on Cmd/Ctrl+K or leader-k
@@ -38,7 +41,7 @@ import './CommandPalette.css'
 // in the primary shell only (not the ?ui=designer skin) and needs the active
 // repo, so App mounts it inside the shell where `active` is known.
 
-type View = 'root' | 'projects' | 'ready' | 'grep' | 'newIssue' | 'themes' | 'layout'
+type View = 'root' | 'projects' | 'ready' | 'grep' | 'newIssue' | 'themes' | 'layout' | 'external'
 
 export function CommandPalette({ repoPath }: { repoPath: string }) {
   const { open } = usePalette()
@@ -64,6 +67,22 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       .catch(() => undefined)
     return () => { cancelled = true }
   }, [open, repoPath])
+
+  // Agents running in terminals outside the app: read when the picker opens
+  // (a process listing; nothing is started or stopped by looking).
+  const [outside, setOutside] = useState<{ agents: ExternalAgent[] | null; folder: string | null }>({ agents: null, folder: null })
+  useEffect(() => {
+    const show = (event: Event) => {
+      const folder = (event as CustomEvent<{ folder: string | null }>).detail?.folder ?? null
+      setOutside({ agents: null, folder })
+      updateView('external'); setSearch(''); openPalette()
+      listExternalAgents()
+        .then(list => setOutside({ agents: Array.isArray(list) ? list : [], folder }))
+        .catch(() => setOutside({ agents: [], folder }))
+    }
+    window.addEventListener(EXTERNAL_PICKER_EVENT, show)
+    return () => window.removeEventListener(EXTERNAL_PICKER_EVENT, show)
+  }, [])
 
   // Reset the sub-view + inputs whenever the dialog opens or closes so it never
   // reopens mid-flow.
@@ -141,6 +160,7 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
     if (['projects', 'newIssue', 'ready', 'grep', 'themes', 'layout'].includes(id)) {
       setView(id as View); openPalette(); return
     }
+    if (id === 'bringInTerminal') { openExternalPicker(); return }
     dismiss()
     if (id === 'initializeBeads') {
       void initializeBeads(repoPath).catch(() => {})
@@ -220,8 +240,12 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
       case 'terminalFontLarger': stepTerminalFontSize(1); break
       case 'terminalFontSmaller': stepTerminalFontSize(-1); break
       case 'terminalFontReset': stepTerminalFontSize(null); break
+      case 'saveHandoff': saveHandoffNow(); break
+      case 'openPromptJournal': void openPromptJournal(); break
       case 'notificationJump': jumpToLatestPaneNotification(); break
       case 'notificationPanel': toggleNotificationPanel(); break
+      case 'findInPane': runFindCommand('pane'); break
+      case 'findInWorkspace': runFindCommand('workspace'); break
       case 'notificationsClear': clearAllPaneNotifications(); break
       case 'checkForUpdates': openSettings(); window.dispatchEvent(new Event('settings:show-about')); void checkForUpdates(); break
       case 'agent': onAction('agent:spawn'); break
@@ -317,6 +341,21 @@ export function CommandPalette({ repoPath }: { repoPath: string }) {
                     <span>{item.title || 'Untitled conversation'}</span><kbd>{item.provider} · {relativeTime(item.modifiedMs)}</kbd>
                   </Command.Item>
                 ))}
+              </Command.Group>
+            )}
+
+            {view === 'external' && (
+              <Command.Group heading={outside.folder ? `Terminals running in ${abbreviatePath(outside.folder)}` : 'Bring in a terminal'}>
+                {outside.agents === null && <Command.Item disabled>Looking for agents outside Beads Station…</Command.Item>}
+                {outside.agents !== null && (outside.folder ? agentsInFolder(outside.agents, outside.folder) : outside.agents).length === 0 && (
+                  <Command.Item disabled>No Claude, Codex or Gemini running outside Beads Station.</Command.Item>
+                )}
+                {outside.agents !== null && (outside.folder ? agentsInFolder(outside.agents, outside.folder) : outside.agents).map(agent => (
+                  <Command.Item key={agent.pid} value={`${externalAgentLabel(agent)} ${agent.pid}`} onSelect={() => { dismiss(); adoptExternalAgent(agent) }}>
+                    <span>{externalAgentLabel(agent)}</span><kbd>{agent.tmuxSession ? 'attach' : 'continue here'}</kbd>
+                  </Command.Item>
+                ))}
+                {outside.agents !== null && <Command.Item disabled>{OUTSIDE_WINDOW_HINT}</Command.Item>}
               </Command.Group>
             )}
 

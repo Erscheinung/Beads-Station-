@@ -1,4 +1,4 @@
-import { test, expect } from './helpers'
+import { test, expect, emit, seedConfirmed } from './helpers'
 
 // Generates the README and release screenshots from a neutral sample project.
 // Off by default: run with BS_SHOTS=docs/images/releases/vX.Y.Z npx playwright test readme-shots.
@@ -181,3 +181,27 @@ for (const [view, file] of [['Agents', 'designer-agents'], ['Timeline', 'designe
     await page.screenshot({ path: `${out}/${file}.png` })
   })
 }
+
+// v0.2.2: the usage chip with the status bar limits, and the find bar.
+test('capture usage chip and find bar', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.addInitScript(() => localStorage.setItem('beads-station.themePaletteId', 'fahrenheit'))
+  await seedConfirmed(page)
+  await page.goto('/')
+  await expect(page.locator('[data-terminal-phase="running"]')).toHaveCount(1)
+  const calls = await page.evaluate(() => (window as any).__bsInvokeLog.filter((e: any) => e.cmd === 'pty_spawn'))
+  const key = calls[0].args.eventKey
+  const resets = Math.floor(Date.now() / 1000) + 2 * 3600
+  const report = `\u001b]7770;usage;claude;${JSON.stringify({ session_id: '2c975569-13c1-43b2-8e7a-f88d6138d7d8', context_window_size: 200000, five_hour: { used_percentage: 30, resets_at: resets }, used_percentage: 42 })}\u0007`
+  await emit(page, `pty_data:${key}`, { id: 1, data: `build finished\r\nneedle in the first line\r\nplain line\r\nsecond needle here\r\n${report}` })
+  await expect(page.getByTestId('session-usage')).toBeVisible()
+  await page.mouse.move(5, 5)
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/usage-chip.png` })
+  await page.locator('[data-terminal-pane] .xterm-helper-textarea').first().focus()
+  await page.keyboard.press('Meta+f')
+  await page.getByTestId('find-input').fill('needle')
+  await expect(page.getByTestId('find-count')).toHaveText('1 / 2')
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: `${out}/find-bar.png` })
+})

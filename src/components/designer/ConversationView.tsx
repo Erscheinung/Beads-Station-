@@ -3,6 +3,7 @@
 // Shared by Designer History and the saved screen of a restored pane.
 
 import { MarkdownText } from '../RenderItems'
+import { highlightSegments } from '../../lib/find'
 import { turnProse, type TranscriptBlock, type TranscriptTurn } from './transcripts'
 
 type ToolBlock = Extract<TranscriptBlock, { kind: 'tool' }>
@@ -18,6 +19,12 @@ export function groupBlocks(blocks: TranscriptBlock[]): Group[] {
     else groups.push({ kind: 'tools', tools: [block] })
   }
   return groups
+}
+
+/** Text with the search words wrapped in <mark>. Built from text nodes, so nothing in it is read as markup. */
+export function Highlighted({ text, words }: { text: string; words?: string[] }) {
+  if (!words?.length) return <>{text}</>
+  return <>{highlightSegments(text, words).map((segment, index) => segment.match ? <mark key={index} className="bs-find-mark">{segment.text}</mark> : segment.text)}</>
 }
 
 /** A tool result that is a unified diff gets coloured lines; anything else stays plain. */
@@ -36,20 +43,20 @@ export function ResultBody({ text }: { text: string }) {
 }
 
 /** One tool call: a single collapsed line, "Name target", that opens to the result. */
-function ToolLine({ tool }: { tool: ToolBlock }) {
+function ToolLine({ tool, words }: { tool: ToolBlock; words?: string[] }) {
   return <details className="bs-chat-tool" data-testid="tool-group">
-    <summary><span className="bs-chat-tool-name">{tool.name}</span> {tool.summary}</summary>
+    <summary><span className="bs-chat-tool-name">{tool.name}</span> <Highlighted text={tool.summary} words={words} /></summary>
     {tool.result && <ResultBody text={tool.result} />}
   </details>
 }
 
 /** Up to three calls show as their own lines; a longer run folds behind one line like "Ran 7 commands". */
-export function ToolGroup({ tools }: { tools: ToolBlock[] }) {
-  if (tools.length <= 3) return <>{tools.map((tool, index) => <ToolLine key={index} tool={tool} />)}</>
+export function ToolGroup({ tools, words }: { tools: ToolBlock[]; words?: string[] }) {
+  if (tools.length <= 3) return <>{tools.map((tool, index) => <ToolLine key={index} tool={tool} words={words} />)}</>
   const names = [...new Set(tools.map(tool => tool.name))]
   return <details className="bs-chat-tool" data-testid="tool-group">
     <summary><span className="bs-chat-tool-name">{tools.length} tool calls</span> {names.slice(0, 3).join(', ')}{names.length > 3 ? '…' : ''}</summary>
-    <div style={{ paddingLeft: 12 }}>{tools.map((tool, index) => <ToolLine key={index} tool={tool} />)}</div>
+    <div style={{ paddingLeft: 12 }}>{tools.map((tool, index) => <ToolLine key={index} tool={tool} words={words} />)}</div>
   </details>
 }
 
@@ -72,12 +79,16 @@ export function turnTime(at: string | null, now = Date.now()): string | null {
  * are one-line folds, reasoning is a dim line, and file names open in the
  * editor when `onOpenFile` is given.
  */
-export function TurnView({ turn, pinned, onPin, onOpenFile, agentLabel = 'Agent' }: {
+export function TurnView({ turn, pinned, onPin, onFork, onOpenFile, agentLabel = 'Agent', highlight }: {
   turn: TranscriptTurn
   pinned?: boolean
   onPin?: () => void
+  /** Offered on your own prompts: fork the session into a new split. */
+  onFork?: () => void
   onOpenFile?: (path: string) => void
   agentLabel?: string
+  /** Search words to mark in the text. */
+  highlight?: string[]
 }) {
   const prose = turnProse(turn)
   const user = turn.role === 'user'
@@ -85,15 +96,16 @@ export function TurnView({ turn, pinned, onPin, onOpenFile, agentLabel = 'Agent'
   return <article className={`bs-chat-turn ${user ? 'bs-chat-user' : 'bs-chat-assistant'}`} data-role={turn.role} aria-label={user ? 'You' : agentLabel}>
     <span className="bs-chat-gutter" aria-hidden>{user ? '>' : '\u25CF'}</span>
     <div className="bs-chat-body">
-      {(time || (prose && onPin)) && <div className="bs-chat-who">
+      {(time || (prose && onPin) || (user && onFork)) && <div className="bs-chat-who">
         <span>{user ? 'You' : agentLabel}</span>
         {time && <span>{time}</span>}
+        {user && onFork && <button style={{ ...styles.link, marginLeft: prose && onPin ? 8 : 'auto' }} onClick={onFork} aria-label="Fork here" title="Fork the whole session into a new split (the CLIs cannot fork at one message)">Fork here</button>}
         {prose && onPin && <button style={styles.link} onClick={onPin} aria-label="Pin this answer" title="Keep this in Pinned, to type into a prompt later">{pinned ? 'Pinned' : 'Pin'}</button>}
       </div>}
       {turn.thinking > 0 && <div className="bs-chat-thinking">Thinking{turn.thinking > 1 ? ` \u00D7${turn.thinking}` : ''}</div>}
       {groupBlocks(turn.blocks).map((group, index) => group.kind === 'text'
-        ? (user ? <p key={index} style={styles.userText}>{group.text}</p> : <MarkdownText key={index} text={group.text} />)
-        : <ToolGroup key={index} tools={group.tools} />)}
+        ? (user ? <p key={index} style={styles.userText}><Highlighted text={group.text} words={highlight} /></p> : <MarkdownText key={index} text={group.text} highlight={highlight} />)
+        : <ToolGroup key={index} tools={group.tools} words={highlight} />)}
       {turn.files.length > 0 && <p style={styles.files}>Changed: {turn.files.map(file => onOpenFile
         ? <button key={file} style={{ ...styles.file, ...styles.fileButton }} title={`Open ${file.split('/').pop()} in your editor`} onClick={() => onOpenFile(file)}>{file.split('/').slice(-2).join('/')}</button>
         : <code key={file} style={styles.file}>{file.split('/').slice(-2).join('/')}</code>)}</p>}

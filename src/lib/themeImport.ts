@@ -7,6 +7,12 @@
 //   selection-background = #hex
 //   selection-foreground = #hex
 //   palette = 0=#hex  (0-15, ANSI colors)
+//   cursor-text = #hex  (text under a block cursor; defaults to the background)
+//
+// Beads Station extras (ignored by Ghostty, which skips unknown keys):
+//   bs-accent = #hex     interface accent; defaults to ANSI blue, lifted if it is hard to read
+//   bs-orange = #hex     warm highlight; defaults to ANSI yellow
+//   bs-cmd-color = #hex  default colour of typed shell commands; defaults to the accent
 //
 // The 16 ANSI slots: 0-7 normal, 8-15 bright.
 
@@ -17,6 +23,14 @@ export interface ThemePalette {
   cursor: string
   selectionBackground?: string
   selectionForeground?: string
+  /** Text colour under a block cursor. */
+  cursorAccent: string
+  /** Interface accent (links, selection, focus). Explicit so it never depends on which ANSI slot is blue. */
+  accent: string
+  /** Warm highlight used for "needs attention" chrome. */
+  orange: string
+  /** Default colour for typed shell commands ("Typed command colour: Theme default"). */
+  cmdColor: string
   // ANSI 0-15
   black: string
   red: string
@@ -51,6 +65,10 @@ export function parseGhosttyTheme(name: string, source: string): ThemePalette {
   let cursor = '#c0caf5'
   let selectionBackground: string | undefined
   let selectionForeground: string | undefined
+  let cursorAccent: string | undefined
+  let accent: string | undefined
+  let orange: string | undefined
+  let cmdColor: string | undefined
 
   for (const raw of source.split('\n')) {
     const line = raw.trim()
@@ -66,6 +84,10 @@ export function parseGhosttyTheme(name: string, source: string): ThemePalette {
     else if (key === 'cursor-color') cursor = parseGhosttyColor(val)
     else if (key === 'selection-background') selectionBackground = parseGhosttyColor(val)
     else if (key === 'selection-foreground') selectionForeground = parseGhosttyColor(val)
+    else if (key === 'cursor-text') cursorAccent = parseGhosttyColor(val)
+    else if (key === 'bs-accent') accent = parseGhosttyColor(val)
+    else if (key === 'bs-orange') orange = parseGhosttyColor(val)
+    else if (key === 'bs-cmd-color') cmdColor = parseGhosttyColor(val)
     else if (key === 'palette') {
       const sep = val.indexOf('=')
       if (sep !== -1) {
@@ -77,6 +99,9 @@ export function parseGhosttyTheme(name: string, source: string): ThemePalette {
   }
 
   const slot = (i: number, fallback: string) => ansi[i] ?? fallback
+  const blue = slot(4, '#7aa2f7')
+  const yellow = slot(3, '#e0af68')
+  const resolvedAccent = accent ?? ensureContrast(blue, [background], 4.5)
 
   return {
     name,
@@ -85,11 +110,15 @@ export function parseGhosttyTheme(name: string, source: string): ThemePalette {
     cursor,
     selectionBackground,
     selectionForeground,
+    cursorAccent: cursorAccent ?? background,
+    accent: resolvedAccent,
+    orange: orange ?? yellow,
+    cmdColor: cmdColor ?? resolvedAccent,
     black:         slot(0, '#414868'),
     red:           slot(1, '#f7768e'),
     green:         slot(2, '#9ece6a'),
-    yellow:        slot(3, '#e0af68'),
-    blue:          slot(4, '#7aa2f7'),
+    yellow,
+    blue,
     magenta:       slot(5, '#bb9af7'),
     cyan:          slot(6, '#7dcfff'),
     white:         slot(7, '#a9b1d6'),
@@ -110,44 +139,79 @@ export function mixColor(background: string, foreground: string, amount: number)
   if (!/^[0-9a-f]{6}$/i.test(b) || !/^[0-9a-f]{6}$/i.test(f)) return foreground
   return '#' + [0, 2, 4].map(i => Math.round(parseInt(b.slice(i, i + 2), 16) * (1 - amount) + parseInt(f.slice(i, i + 2), 16) * amount).toString(16).padStart(2, '0')).join('')
 }
+export function relativeLuminance(c: string): number {
+  const rgb = [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16) / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4)
+  return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722
+}
 export function contrastRatio(a: string, b: string): number {
-  const luminance = (c: string) => {
-    const rgb = [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16) / 255).map(n => n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4)
-    return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722
-  }
-  const x = luminance(a), y = luminance(b)
+  const x = relativeLuminance(a), y = relativeLuminance(b)
   return (Math.max(x, y) + .05) / (Math.min(x, y) + .05)
+}
+/** Light or dark, from the background's luminance rather than a theme id. */
+export function paletteAppearance(p: Pick<ThemePalette, 'background'>): 'light' | 'dark' {
+  return contrastRatio(p.background, '#000000') > contrastRatio(p.background, '#ffffff') ? 'light' : 'dark'
+}
+/**
+ * Move `color` away from the backgrounds (toward white on dark ones, black on
+ * light ones) until it reaches `min` contrast on every one of them. A colour
+ * that already passes is returned untouched.
+ */
+export function ensureContrast(color: string, backgrounds: string[], min: number): string {
+  if (!/^#[0-9a-f]{6}$/i.test(color)) return color
+  const worst = (c: string) => Math.min(...backgrounds.map(bg => contrastRatio(c, bg)))
+  if (worst(color) >= min) return color
+  const target = backgrounds.every(bg => paletteAppearance({ background: bg }) === 'light') ? '#000000' : '#ffffff'
+  for (let step = 1; step <= 20; step++) {
+    const candidate = mixColor(color, target, step / 20)
+    if (worst(candidate) >= min) return candidate
+  }
+  return target
+}
+export interface ChromeColors {
+  bg: string; fg: string; bgElev: string; bgFloat: string; border: string; borderFaint: string
+  fgMuted: string; fgFaint: string; accent: string; orange: string
+}
+/** Interface colours derived from a palette; every text colour reaches 4.5:1 on the surfaces it sits on. */
+export function deriveChrome(p: ThemePalette): ChromeColors {
+  const bgElev = mixColor(p.background, p.foreground, .055)
+  const bgFloat = mixColor(p.background, p.foreground, .035)
+  const surfaces = [p.background, bgElev]
+  const fg = ensureContrast(p.foreground, surfaces, 4.5)
+  return {
+    bg: p.background,
+    fg,
+    bgElev,
+    bgFloat,
+    border: mixColor(p.background, p.foreground, .18),
+    borderFaint: mixColor(p.background, p.foreground, .09),
+    fgMuted: ensureContrast(mixColor(p.background, fg, .78), surfaces, 4.5),
+    fgFaint: ensureContrast(mixColor(p.background, fg, .62), surfaces, 4.5),
+    accent: ensureContrast(p.accent, surfaces, 4.5),
+    orange: ensureContrast(p.orange, surfaces, 3),
+  }
 }
 export function applyPaletteToCSS(p: ThemePalette): void {
   const r = document.documentElement.style
-  r.setProperty('--bs-bg',       p.background)
-  r.setProperty('--bs-bg-dark',  p.background)
-  r.setProperty('--bs-fg',       p.foreground)
-  // Derive surface/border/muted from palette slots rather than hardcoding.
-  // bg-elev: a slightly lighter shade — use bright-black slot if it contrasts,
-  // otherwise stay close to background (we don't have a dedicated slot for this).
-  r.setProperty('--bs-bg-elev', mixColor(p.background, p.foreground, .055))
-  r.setProperty('--bs-bg-float', mixColor(p.background, p.foreground, .035))
-  r.setProperty('--bs-border', mixColor(p.background, p.foreground, .18))
-  r.setProperty('--bs-border-faint', mixColor(p.background, p.foreground, .09))
-  const readable = (fraction: number) => {
-    const candidate = mixColor(p.background, p.foreground, fraction)
-    return contrastRatio(candidate, mixColor(p.background, p.foreground, .055)) >= 4.5 ? candidate : p.foreground
-  }
-  r.setProperty('--bs-fg-muted', readable(.78))
-  r.setProperty('--bs-fg-faint', readable(.62))
+  const c = deriveChrome(p)
+  r.setProperty('--bs-bg',       c.bg)
+  r.setProperty('--bs-bg-dark',  c.bg)
+  r.setProperty('--bs-fg',       c.fg)
+  r.setProperty('--bs-bg-elev',  c.bgElev)
+  r.setProperty('--bs-bg-float', c.bgFloat)
+  r.setProperty('--bs-border',   c.border)
+  r.setProperty('--bs-border-faint', c.borderFaint)
+  r.setProperty('--bs-fg-muted', c.fgMuted)
+  r.setProperty('--bs-fg-faint', c.fgFaint)
   r.setProperty('--bs-red',      p.red)
   r.setProperty('--bs-green',    p.green)
   r.setProperty('--bs-yellow',   p.yellow)
   r.setProperty('--bs-cyan',     p.cyan)
   r.setProperty('--bs-magenta',  p.magenta)
   r.setProperty('--bs-purple',   p.magenta)
-  // --bs-blue is the accent; clamp so it's never purple-dominant (plan rule).
-  const accent = contrastRatio(p.blue, p.background) >= 4.5 ? p.blue : mixColor(p.blue, p.foreground, .65)
-  r.setProperty('--bs-blue',     accent)
-  r.setProperty('--bs-accent',   accent)
-  r.setProperty('color-scheme', contrastRatio(p.background, '#000000') > contrastRatio(p.background, '#ffffff') ? 'light' : 'dark')
-  r.setProperty('--bs-orange',   p.yellow) // ghostty themes often lack orange; fall back to yellow
+  r.setProperty('--bs-blue',     c.accent)
+  r.setProperty('--bs-accent',   c.accent)
+  r.setProperty('color-scheme', paletteAppearance(p))
+  r.setProperty('--bs-orange',   c.orange)
 }
 
 /** Reset CSS custom properties to stylesheet defaults (empty string). */

@@ -74,6 +74,7 @@ test('Toggle theme updates document colors, including portaled menus', async ({ 
   await boot(page)
   const before = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--bs-bg'))
   await openPalette(page)
+  const paletteBefore = await page.locator('.bs-palette').evaluate(el => getComputedStyle(el).backgroundColor)
   await page.getByText('Toggle theme').click()
   await expect
     .poll(() =>
@@ -82,8 +83,9 @@ test('Toggle theme updates document colors, including portaled menus', async ({ 
       ),
     )
     .not.toBe(before)
+  // Toggle now moves to the next theme in the list; a portaled menu must follow it.
   await openPalette(page)
-  await expect(page.locator('.bs-palette')).toHaveCSS('background-color', 'rgb(239, 239, 240)')
+  await expect(page.locator('.bs-palette')).not.toHaveCSS('background-color', paletteBefore)
 })
 
 test('fullscreen terminal focus is discoverable and executable from Commands', async ({ page }) => {

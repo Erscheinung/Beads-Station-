@@ -6,17 +6,15 @@
 // Enter in the message box (empty reopens the CLI, a message reopens it and
 // sends that message). The raw saved screen stays one click away.
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { activateRestoredPane, claimedAgentSessions, paneResumeCommand, setInsert, type Leaf } from '../state/termPanes'
 import { AGENT_CLI_LABEL, agentResumeCommand, useAgentHooks } from '../state/agentHooks'
 import { shouldAutoResumeAgents, useSessionPreferences } from '../state/sessionPreferences'
-import { TurnView } from './designer/ConversationView'
-import { filterTurns, listTranscripts, readTranscript, relativeTime, usageLine, type Transcript } from './designer/transcripts'
+import { ConversationBody, ReaderSearch, useConversationReader } from './ConversationReader'
+import { listTranscripts, relativeTime, usageLine } from './designer/transcripts'
 import { recoverSession } from '../lib/restoredSession'
 import { abbreviatePathsIn } from '../lib/abbreviatePath'
-
-const PAGE = 60
 
 export function RestoredPane({ leaf, focused }: { leaf: Leaf; focused: boolean }) {
   // Re-render when the hook settings path or the user's CLI command changes: both are part of the command shown.
@@ -58,24 +56,10 @@ export function RestoredPane({ leaf, focused }: { leaf: Leaf; focused: boolean }
   }, [cli, leaf.agentSessionId, leaf.cwd, leaf.savedScreen?.capturedAt])
   const sessionId = leaf.agentSessionId ?? recovered ?? undefined
 
-  // Reading the session file starts nothing.
-  const [conversation, setConversation] = useState<Transcript | null>(null)
-  useEffect(() => {
-    if (!cli || !sessionId) return
-    let cancelled = false
-    Promise.resolve(readTranscript(leaf.cwd, cli, sessionId))
-      .then(result => { if (!cancelled && result?.turns) setConversation(result) })
-      .catch(() => undefined)
-    return () => { cancelled = true }
-  }, [cli, sessionId, leaf.cwd])
-
   const [showScreen, setShowScreen] = useState(false)
-  const [query, setQuery] = useState('')
-  const [shown, setShown] = useState(PAGE)
   const [message, setMessage] = useState('')
-  const hasConversation = Boolean(conversation && conversation.turns.length > 0)
-  const turns = useMemo(() => conversation ? filterTurns(conversation.turns, query) : [], [conversation, query])
-  const visible = query ? turns : turns.slice(-shown)
+  const reader = useConversationReader({ paneId: leaf.paneId, cwd: leaf.cwd, cli, sessionId, hidden: showScreen, onFind: () => setShowScreen(false) })
+  const { conversation, hasConversation } = reader
 
   const proceed = (resume: boolean) => {
     if (checking) return
@@ -98,15 +82,6 @@ export function RestoredPane({ leaf, focused }: { leaf: Leaf; focused: boolean }
     if (focused && !checking) input.current?.focus({ preventScroll: true })
   }, [focused, checking])
 
-  const scroller = useRef<HTMLDivElement>(null)
-  const scrolledFor = useRef<string | null>(null)
-  useEffect(() => {
-    const element = scroller.current
-    if (!element || !hasConversation || showScreen || scrolledFor.current === conversation!.id) return
-    element.scrollTop = element.scrollHeight
-    scrolledFor.current = conversation!.id
-  }, [hasConversation, showScreen, conversation])
-
   const label = cli ? AGENT_CLI_LABEL[cli] : 'shell'
   const command = cli ? (sessionId ? agentResumeCommand(cli, sessionId) : paneResumeCommand(leaf)) : null
   const savedAt = leaf.savedScreen?.capturedAt
@@ -122,16 +97,11 @@ export function RestoredPane({ leaf, focused }: { leaf: Leaf; focused: boolean }
         {savedAt && savedAt > 1_000_000 ? `saved ${relativeTime(savedAt)} · ` : ''}not running{hasConversation && !showScreen ? ` · ${usageLine(conversation!.usage)}` : ''}
       </span>
       <span className="bs-restored__spacer" />
-      {hasConversation && !showScreen && <input className="bs-restored__search" type="search" aria-label="Search this conversation" placeholder="Search" value={query} onChange={event => setQuery(event.target.value)} />}
+      {hasConversation && !showScreen && <ReaderSearch reader={reader} onEscape={() => input.current?.focus()} />}
       {hasConversation && <button className="bs-restored__link" onClick={() => setShowScreen(value => !value)}>{showScreen ? 'Show conversation' : 'Show saved screen'}</button>}
     </div>
     {hasConversation && !showScreen
-      ? <div className="bs-saved-screen bs-restored__body" aria-label="Earlier conversation" data-testid="restored-conversation" ref={scroller} tabIndex={0}>
-        {conversation!.truncated && <p className="bs-restored__note">This session is large; the most recent part is shown.</p>}
-        {!query && turns.length > shown && <button className="bs-restored__link" onClick={() => setShown(count => count + PAGE)}>Show {Math.min(PAGE, turns.length - shown)} earlier turns</button>}
-        {query && visible.length === 0 && <p className="bs-restored__note">Nothing in this conversation matches “{query}”.</p>}
-        {visible.map((turn, index) => <TurnView key={`${turns.length - visible.length + index}`} turn={turn} agentLabel={label} />)}
-      </div>
+      ? <ConversationBody reader={reader} label={label} />
       : <div className="bs-saved-screen" tabIndex={0}>
         {!hasConversation && cli && <p className="bs-restored__note">{!lookedUp || (sessionId && !conversation) ? 'Looking for the conversation…' : 'No saved conversation was found for this pane; this is the last screen it showed.'}</p>}
         <pre aria-label="Saved terminal screen">{leaf.savedScreen?.lines.join('\n') || 'No terminal screen was captured before the app stopped.'}</pre>

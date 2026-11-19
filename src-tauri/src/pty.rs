@@ -184,12 +184,142 @@ fn terminal_device(_master: &dyn MasterPty) -> Option<String> {
     None
 }
 
+// A Mac with no network name reports a made-up hostname such as
+// `Unknown_f2:ac:c5:01:13:37`, which then fills every zsh prompt (%m). zsh reads
+// HOST once at startup, so a tiny ZDOTDIR shim sets it to the Mac's own name
+// after the user's real .zshenv has run. Nothing of the user's config is edited.
+pub(crate) fn is_generated_hostname(name: &str) -> bool {
+    name.starts_with("Unknown") || name.contains(':') || name.is_empty()
+}
+
+// Every pane starts `zsh -il` with ZDOTDIR pointing at a small shim folder, so
+// Beads Station can (1) keep a made-up hostname out of the prompt, (2) colour
+// typed commands (`BS_CMD_COLOR`) and (3) emit OSC 133 prompt marks. The shim
+// never edits the user's files: each file hands ZDOTDIR back to the user's own
+// value, sources the user's file of the same name, then takes ZDOTDIR again
+// for the next startup file. After the last file ZDOTDIR is the user's value.
+//
+// zsh reads .zshenv, then .zprofile (login), .zshrc (interactive), .zlogin
+// (login). `_bs_shim_dir` and `_bs_user_zdotdir` are unexported shell variables.
+pub(crate) const ZSHENV_SHIM: &str = r#"# Beads Station shell shim (managed; rewritten at launch). Sources your own startup files.
+_bs_shim_dir="$ZDOTDIR"
+if [[ -n "${BS_USER_ZDOTDIR-}" ]]; then ZDOTDIR="$BS_USER_ZDOTDIR"; else unset ZDOTDIR; fi
+unset BS_USER_ZDOTDIR
+[[ -f "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
+[[ -n "${BS_HOSTNAME-}" ]] && HOST="$BS_HOSTNAME"
+unset BS_HOSTNAME
+_bs_user_zdotdir="${ZDOTDIR-}"
+if [[ -o interactive ]]; then ZDOTDIR="$_bs_shim_dir"; fi
+"#;
+
+pub(crate) const ZPROFILE_SHIM: &str = r#"# Beads Station shell shim (managed). Sources your own .zprofile.
+if [[ -z "${_bs_shim_dir+x}" ]]; then _bs_shim_dir="$ZDOTDIR"; _bs_user_zdotdir="${BS_USER_ZDOTDIR-}"; fi
+if [[ -n "$_bs_user_zdotdir" ]]; then ZDOTDIR="$_bs_user_zdotdir"; else unset ZDOTDIR; fi
+[[ -f "${ZDOTDIR:-$HOME}/.zprofile" ]] && source "${ZDOTDIR:-$HOME}/.zprofile"
+_bs_user_zdotdir="${ZDOTDIR-}"
+ZDOTDIR="$_bs_shim_dir"
+"#;
+
+pub(crate) const ZSHRC_SHIM: &str = r#"# Beads Station shell shim (managed). Sources your own .zshrc, then adds
+# the typed-command colour and OSC 133 prompt marks after it.
+if [[ -z "${_bs_shim_dir+x}" ]]; then _bs_shim_dir="$ZDOTDIR"; _bs_user_zdotdir="${BS_USER_ZDOTDIR-}"; fi
+if [[ -n "$_bs_user_zdotdir" ]]; then ZDOTDIR="$_bs_user_zdotdir"; else unset ZDOTDIR; fi
+[[ -f "${ZDOTDIR:-$HOME}/.zshrc" ]] && source "${ZDOTDIR:-$HOME}/.zshrc"
+_bs_user_zdotdir="${ZDOTDIR-}"
+if [[ -n "${BS_CMD_COLOR-}" ]]; then
+  zmodload zsh/nearcolor 2>/dev/null
+  zle_highlight+=(default:fg=$BS_CMD_COLOR)
+fi
+unset BS_CMD_COLOR
+if [[ -n "${BEADS_STATION_PANE-}" ]] && autoload -Uz add-zsh-hook 2>/dev/null; then
+  _bs_osc_precmd() { local _s=$?; [[ -n "${_bs_osc_ran-}" ]] && print -rn -- $'\e]133;D;'$_s$'\a'; _bs_osc_ran=1; print -rn -- $'\e]133;A\a'; return $_s }
+  _bs_osc_preexec() { print -rn -- $'\e]133;C\a' }
+  add-zsh-hook precmd _bs_osc_precmd
+  add-zsh-hook preexec _bs_osc_preexec
+fi
+if [[ -o login ]]; then
+  ZDOTDIR="$_bs_shim_dir"
+else
+  if [[ -n "$_bs_user_zdotdir" ]]; then ZDOTDIR="$_bs_user_zdotdir"; else unset ZDOTDIR; fi
+  unset _bs_shim_dir _bs_user_zdotdir
+fi
+"#;
+
+pub(crate) const ZLOGIN_SHIM: &str = r#"# Beads Station shell shim (managed). Sources your own .zlogin, then hands ZDOTDIR back.
+if [[ -z "${_bs_shim_dir+x}" ]]; then _bs_shim_dir="$ZDOTDIR"; _bs_user_zdotdir="${BS_USER_ZDOTDIR-}"; fi
+if [[ -n "$_bs_user_zdotdir" ]]; then ZDOTDIR="$_bs_user_zdotdir"; else unset ZDOTDIR; fi
+[[ -f "${ZDOTDIR:-$HOME}/.zlogin" ]] && source "${ZDOTDIR:-$HOME}/.zlogin"
+unset _bs_shim_dir _bs_user_zdotdir
+"#;
+
+pub(crate) const SHELL_SHIM_FILES: [(&str, &str); 4] =
+    [(".zshenv", ZSHENV_SHIM), (".zprofile", ZPROFILE_SHIM), (".zshrc", ZSHRC_SHIM), (".zlogin", ZLOGIN_SHIM)];
+
+/// Write the shim files into `dir`, replacing a file only when its text differs.
+/// Each file goes through a temp name and a rename so two panes starting at once
+/// never see a half-written startup file.
+pub(crate) fn install_shell_shim(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for (name, body) in SHELL_SHIM_FILES {
+        let file = dir.join(name);
+        if std::fs::read_to_string(&file).ok().as_deref() == Some(body) { continue }
+        let temp = dir.join(format!(".{name}.tmp{}", std::process::id()));
+        std::fs::write(&temp, body)?;
+        std::fs::rename(&temp, &file)?;
+    }
+    Ok(())
+}
+
+/// `#rrggbb` only: the value ends up inside a zsh array assignment.
+pub(crate) fn valid_cmd_color(value: &str) -> bool {
+    value.len() == 7 && value.starts_with('#') && value[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+#[cfg(unix)]
+fn apply_shell_shim(cmd: &mut CommandBuilder, cmd_color: Option<&str>) {
+    use std::sync::OnceLock;
+    static NAME: OnceLock<Option<String>> = OnceLock::new();
+    let Ok(home) = std::env::var("HOME") else { return };
+    let dir = std::path::Path::new(&home).join("Library/Application Support/ai.beads-station.desktop/shell-init");
+    if install_shell_shim(&dir).is_err() { return }
+    let name = NAME.get_or_init(|| {
+        let raw = hostname_now();
+        if !is_generated_hostname(&raw) { return None }
+        let local = std::process::Command::new("scutil").args(["--get", "LocalHostName"]).output().ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok()).map(|text| text.trim().to_string()).filter(|text| !text.is_empty());
+        Some(local.unwrap_or_else(|| "mac".to_string()))
+    });
+    if let Some(name) = name {
+        if std::env::var("SHELL").map(|shell| shell.ends_with("zsh")).unwrap_or(false) {
+            cmd.env("BS_HOSTNAME", name);
+        }
+    }
+    if let Some(color) = cmd_color.filter(|color| valid_cmd_color(color)) {
+        cmd.env("BS_CMD_COLOR", color);
+    }
+    cmd.env("BS_USER_ZDOTDIR", std::env::var("ZDOTDIR").unwrap_or_default());
+    cmd.env("ZDOTDIR", dir);
+}
+#[cfg(not(unix))]
+fn apply_shell_shim(_cmd: &mut CommandBuilder, _cmd_color: Option<&str>) {}
+
+#[cfg(unix)]
+fn hostname_now() -> String {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is valid for its length; gethostname NUL-terminates within it.
+    let ok = unsafe { libc::gethostname(buffer.as_mut_ptr() as *mut libc::c_char, buffer.len()) } == 0;
+    if !ok { return String::new() }
+    let end = buffer.iter().position(|b| *b == 0).unwrap_or(buffer.len());
+    String::from_utf8_lossy(&buffer[..end]).into_owned()
+}
+
 /// Everything a pane's shell is given, wherever the PTY lives.
-pub(crate) fn configure_pane_command(cmd: &mut CommandBuilder, master: &dyn MasterPty) {
+pub(crate) fn configure_pane_command(cmd: &mut CommandBuilder, master: &dyn MasterPty, cmd_color: Option<&str>) {
     configure_terminal_command(cmd);
     // Agent hooks run without a controlling terminal; this is how one
     // finds the pane it belongs to (see agent_hooks.rs).
     cmd.env("BEADS_STATION_PANE", "1");
+    apply_shell_shim(cmd, cmd_color);
     if let Some(tty) = terminal_device(master) {
         cmd.env("BEADS_STATION_TTY", tty);
     }
@@ -208,6 +338,7 @@ fn spawn_hosted(
     event_key: &str,
     cols: u16,
     rows: u16,
+    cmd_color: Option<&str>,
     permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<u32, String> {
     use serde_json::json;
@@ -243,7 +374,7 @@ fn spawn_hosted(
             .request(json!({ "op": "attach", "key": key }))
             .and_then(|_| client.request(json!({ "op": "resize", "key": key, "cols": cols.max(1), "rows": rows.max(1), "redraw": true })))
     } else {
-        client.request(json!({ "op": "spawn", "key": key, "cwd": cwd, "cols": cols.max(1), "rows": rows.max(1) }))
+        client.request(json!({ "op": "spawn", "key": key, "cwd": cwd, "cols": cols.max(1), "rows": rows.max(1), "cmdColor": cmd_color }))
     };
     if let Err(error) = started {
         client.forget(&key);
@@ -264,6 +395,8 @@ pub async fn pty_spawn(
     cols: u16,
     rows: u16,
     persist_key: Option<String>,
+    // Additive: `#rrggbb` for typed commands (BS_CMD_COLOR); None leaves them uncoloured.
+    cmd_color: Option<String>,
 ) -> Result<u32, String> {
     if event_key.is_empty()
         || event_key.len() > 100
@@ -277,8 +410,8 @@ pub async fn pty_spawn(
     // A pane that asked to be kept goes to the terminal host. If the host
     // cannot be reached the pane still gets a shell, owned by this process.
     if let Some(key) = persist_key.filter(|key| !key.is_empty()) {
-        let (window, cwd, event_key) = (window.clone(), cwd.clone(), event_key.clone());
-        let attempt = tauri::async_runtime::spawn_blocking(move || spawn_hosted(window, key, &cwd, &event_key, cols, rows, permit))
+        let (window, cwd, event_key, color) = (window.clone(), cwd.clone(), event_key.clone(), cmd_color.clone());
+        let attempt = tauri::async_runtime::spawn_blocking(move || spawn_hosted(window, key, &cwd, &event_key, cols, rows, color.as_deref(), permit))
             .await
             .map_err(|e| e.to_string())?;
         match attempt {
@@ -304,7 +437,7 @@ pub async fn pty_spawn(
         let mut cmd = CommandBuilder::new("zsh");
         cmd.arg("-il");
         cmd.cwd(&cwd);
-        configure_pane_command(&mut cmd, pair.master.as_ref());
+        configure_pane_command(&mut cmd, pair.master.as_ref(), cmd_color.as_deref());
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -445,27 +578,95 @@ pub async fn pty_snapshot(id: u32) -> Result<PtySnapshot, String> {
 }
 
 /// Name the agent CLI in a command line, without exposing the command itself.
-fn classify_agent_cli(argv: &[String]) -> Option<&'static str> {
-    // `claude` is a native binary or sets its own title; `codex` is usually
-    // `node …/bin/codex` wrapping a native binary. Look at the program and its
-    // first argument only, so a path later in the arguments cannot match.
+pub(crate) fn classify_agent_cli(argv: &[String]) -> Option<&'static str> {
+    // `claude` is a native binary or sets its own title; `codex` and `gemini`
+    // are usually `node …/bin/<name>` (Codex wrapping a native binary). Look at
+    // the program and its first argument only, so a path later in the
+    // arguments cannot match.
     argv.iter().take(2).find_map(|arg| {
         let name = arg.rsplit('/').next().unwrap_or(arg);
         if name == "claude" || arg.contains("/claude-code/") {
             Some("claude")
         } else if name == "codex" || name.starts_with("codex-") || name == "codex.js" {
             Some("codex")
+        } else if name == "gemini" || arg.contains("/gemini-cli/") {
+            Some("gemini")
         } else {
             None
         }
     })
 }
 
-/// The command line and working folder of the terminal's foreground process.
+/// One row of a process listing: enough to walk the tree.
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessRow {
+    pub pid: u32,
+    pub parent: Option<u32>,
+    pub argv: Vec<String>,
+}
+
+/// The agent CLI at or below a terminal's foreground process, and which
+/// process it is. Wrappers (`caffeinate -i claude`, `npx`, `env`, a script)
+/// put the agent below the group leader. The shallowest match wins, so the
+/// agent's own children (tool shells, MCP servers) never reclassify the pane.
+pub(crate) fn classify_process_tree(leader: u32, rows: &[ProcessRow]) -> Option<(&'static str, u32)> {
+    let mut level = vec![leader];
+    let mut seen = std::collections::HashSet::new();
+    // Bounded: wrappers are a few levels deep at most.
+    for _ in 0..6 {
+        if level.is_empty() {
+            break;
+        }
+        for pid in &level {
+            if let Some(row) = rows.iter().find(|row| row.pid == *pid) {
+                if let Some(cli) = classify_agent_cli(&row.argv) {
+                    return Some((cli, *pid));
+                }
+            }
+        }
+        seen.extend(level.iter().copied());
+        let mut next: Vec<u32> = rows
+            .iter()
+            .filter(|row| row.parent.is_some_and(|parent| level.contains(&parent)) && !seen.contains(&row.pid))
+            .map(|row| row.pid)
+            .collect();
+        next.sort_unstable();
+        level = next;
+    }
+    None
+}
+
+/// Whether an agent could be running below this foreground program: a
+/// launcher (`caffeinate`, `env`, `npx`, `node` …) or a shell running a script
+/// or `-c` (an alias wrapper such as `ccd`). A shell at its prompt, an editor
+/// or a pager is not looked below: listing every process is the expensive
+/// path, and a Claude inside nvim's terminal does not make the pane an agent
+/// pane. Unknown wrappers are missed on purpose.
+fn may_launch_agent(argv: &[String]) -> bool {
+    match program_name(argv).as_deref() {
+        Some("zsh" | "bash" | "sh" | "fish" | "dash" | "ksh" | "tcsh" | "nu") => {
+            argv.iter().skip(1).any(|arg| arg == "-c" || !arg.starts_with('-'))
+        }
+        Some("caffeinate" | "env" | "nice" | "nohup" | "time" | "npx" | "npm" | "pnpm" | "yarn" | "bunx" | "bun" | "node") => true,
+        _ => false,
+    }
+}
+
+/// The foreground process, and the agent CLI found at or below it.
+#[derive(Default)]
+pub(crate) struct ForegroundProcess {
+    argv: Vec<String>,
+    cwd: Option<String>,
+    agent: Option<(&'static str, u32)>,
+}
+
+/// The command line and working folder of the terminal's foreground process,
+/// and the agent CLI (if any) running as it or below it.
 #[cfg(unix)]
-fn foreground_process(master: &dyn MasterPty) -> Option<(Vec<String>, Option<String>)> {
+fn foreground_process(master: &dyn MasterPty) -> Option<ForegroundProcess> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let pid = Pid::from_u32(u32::try_from(master.process_group_leader()?).ok()?);
+    let leader = u32::try_from(master.process_group_leader()?).ok()?;
+    let pid = Pid::from_u32(leader);
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
@@ -475,23 +676,46 @@ fn foreground_process(master: &dyn MasterPty) -> Option<(Vec<String>, Option<Str
             .with_cwd(UpdateKind::Always),
     );
     let process = system.process(pid)?;
-    Some((
-        process
-            .cmd()
-            .iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect(),
-        process.cwd().map(|cwd| cwd.to_string_lossy().into_owned()),
-    ))
+    let argv: Vec<String> = process.cmd().iter().map(|arg| arg.to_string_lossy().into_owned()).collect();
+    let mut cwd = process.cwd().map(|cwd| cwd.to_string_lossy().into_owned());
+    // Fast path: the leader is the agent, or nothing that launches one.
+    let agent = match classify_agent_cli(&argv) {
+        Some(cli) => Some((cli, leader)),
+        None if !may_launch_agent(&argv) => None,
+        None => {
+            // A wrapper: one listing of every process (command lines only) to walk below it.
+            system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet));
+            let rows: Vec<ProcessRow> = system
+                .processes()
+                .iter()
+                .map(|(pid, process)| ProcessRow {
+                    pid: pid.as_u32(),
+                    parent: process.parent().map(|parent| parent.as_u32()),
+                    argv: process.cmd().iter().take(2).map(|arg| arg.to_string_lossy().into_owned()).collect(),
+                })
+                .collect();
+            let found = classify_process_tree(leader, &rows);
+            if let Some((_, agent_pid)) = found {
+                // The agent's own folder: a wrapper may have changed directory first.
+                let agent_pid = Pid::from_u32(agent_pid);
+                system.refresh_processes_specifics(ProcessesToUpdate::Some(&[agent_pid]), false, ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always));
+                if let Some(agent_cwd) = system.process(agent_pid).and_then(|process| process.cwd()) {
+                    cwd = Some(agent_cwd.to_string_lossy().into_owned());
+                }
+            }
+            found
+        }
+    };
+    Some(ForegroundProcess { argv, cwd, agent })
 }
 #[cfg(not(unix))]
-fn foreground_process(_master: &dyn MasterPty) -> Option<(Vec<String>, Option<String>)> {
+fn foreground_process(_master: &dyn MasterPty) -> Option<ForegroundProcess> {
     None
 }
 
 #[cfg(test)]
 fn foreground_argv(master: &dyn MasterPty) -> Option<Vec<String>> {
-    foreground_process(master).map(|(argv, _)| argv)
+    foreground_process(master).map(|found| found.argv)
 }
 
 /// The program's own name, without its folder or arguments: `nvim`, `zsh`.
@@ -524,7 +748,7 @@ fn codex_session_from_lsof(output: &str) -> Option<String> {
 }
 
 #[cfg(unix)]
-fn codex_session_id(process_group: i32) -> Option<String> {
+pub(crate) fn codex_session_id(process_group: i32) -> Option<String> {
     let output = std::process::Command::new("/usr/sbin/lsof")
         .args(["-g", &process_group.to_string(), "-Fn"])
         .stderr(std::process::Stdio::null())
@@ -547,7 +771,7 @@ fn claude_session_from_registry(json: &str) -> Option<String> {
         .then(|| id.to_string())
 }
 
-fn claude_session_id(pid: i32) -> Option<String> {
+pub(crate) fn claude_session_id(pid: i32) -> Option<String> {
     let home = std::env::var_os("HOME")?;
     let path = std::path::Path::new(&home).join(".claude/sessions").join(format!("{pid}.json"));
     // A registry entry is a few hundred bytes; refuse anything that is not.
@@ -560,7 +784,7 @@ fn claude_session_id(pid: i32) -> Option<String> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PtyForeground {
-    /// "claude" or "codex" when an agent CLI owns the terminal's foreground.
+    /// "claude", "codex" or "gemini" when an agent CLI owns the terminal's foreground.
     cli: Option<String>,
     /// The exact session, when it can be read without the agent's help.
     session_id: Option<String>,
@@ -579,13 +803,15 @@ pub(crate) struct Foreground {
 }
 
 /// The agent CLI in a terminal's foreground and, on request, its session:
-/// Codex from its open rollout file (an `lsof`), Claude from its own registry.
+/// Codex from its open rollout file (an `lsof`), Claude from its own registry,
+/// which is named by the agent's own pid (not the group leader's when a
+/// wrapper started it).
 pub(crate) fn foreground_of(master: &dyn MasterPty, want_session: bool) -> Foreground {
-    let (argv, cwd) = foreground_process(master).unwrap_or_default();
-    let cli = classify_agent_cli(&argv);
-    let session_id = match (cli, master.process_group_leader()) {
-        (Some("codex"), Some(group)) if want_session => codex_session_id(group),
-        (Some("claude"), Some(group)) if want_session => claude_session_id(group),
+    let ForegroundProcess { argv, cwd, agent } = foreground_process(master).unwrap_or_default();
+    let cli = agent.map(|(cli, _)| cli);
+    let session_id = match (agent, master.process_group_leader()) {
+        (Some(("codex", _)), Some(group)) if want_session => codex_session_id(group),
+        (Some(("claude", pid)), _) if want_session => i32::try_from(pid).ok().and_then(claude_session_id),
         _ => None,
     };
     Foreground { cli, session_id, program: program_name(&argv), cwd }
@@ -764,6 +990,122 @@ mod flow_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recognises_a_made_up_hostname() {
+        assert!(super::is_generated_hostname("Unknown_f2:ac:c5:01:13:37"));
+        assert!(super::is_generated_hostname("fe80::1"));
+        assert!(!super::is_generated_hostname("MacBook-Air"));
+    }
+
+    #[test]
+    fn the_zsh_shim_sets_host_after_the_users_zshenv() {
+        let dir = std::env::temp_dir().join(format!("bs-shim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".zshenv"), super::ZSHENV_SHIM).unwrap();
+        let out = std::process::Command::new("zsh").args(["-c", "print -P %m"])
+            .env("ZDOTDIR", &dir).env("BS_USER_ZDOTDIR", "").env("BS_HOSTNAME", "MacBook-Air").env("HOME", &dir).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "MacBook-Air");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn zsh_available() -> bool {
+        std::process::Command::new("zsh").arg("-c").arg("true").status().map(|s| s.success()).unwrap_or(false)
+    }
+
+    // A scratch HOME with the user's own startup files, plus an installed shim.
+    // `zsh_dir` is where the user's files live (their ZDOTDIR, or HOME when None).
+    fn shim_sandbox(tag: &str, custom_zdotdir: bool) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("bs-shim-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let user_dir = if custom_zdotdir { home.join("conf-zsh") } else { home.clone() };
+        let shim = root.join("shim");
+        std::fs::create_dir_all(&user_dir).unwrap();
+        super::install_shell_shim(&shim).unwrap();
+        std::fs::write(user_dir.join(".zshenv"), "USER_ENV=1\n").unwrap();
+        std::fs::write(user_dir.join(".zprofile"), "USER_PROFILE=1\n").unwrap();
+        std::fs::write(user_dir.join(".zshrc"), "USER_RC=1\nalias ll='ls -l'\nUSER_RC_ZDOTDIR=${ZDOTDIR-unset}\nzle_highlight=(region:bg=red)\n").unwrap();
+        std::fs::write(user_dir.join(".zlogin"), "USER_LOGIN=1\n").unwrap();
+        (home, user_dir, shim)
+    }
+
+    fn run_login_shell(home: &std::path::Path, shim: &std::path::Path, user_zdotdir: Option<&std::path::Path>, color: Option<&str>, script: &str) -> String {
+        let mut command = std::process::Command::new("zsh");
+        command.args(["-il", "-c", script]).env("HOME", home).env("ZDOTDIR", shim)
+            .env("BS_USER_ZDOTDIR", user_zdotdir.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
+            .env("BEADS_STATION_PANE", "1").env_remove("BS_CMD_COLOR").stdin(std::process::Stdio::null());
+        if let Some(color) = color { command.env("BS_CMD_COLOR", color); }
+        String::from_utf8_lossy(&command.output().unwrap().stdout).into_owned()
+    }
+
+    const PROBE: &str = r#"print -r -- "env=$USER_ENV profile=$USER_PROFILE rc=$USER_RC login=$USER_LOGIN alias=${aliases[ll]} rcz=${USER_RC_ZDOTDIR} zdotdir=${ZDOTDIR-unset} bsvars=${BS_USER_ZDOTDIR-unset}/${BS_CMD_COLOR-unset} hl=${(j:|:)zle_highlight}""#;
+
+    #[test]
+    fn the_shim_sources_every_user_startup_file_and_restores_zdotdir() {
+        if !zsh_available() { return }
+        let (home, _user, shim) = shim_sandbox("home", false);
+        let out = run_login_shell(&home, &shim, None, None, PROBE);
+        let line = out.lines().find(|l| l.starts_with("env=")).unwrap_or_else(|| panic!("no probe line in {out:?}"));
+        assert_eq!(line, "env=1 profile=1 rc=1 login=1 alias=ls -l rcz=unset zdotdir=unset bsvars=unset/unset hl=region:bg=red", "{line}");
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn the_shim_follows_a_zdotdir_the_user_already_had() {
+        if !zsh_available() { return }
+        let (home, user, shim) = shim_sandbox("custom", true);
+        let out = run_login_shell(&home, &shim, Some(&user), None, PROBE);
+        let line = out.lines().find(|l| l.starts_with("env=")).unwrap_or_else(|| panic!("no probe line in {out:?}"));
+        let expected = format!("env=1 profile=1 rc=1 login=1 alias=ls -l rcz={0} zdotdir={0} bsvars=unset/unset hl=region:bg=red", user.display());
+        assert_eq!(line, expected);
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn the_shim_follows_a_zdotdir_set_by_the_users_zshenv() {
+        if !zsh_available() { return }
+        let (home, user, shim) = shim_sandbox("envset", true);
+        std::fs::write(home.join(".zshenv"), format!("export ZDOTDIR={}\n", user.display())).unwrap();
+        let out = run_login_shell(&home, &shim, None, None, PROBE);
+        let line = out.lines().find(|l| l.starts_with("env=")).unwrap_or_else(|| panic!("no probe line in {out:?}"));
+        assert!(line.starts_with("env= profile=1 rc=1 login=1 alias=ls -l"), "{line}"); // zsh reads .zshenv once, before ZDOTDIR moves
+        assert!(line.contains(&format!("zdotdir={}", user.display())), "{line}");
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn typed_command_colour_is_added_after_the_users_zshrc_only_when_asked() {
+        if !zsh_available() { return }
+        let (home, _user, shim) = shim_sandbox("color", false);
+        let with = run_login_shell(&home, &shim, None, Some("#fd9f4d"), PROBE);
+        let line = with.lines().find(|l| l.starts_with("env=")).unwrap_or_else(|| panic!("no probe line in {with:?}"));
+        assert!(line.ends_with("bsvars=unset/unset hl=region:bg=red|default:fg=#fd9f4d"), "{line}");
+        let without = run_login_shell(&home, &shim, None, None, PROBE);
+        assert!(!without.contains("default:fg"), "{without}");
+        let _ = std::fs::remove_dir_all(home.parent().unwrap());
+    }
+
+    #[test]
+    fn shim_file_text_matches_the_contract() {
+        assert!(ZSHRC_SHIM.contains("zle_highlight+=(default:fg=$BS_CMD_COLOR)"));
+        assert!(ZSHRC_SHIM.contains("if [[ -n \"${BS_CMD_COLOR-}\" ]]"));
+        assert!(ZSHRC_SHIM.contains("add-zsh-hook precmd") && ZSHRC_SHIM.contains("add-zsh-hook preexec"));
+        assert!(ZSHRC_SHIM.contains("133;A") && ZSHRC_SHIM.contains("133;C") && ZSHRC_SHIM.contains("133;D"));
+        assert!(ZPROFILE_SHIM.contains(".zprofile") && ZLOGIN_SHIM.contains(".zlogin") && ZSHRC_SHIM.contains(".zshrc") && ZSHENV_SHIM.contains(".zshenv"));
+        assert!(valid_cmd_color("#fd9f4d") && !valid_cmd_color("#fd9f4") && !valid_cmd_color("red") && !valid_cmd_color("#gg9f4d") && !valid_cmd_color("#fd9f4d);x"));
+    }
+
+    #[test]
+    fn installing_the_shim_twice_is_harmless_and_repairs_edits() {
+        let dir = std::env::temp_dir().join(format!("bs-shim-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        super::install_shell_shim(&dir).unwrap();
+        std::fs::write(dir.join(".zshrc"), "broken").unwrap();
+        super::install_shell_shim(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(".zshrc")).unwrap(), ZSHRC_SHIM);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     #[test]
     fn terminal_command_advertises_utf8_and_truecolor() {
@@ -799,9 +1141,49 @@ mod tests {
         assert_eq!(classify_agent_cli(&argv(&["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"])), Some("claude"));
         assert_eq!(classify_agent_cli(&argv(&["node", "/opt/homebrew/bin/codex", "resume"])), Some("codex"));
         assert_eq!(classify_agent_cli(&argv(&["codex-aarch64-apple-darwin"])), Some("codex"));
+        assert_eq!(classify_agent_cli(&argv(&["node", "/opt/homebrew/bin/gemini"])), Some("gemini"));
+        assert_eq!(classify_agent_cli(&argv(&["node", "/x/node_modules/@google/gemini-cli/dist/index.js"])), Some("gemini"));
         assert_eq!(classify_agent_cli(&argv(&["-zsh"])), None);
         assert_eq!(classify_agent_cli(&argv(&["vim", "notes", "claude"])), None);
         assert_eq!(classify_agent_cli(&[]), None);
+    }
+
+    #[test]
+    fn finds_an_agent_below_a_wrapper_but_not_the_agents_own_children() {
+        let row = |pid: u32, parent: u32, argv: &[&str]| ProcessRow { pid, parent: Some(parent), argv: argv.iter().map(|a| a.to_string()).collect() };
+        let rows = vec![
+            row(10, 1, &["caffeinate", "-i"]),
+            row(11, 10, &["/bin/sh", "/usr/local/bin/ccd"]),
+            row(12, 11, &["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"]),
+            // Claude's own tool shell running codex is deeper, so it does not win.
+            row(13, 12, &["codex", "exec"]),
+            row(20, 1, &["npm", "exec"]),
+            row(21, 20, &["node", "/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js"]),
+            row(30, 1, &["env", "FOO=1"]),
+            row(31, 30, &["/opt/homebrew/bin/codex"]),
+            row(40, 1, &["make", "test"]),
+            row(41, 40, &["cargo", "test", "claude"]),
+        ];
+        assert_eq!(classify_process_tree(10, &rows), Some(("claude", 12)));
+        assert_eq!(classify_process_tree(12, &rows), Some(("claude", 12)));
+        assert_eq!(classify_process_tree(20, &rows), Some(("gemini", 21)));
+        assert_eq!(classify_process_tree(30, &rows), Some(("codex", 31)));
+        assert_eq!(classify_process_tree(40, &rows), None);
+        assert_eq!(classify_process_tree(99, &rows), None);
+        // A cycle in a bad listing cannot loop forever.
+        let cycle = vec![row(1, 2, &["a"]), row(2, 1, &["b"])];
+        assert_eq!(classify_process_tree(1, &cycle), None);
+    }
+
+    #[test]
+    fn looks_below_launchers_and_script_shells_only() {
+        let argv = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();
+        for idle in [&["-zsh"][..], &["zsh", "-l"], &["/bin/bash", "--login", "-i"], &["nvim", "notes.md"], &["less"], &["htop"], &["make", "test"], &[]] {
+            assert!(!may_launch_agent(&argv(idle)), "{idle:?}");
+        }
+        for launcher in [&["sh", "/usr/local/bin/ccd"][..], &["bash", "-c", "claude"], &["/bin/zsh", "~/bin/gpt"], &["caffeinate", "-i"], &["npm", "exec"], &["node", "/opt/homebrew/bin/npx"], &["/usr/bin/env", "FOO=1"]] {
+            assert!(may_launch_agent(&argv(launcher)), "{launcher:?}");
+        }
     }
 
     #[test]

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { openSplitInFolder } from '../../state/termPanes'
+import { setSkin } from '../../state/skin'
 import { invoke } from '@tauri-apps/api/core'
 import '../../theme/designer-light.css'
 import { BeadGraph } from './BeadGraph'
@@ -271,7 +273,9 @@ function CenterView({ nav, selectedIssue, onSelectIssue, sessionIssue, onSession
     if (!project) return <div style={styles.viewPlaceholder}><p style={styles.graphPlaceholderText}>{nav === 'history' ? 'History' : 'Pinned'}</p><p style={styles.graphPlaceholderSub}>Open a workspace first.</p></div>
     return nav === 'history'
       ? <HistoryView key={project.id} project={project} sessionRunning={sessionIsRunning(project.id)}
-          onResume={summary => { if (summary.provider === 'qwen') return /* no resume contract yet: docs/roadmap-0.2/QWEN-INTEGRATION.md */; requestSessionStart(project.id, agentResumeCommand(summary.provider, summary.id)); onNavigate('session') }} />
+          onResume={summary => { if (summary.provider === 'qwen') return /* no resume contract yet: docs/roadmap-0.2/QWEN-INTEGRATION.md */; requestSessionStart(project.id, agentResumeCommand(summary.provider, summary.id)); onNavigate('session') }}
+          onGoToSession={() => onNavigate('session')}
+          onResumeInPane={summary => { if (summary.provider === 'qwen') return; openSplitInFolder(project.path, agentResumeCommand(summary.provider, summary.id)); setSkin('terminal') }} />
       : <ShelfView key={project.id} project={project} />
   }
   if (nav === 'agents') {
